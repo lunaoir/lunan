@@ -3,6 +3,7 @@
     UI: Rayfield Interface Suite (Mobile + PC)
     Game: https://web.roblox.com/games/8540168650
     Focus: Stand Farming + Utility
+    Revision: all-stand catalog, protected storage, automatic 2x Orb (estimated timer)
 ]]
 
 --================== SETTINGS ==================--
@@ -20,8 +21,13 @@ print("script starting..")
 getgenv().farmstands = false
 
 local localplr = game.Players.LocalPlayer
-local plrstand = localplr.Data.Stand
-local plratt = localplr.Data.Attri
+if not localplr then
+	warn("Selina Hub requires a client player.")
+	return
+end
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local hubSession = {}
+getgenv().SURFarmSession = hubSession
 local httpservice = game:GetService("HttpService")
 local jsonservice = httpservice
 local selectedArrowType = "Stand Arrow"
@@ -40,25 +46,29 @@ local Rayfield = nil
 local standDropdown = nil
 local removeDropdown = nil
 local slotDisplaySection = nil
+local catalogSection = nil
+local farmToggle = nil
+local syncingFarmToggle = false
+local loadingConfiguration = false
+local startStandFarm, stopStandFarm
+local farmStats = { arrows = 0, rokas = 0, errors = 0, stored = 0, orbs = 0 }
+local autoStoreMatches = true
+local autoUseOrb = true
+local storageStatusSection, orbStatusSection = nil, nil
+local storageSlotSections = {}
 
 -- Dynamic slots
 local farmSlots = {}
 
--- Stand lists from wiki
-local standArrowStands = {
+-- Used only when StandNameConvert is missing, empty or unreadable.
+local fallbackStandNames = {
 	"Cream","Hierophant Green","Killer Queen","Silver Chariot","Star Platinum",
 	"Sticky Fingers","Star Platinum: Stone Ocean","Crazy Diamond","Aerosmith",
 	"Stone Free","The Emperor","The Hand","Soft And Wet","Magicians Red",
 	"Diver Down","Purple Smoke","White Snake","The World","Weather Report",
 	"D4C","Golden Experience","King Crimson","Premier Macho","Silver Chariot OVA",
-	"The World OVA","Jotaro's Star Platinum","Star Platinum OVA","Putrid Whine"
-}
-
-local chargedArrowStands = {
-	"Crazy Diamond","Silver Chariot","Hierophant Green","Killer Queen",
-	"Star Platinum","The Hand","D4C","Golden Experience","King Crimson",
-	"The World","Tusk Act 1","The World: Alternative Universe","White Snake",
-	"Dio's The World","Putrid Whine"
+	"The World OVA","Jotaro's Star Platinum","Star Platinum OVA","Putrid Whine",
+	"Tusk Act 1","The World: Alternative Universe","Dio's The World"
 }
 
 local allAttributes = {
@@ -66,6 +76,174 @@ local allAttributes = {
 	"Lethargic","Godly","Daemon","Glass Cannon","Invincible",
 	"Scourge","Tragic","Hacker","Legendary"
 }
+
+-- Catalog stores real names; the GUI never stores a formatted "ID -> Name" string.
+local displayById = {}
+local idsByDisplay = {}
+local standOptions = {"Any"}
+local catalogSource = "fallback"
+local catalogBusy = false
+
+local function cleanText(value)
+	return type(value) == "string" and value:match("^%s*(.-)%s*$") or ""
+end
+
+local function nameKey(value)
+	return cleanText(value):lower()
+end
+
+local function firstOption(options, default)
+	local value = type(options) == "table" and options[1] or options
+	value = cleanText(value)
+	return value ~= "" and value or default
+end
+
+local function normalizeAttributes(values)
+	if type(values) == "string" then values = {values} end
+	local result, seen = {}, {}
+	if type(values) == "table" then
+		for _, value in ipairs(values) do
+			value = cleanText(value)
+			if value == "Any" then return {"Any"} end
+			if value ~= "" and not seen[value] then
+				seen[value] = true
+				table.insert(result, value)
+			end
+		end
+	end
+	return #result > 0 and result or {"Any"}
+end
+
+local function rebuildStandOptions()
+	local names, seen = {}, {any = true, none = true}
+	local function add(name)
+		local key = nameKey(name)
+		if key ~= "" and not seen[key] then
+			seen[key] = true
+			table.insert(names, name)
+		end
+	end
+	if catalogSource == "live" then
+		for _, display in pairs(displayById) do add(display) end
+	else
+		for _, name in ipairs(fallbackStandNames) do add(name) end
+	end
+	table.sort(names, function(a, b)
+		local ka, kb = nameKey(a), nameKey(b)
+		return ka == kb and a < b or ka < kb
+	end)
+	standOptions = {"Any"}
+	for _, name in ipairs(names) do table.insert(standOptions, name) end
+end
+
+local function scanStandCatalog(timeout)
+	if catalogBusy then return false, "A scan is already running." end
+	catalogBusy = true
+	local ok, scanOk, detail = pcall(function()
+		local deadline = os.clock() + (timeout or 5)
+		local target
+		repeat
+			target = ReplicatedStorage:FindFirstChild("StandNameConvert", true)
+			if target then break end
+			task.wait(0.1)
+		until os.clock() >= deadline
+		if not target then return false, "StandNameConvert was not found." end
+		local newMap, newReverse = {}, {}
+		local function add(internal, display)
+			internal, display = cleanText(internal), cleanText(display)
+			if internal == "" or nameKey(internal) == "none" or nameKey(internal) == "any"
+				or internal == "PackageLink" then return end
+			if display == "" then display = internal end
+			if nameKey(display) == "none" or nameKey(display) == "any" then return end
+			newMap[internal] = display
+		end
+		if target:IsA("ModuleScript") then
+			local done, required, data = false, false, nil
+			local worker = task.spawn(function()
+				required, data = pcall(require, target)
+				done = true
+			end)
+			local moduleDeadline = os.clock() + 5
+			while not done and os.clock() < moduleDeadline do task.wait(0.05) end
+			if not done then
+				pcall(task.cancel, worker)
+				return false, "StandNameConvert module timed out."
+			end
+			if not required or type(data) ~= "table" then
+				return false, "StandNameConvert did not return a readable table."
+			end
+			for internal, display in pairs(data) do
+				if type(internal) == "string" and type(display) == "string" then
+					add(internal, display)
+				elseif type(internal) == "number" and type(display) == "string" then
+					add(display, display)
+				end
+			end
+		else
+			-- Give replicated children a bounded opportunity to arrive.
+			repeat
+				for _, item in ipairs(target:GetChildren()) do
+					if item.Name ~= "PackageLink" and not item:IsA("PackageLink") then
+						if item:IsA("StringValue") then add(item.Name, item.Value)
+						else add(item.Name, item.Name) end
+					end
+				end
+				if next(newMap) then break end
+				task.wait(0.1)
+			until os.clock() >= deadline
+		end
+		if not next(newMap) then return false, "StandNameConvert has no usable stand names." end
+		for internal, display in pairs(newMap) do
+			local key = nameKey(display)
+			newReverse[key] = newReverse[key] or {}
+			table.insert(newReverse[key], internal)
+		end
+		displayById, idsByDisplay = newMap, newReverse
+		catalogSource = "live"
+		rebuildStandOptions()
+		return true, tostring(#standOptions - 1) .. " stands loaded."
+	end)
+	catalogBusy = false
+	if not ok then return false, tostring(scanOk) end
+	return scanOk, detail
+end
+
+rebuildStandOptions()
+
+local function getDisplayName(internalName)
+	local internal = cleanText(internalName)
+	if internal == "" then return "Unknown" end
+	if displayById[internal] then return displayById[internal] end
+	local target = ReplicatedStorage:FindFirstChild("StandNameConvert", true)
+	local item = target and not target:IsA("ModuleScript") and target:FindFirstChild(internal)
+	if item and item:IsA("StringValue") and cleanText(item.Value) ~= "" then
+		return cleanText(item.Value)
+	end
+	return internal
+end
+
+local function uniqueStandId(display)
+	local ids = idsByDisplay[nameKey(display)]
+	return ids and #ids == 1 and ids[1] or nil
+end
+
+local function readStandData()
+	local data = localplr:FindFirstChild("Data")
+	local stand = data and data:FindFirstChild("Stand")
+	local att = data and data:FindFirstChild("Attri")
+	if not stand or not att then return nil, nil end
+	local ok, s, a = pcall(function() return stand.Value, att.Value end)
+	if not ok or type(s) ~= "string" or type(a) ~= "string" or s == "" then
+		return nil, nil
+	end
+	return s, a
+end
+
+local function replacePlain(text, search, replacement)
+	if search == "" then return text end
+	local escaped = search:gsub("(%W)", "%%%1")
+	return (text:gsub(escaped, function() return replacement end))
+end
 
 local function resolveRequestFunction()
 	if syn and syn.request then return syn.request end
@@ -105,25 +283,15 @@ end
 local requestFunction = resolveRequestFunction()
 
 local function sanitizeSlot(slot)
-	if type(slot) ~= "table" then
+	if type(slot) ~= "table" or cleanText(slot.stand) == "" then
 		return nil
 	end
 	local normalized = {
-		stand = type(slot.stand) == "string" and slot.stand ~= "" and slot.stand or "Any",
-		att = {"Any"},
+		stand = cleanText(slot.stand),
+		att = normalizeAttributes(slot.att),
 	}
-	if type(slot.att) == "table" then
-		local attList = {}
-		for _, value in ipairs(slot.att) do
-			if type(value) == "string" and value ~= "" then
-				table.insert(attList, value)
-			end
-		end
-		if #attList > 0 then
-			normalized.att = attList
-		end
-	elseif type(slot.att) == "string" and slot.att ~= "" then
-		normalized.att = {slot.att}
+	if normalized.stand ~= "Any" and cleanText(slot.standId) ~= "" then
+		normalized.standId = cleanText(slot.standId)
 	end
 	return normalized
 end
@@ -167,12 +335,17 @@ local function safeLoadConfiguration()
 	if not Rayfield or type(Rayfield.LoadConfiguration) ~= "function" then
 		return false, "Configuration loader is unavailable."
 	end
-	local ok, err = pcall(function()
-		Rayfield:LoadConfiguration()
+	if stopStandFarm then stopStandFarm() end
+	loadingConfiguration = true
+	local ok, result, err = pcall(function()
+		return Rayfield:LoadConfiguration()
 	end)
-	if not ok then
-		return false, err
+	loadingConfiguration = false
+	if not ok or result == false then
+		if stopStandFarm then stopStandFarm() end
+		return false, not ok and result or err or "Configuration load failed."
 	end
+	if getgenv().farmstands and startStandFarm then startStandFarm() end
 	return true, nil
 end
 
@@ -180,12 +353,11 @@ local function safeSaveConfiguration()
 	if not Rayfield or type(Rayfield.SaveConfiguration) ~= "function" then
 		return false, "Configuration saver is unavailable."
 	end
-	local ok, err = pcall(function()
-		Rayfield:SaveConfiguration()
+	local ok, result, err = pcall(function()
+		return Rayfield:SaveConfiguration()
 	end)
-	if not ok then
-		return false, err
-	end
+	if not ok then return false, result end
+	if result == false then return false, err or "Configuration save failed." end
 	return true, nil
 end
 
@@ -212,16 +384,11 @@ end
 
 --================== HELPER FUNCTIONS ==================--
 
-function getStandListByArrow()
-	local list = {"Any"}
-	local source = selectedArrowType == "Charged Arrow" and chargedArrowStands or standArrowStands
-	for _, s in ipairs(source) do
-		table.insert(list, s)
-	end
-	return list
+local function getStandList()
+	return table.clone(standOptions)
 end
 
-function getSlotDisplayText(slot)
+local function getSlotDisplayText(slot)
 	local attText = "Any"
 	if type(slot.att) == "table" then
 		local filtered = {}
@@ -239,7 +406,7 @@ function getSlotDisplayText(slot)
 	return (slot.stand or "Any") .. " + [" .. attText .. "]"
 end
 
-function buildSlotListForDropdown()
+local function buildSlotListForDropdown()
 	local names = {}
 	for i, slot in ipairs(farmSlots) do
 		table.insert(names, "Slot " .. i .. ": " .. getSlotDisplayText(slot))
@@ -250,7 +417,7 @@ function buildSlotListForDropdown()
 	return names
 end
 
-function buildSlotsDisplayText()
+local function buildSlotsDisplayText()
 	if #farmSlots == 0 then
 		return "No slots - add one above!"
 	end
@@ -261,10 +428,12 @@ function buildSlotsDisplayText()
 	return table.concat(lines, " | ")
 end
 
-function refreshUI()
+local function refreshUI()
+	selectedRemoveIndex = nil
 	pcall(function()
 		if removeDropdown then
 			removeDropdown:Refresh(buildSlotListForDropdown())
+			removeDropdown:Set({})
 		end
 	end)
 	pcall(function()
@@ -302,20 +471,9 @@ local function applyHitboxVisibility(enabled)
 	end
 end
 
-function getDisplayName(internalName)
-	local displayName = internalName
-	pcall(function()
-		if game.ReplicatedStorage:FindFirstChild("StandNameConvert") 
-			and game.ReplicatedStorage.StandNameConvert:FindFirstChild(internalName) then
-			displayName = game.ReplicatedStorage.StandNameConvert[internalName].Value
-		end
-	end)
-	return displayName
-end
-
 --================== CORE FUNCTIONS ==================--
 
-function notif(title, text)
+local function notif(title, text)
 	local safeTitle = tostring(title)
 	local safeText = tostring(text or title)
 	if Rayfield and type(Rayfield.Notify) == "function" then
@@ -346,7 +504,7 @@ local function showMessageBox(text, title, style)
 	return nil
 end
 
-function shouldTagEveryone(attValue, isSlotMatch)
+local function shouldTagEveryone(attValue, isSlotMatch)
 	if isSlotMatch then return true end
 	if #webhookTagAtts == 0 then return true end
 	for _, a in ipairs(webhookTagAtts) do
@@ -355,7 +513,7 @@ function shouldTagEveryone(attValue, isSlotMatch)
 	return false
 end
 
-function webhook(text, stand, color, attValue, isSlotMatch)
+local function webhook(text, stand, color, attValue, isSlotMatch)
 	if webhookurl == "" then return false, "Webhook URL is empty." end
 	if not requestFunction then
 		warn("Webhook disabled: no supported HTTP request function was found.")
@@ -392,7 +550,7 @@ function webhook(text, stand, color, attValue, isSlotMatch)
 
 	if convtoname and stand then
 		pcall(function()
-			text = string.gsub(text, stand:upper(), displayStand:upper())
+			text = replacePlain(text, stand:upper(), displayStand:upper())
 		end)
 	end
 
@@ -447,7 +605,7 @@ function webhook(text, stand, color, attValue, isSlotMatch)
 	local ok, response = pcall(function()
 		local content = ""
 		if shouldTagEveryone(attValue, isSlotMatch) then
-			content = "@everyone"
+			content = tagperson
 		end
 		return requestFunction({
 			Url = webhookurl,
@@ -473,7 +631,9 @@ function webhook(text, stand, color, attValue, isSlotMatch)
 		warn("Webhook request failed: " .. tostring(response))
 		return false, response
 	end
-	if type(response) == "table" and response.Success == false then
+	if type(response) ~= "table" then return false, "Invalid HTTP response." end
+	local status = tonumber(response.StatusCode)
+	if response.Success == false or (status and (status < 200 or status >= 300)) then
 		local reason = response.Error or response.StatusMessage or response.StatusCode or "unknown"
 		warn("Webhook request returned a failure response: " .. tostring(reason))
 		return false, reason
@@ -481,56 +641,80 @@ function webhook(text, stand, color, attValue, isSlotMatch)
 	return true, response
 end
 
-function popupfunc(text, toroka, stand)
-	text = tostring(text)
+local function popupfunc(text, toroka, stand)
 	if not popup then return end
-	local displayText = text
+	local displayText = tostring(text)
 	if convtoname and stand then
-		pcall(function()
-			displayText = string.gsub(text, stand:upper(), getDisplayName(stand):upper())
-		end)
+		displayText = replacePlain(displayText, tostring(stand):upper(), getDisplayName(stand):upper())
 	end
-	if toroka and askroka then
-		local s = showMessageBox(displayText .. " Roka?", "SUR", 4)
-		if s == 6 then
-			pcall(function()
-				local roka = "Rokakaka"
-				if not localplr.Backpack:FindFirstChild(roka) then
-					notif("Waiting", "Waiting for Rokakaka...")
-					local origstand = plrstand.Value
-					local waitTimeout = 30
-					local waited = 0
-					repeat
-						task.wait(1)
-						waited = waited + 1
-						if plrstand.Value ~= origstand then return end
-					until localplr.Backpack:FindFirstChild(roka) or waited >= waitTimeout
-					if not localplr.Backpack:FindFirstChild(roka) then
-						notif("Timeout", "Failed to find Rokakaka in time.")
-						return
-					end
-				end
-				local selroka = localplr.Backpack:FindFirstChild(roka)
-				local standv = plrstand.Value
-				local att = plratt.Value
-				selroka.Parent = localplr.Character
-				selroka.Use:FireServer()
-				repeat task.wait() until selroka.Parent == nil
-				task.wait(0.2)
-				webhook("ROKA'D " .. att:upper() .. " " .. getDisplayName(standv):upper(), nil, tonumber(0xFF0000))
-			end)
+	if not (toroka and askroka) then
+		task.spawn(function() showMessageBox(displayText, "SUR", 0) end)
+		return
+	end
+	task.spawn(function()
+		local originalStand, originalAtt = readStandData()
+		if showMessageBox(displayText .. " Roka?", "SUR", 4) ~= 6 then return end
+		if not originalStand or originalStand == "None" or getgenv().farmstands then return end
+		local item
+		local deadline = os.clock() + 30
+		repeat
+			local s, a = readStandData()
+			if s ~= originalStand or a ~= originalAtt or getgenv().farmstands then return end
+			local backpack = localplr:FindFirstChild("Backpack")
+			local char = localplr.Character
+			item = (backpack and backpack:FindFirstChild("Rokakaka")) or (char and char:FindFirstChild("Rokakaka"))
+			if item then break end
+			task.wait(0.25)
+		until os.clock() >= deadline
+		if not item then notif("Timeout", "Rokakaka was not found."); return end
+		local char = localplr.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if not hum or hum.Health <= 0 then return end
+		local events = ReplicatedStorage:FindFirstChild("Events")
+		local remote = events and events:FindFirstChild("UseItem") or item:FindFirstChild("Use")
+		if not remote or not remote:IsA("RemoteEvent") then
+			notif("Roka Error", "UseItem RemoteEvent was not found.")
+			return
 		end
-	else
-		task.spawn(function()
-			showMessageBox(displayText, "SUR", 0)
+		local ok, err = pcall(function()
+			hum:EquipTool(item)
+			task.wait(0.1)
+			local s, a = readStandData()
+			if getgenv().farmstands or s ~= originalStand or a ~= originalAtt
+				or localplr.Character ~= char or hum.Health <= 0 or item.Parent ~= char then return end
+			remote:FireServer()
+			local useDeadline = os.clock() + 8
+			repeat
+				local current = readStandData()
+				if current == "None" then
+					webhook("ROKA USED: " .. originalAtt:upper() .. " " .. getDisplayName(originalStand):upper(),
+						originalStand, 0xFF0000, originalAtt, false)
+					return
+				end
+				if current and current ~= originalStand then return end
+				task.wait(0.1)
+			until os.clock() >= useDeadline
+			notif("Roka Timeout", "The stand reset was not confirmed.")
 		end)
-	end
+		pcall(function()
+			local backpack = localplr:FindFirstChild("Backpack")
+			if backpack and item.Parent == char then item.Parent = backpack end
+		end)
+		if not ok then notif("Roka Error", tostring(err)) end
+	end)
 end
 
-function checkSlotMatch(standValue, attValue)
+local function checkSlotMatch(standValue, attValue)
+	if not standValue or standValue == "None" or not attValue then return false, nil end
 	local displayStand = getDisplayName(standValue)
 	for i, slot in ipairs(farmSlots) do
-		local sm = (slot.stand == "Any") or (slot.stand == standValue) or (slot.stand == displayStand)
+		local sm
+		if slot.stand == "Any" then sm = true
+		elseif slot.standId then sm = slot.standId == standValue
+		else
+			sm = nameKey(slot.stand) == nameKey(standValue)
+				or nameKey(getDisplayName(slot.stand)) == nameKey(displayStand)
+		end
 		local am = false
 		if type(slot.att) == "table" then
 			for _, a in ipairs(slot.att) do
@@ -549,7 +733,7 @@ function checkSlotMatch(standValue, attValue)
 	return false, nil
 end
 
-function saveSlots()
+local function saveSlots()
 	if type(writefile) ~= "function" then
 		return false, "writefile API unavailable."
 	end
@@ -562,16 +746,14 @@ function saveSlots()
 	return true, nil
 end
 
-function loadSlots()
+local function loadSlots()
 	if type(isfile) ~= "function" or type(readfile) ~= "function" then
-		farmSlots = {}
 		return false, "readfile API unavailable."
 	end
 	local okExists, exists = pcall(function()
 		return isfile("sur_farmslots.txt")
 	end)
 	if not okExists then
-		farmSlots = {}
 		return false, exists
 	end
 	if not exists then
@@ -582,7 +764,6 @@ function loadSlots()
 		return readfile("sur_farmslots.txt")
 	end)
 	if not okRead then
-		farmSlots = {}
 		return false, raw
 	end
 	if raw == "" then
@@ -592,294 +773,617 @@ function loadSlots()
 	local okDecode, decoded = pcall(function()
 		return jsonservice:JSONDecode(raw)
 	end)
-	if not okDecode then
-		farmSlots = {}
+	if not okDecode or type(decoded) ~= "table" then
 		return false, "Invalid farm slot save data."
 	end
-	farmSlots = normalizeFarmSlots(decoded)
+	local normalized = normalizeFarmSlots(decoded)
+	local count = 0
+	for key in pairs(decoded) do
+		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+			return false, "Saved slots must be an array."
+		end
+		count = count + 1
+	end
+	if #normalized ~= count then return false, "Invalid slot entry; current slots kept." end
+	farmSlots = normalized
 	return true, nil
 end
 
 local function autoSaveSlots()
-	pcall(function() saveSlots() end)
+	local ok, err = saveSlots()
+	if not ok then notif("Slot Save Failed", tostring(err)) end
 end
 
 local isFarmingActive = false
-local farmStats = { arrows = 0, rokas = 0, errors = 0 }
+local farmRun = 0
 
-function doStandFarm()
-	if isFarmingActive then return end
+local function setFarmToggleOff()
+	if not farmToggle then return end
+	syncingFarmToggle = true
+	pcall(function() farmToggle:Set(false) end)
+	syncingFarmToggle = false
+end
+
+stopStandFarm = function()
+	getgenv().farmstands = false
+	farmRun = farmRun + 1
+	setFarmToggleOff()
+end
+
+local function findFarmItem(name)
+	local backpack = localplr:FindFirstChild("Backpack")
+	local char = localplr.Character
+	return (backpack and backpack:FindFirstChild(name)) or (char and char:FindFirstChild(name))
+end
+
+local function returnFarmItem(item)
+	local backpack = localplr:FindFirstChild("Backpack")
+	pcall(function()
+		if backpack and item and item.Parent == localplr.Character then item.Parent = backpack end
+	end)
+end
+
+local function getUseItemRemote(item)
+	local events = ReplicatedStorage:FindFirstChild("Events")
+	local remote = events and events:FindFirstChild("UseItem")
+	if remote and remote:IsA("RemoteEvent") then return remote end
+	local itemRemote = item and item:FindFirstChild("Use")
+	return itemRemote and itemRemote:IsA("RemoteEvent") and itemRemote or nil
+end
+
+--================== STORAGE AND ORB STATE ==================--
+-- Slot6 -> Slot4 data follows the user's observed UI sequence.
+-- A swap is accepted only when both sides match the recorded GUIDs.
+local storageMap = {
+	{label = "Slot 1", remote = "Slot1", data = "Slot1"},
+	{label = "Slot 2", remote = "Slot2", data = "Slot2"},
+	{label = "Slot 6", remote = "Slot6", data = "Slot4"},
+}
+local accountKey = tostring(localplr.UserId or localplr.Name)
+local storageFile = "sur_storage_pending_" .. accountKey .. ".json"
+local orbFile = "sur_orb_timer_" .. accountKey .. ".json"
+local storageMessage = "Ready"
+local storagePending
+local orbState = {expiresAt = 0, requestedAt = 0, pending = false}
+local orbPendingItem, orbPendingCharacter, orbPendingAmount
+local orbNextTry = 0
+local orbMessage = "No recorded use"
+local lastStorageRequest = -math.huge
+
+getgenv().SURStorageState = getgenv().SURStorageState or {}
+getgenv().SUROrbState = getgenv().SUROrbState or {}
+
+local function persistState(path, value)
+	if type(writefile) ~= "function" then return false end
+	local ok = pcall(function() writefile(path, jsonservice:JSONEncode(value)) end)
+	if not ok then warn("Could not save " .. path) end
+	return ok
+end
+
+local function readSavedState(path)
+	if type(isfile) ~= "function" or type(readfile) ~= "function" then return nil end
+	local ok, result = pcall(function()
+		if not isfile(path) then return nil end
+		return jsonservice:JSONDecode(readfile(path))
+	end)
+	if not ok then return nil, "Unreadable saved state: " .. path end
+	if result ~= nil and type(result) ~= "table" then return nil, "Invalid saved state: " .. path end
+	return result
+end
+
+local function readStandRecord(prefix)
+	local data = localplr:FindFirstChild("Data")
+	if not data then return nil end
+	local s = data:FindFirstChild((prefix or "") .. "Stand")
+	local a = data:FindFirstChild((prefix or "") .. "Attri")
+	local g = data:FindFirstChild((prefix or "") .. "GUID")
+	if not s or not a or not g then return nil end
+	local ok, record = pcall(function()
+		return {stand = s.Value, att = a.Value, guid = g.Value}
+	end)
+	if not ok or type(record.stand) ~= "string" or record.stand == ""
+		or type(record.att) ~= "string" or type(record.guid) ~= "string"
+		or (record.stand ~= "None" and (record.guid == "" or record.guid == "Generate")) then return nil end
+	return record
+end
+
+local function sameRecord(a, b)
+	return a and b and a.stand == b.stand and a.att == b.att and a.guid == b.guid
+end
+
+local function validRecord(record)
+	return type(record) == "table" and type(record.stand) == "string"
+		and type(record.att) == "string" and type(record.guid) == "string"
+end
+
+local function validPending(pending)
+	if type(pending) ~= "table" or not validRecord(pending.current) or not validRecord(pending.stored) then return false end
+	for _, slot in ipairs(storageMap) do
+		if pending.data == slot.data and pending.remote == slot.remote then return true end
+	end
+	return false
+end
+
+local function setStoragePending(pending)
+	storagePending = pending
+	getgenv().SURStorageState[accountKey] = pending
+	persistState(storageFile, pending or {pending = false})
+end
+
+local function storageAvailability()
+	local free, unknown, protected = nil, 0, 0
+	for _, slot in ipairs(storageMap) do
+		local record = readStandRecord(slot.data)
+		if not record then unknown = unknown + 1
+		elseif checkSlotMatch(record.stand, record.att) then protected = protected + 1
+		elseif not free then free = slot end
+	end
+	if free then return free, "available" end
+	return nil, unknown > 0 and "unavailable" or (protected == #storageMap and "full" or "unavailable")
+end
+
+local function storageCooldown()
+	local folder = localplr:FindFirstChild("GlobalCooldowns")
+	local cd = folder and folder:FindFirstChild("StandSwitchCD")
+	local remaining = math.max(0, 8 - (os.clock() - lastStorageRequest))
+	if cd then
+		local ok, value = pcall(function() return cd.Value end)
+		if not ok or type(value) ~= "number" or value ~= value then return nil end
+		remaining = math.max(remaining, value)
+	end
+	return remaining
+end
+
+local function awaitStorageConfirmation(running)
+	if not validPending(storagePending) then return false, "Storage check needs manual review." end
+	local pending = storagePending
+	local deadline = os.clock() + 10
+	local confirmedSince
+	while running() and os.clock() < deadline do
+		local current = readStandRecord()
+		local stored = readStandRecord(pending.data)
+		if sameRecord(current, pending.stored) and sameRecord(stored, pending.current) then
+			confirmedSince = confirmedSince or os.clock()
+			if os.clock() - confirmedSince >= 0.35 then
+				setStoragePending(nil)
+				storageMessage = "Stored in " .. pending.label
+				return true, pending.label
+			end
+		else confirmedSince = nil end
+		task.wait(0.08)
+	end
+	storageMessage = "Swap not confirmed. Check storage before resuming."
+	return false, storageMessage
+end
+
+local function storeMatchedStand(stand, att, running)
+	if storagePending then return awaitStorageConfirmation(running) end
+	local deadline = os.clock() + 25
+	while running() and autoStoreMatches and os.clock() < deadline do
+		local remaining = storageCooldown()
+		if remaining == nil then return false, "Cannot read storage cooldown." end
+		if remaining > 0 then
+			storageMessage = "Waiting for storage cooldown: " .. math.ceil(remaining) .. "s"
+			task.wait(0.1)
+			continue
+		end
+		local current = readStandRecord()
+		if not current or current.stand ~= stand or current.att ~= att then return false, "Current stand data changed." end
+		if not checkSlotMatch(current.stand, current.att) then return false, "Target list changed." end
+		local slot, reason = storageAvailability()
+		if not slot then return false, reason == "full" and "All 3 slots are protected." or "No confirmed usable storage slot." end
+		local stored = readStandRecord(slot.data)
+		if not stored or checkSlotMatch(stored.stand, stored.att) then return false, "Storage contents changed." end
+		-- Require a stable snapshot of both sides before sending the swap.
+		task.wait(0.35)
+		if not running() or not autoStoreMatches then return false, "Storage cancelled." end
+		if not sameRecord(readStandRecord(), current) or not sameRecord(readStandRecord(slot.data), stored) then continue end
+		if not checkSlotMatch(current.stand, current.att) or checkSlotMatch(stored.stand, stored.att) then continue end
+		local cd = storageCooldown()
+		if cd == nil or cd > 0 then continue end
+		local events = ReplicatedStorage:FindFirstChild("Events")
+		local remote = events and events:FindFirstChild("SwitchStand")
+		if not remote or not remote:IsA("RemoteEvent") then return false, "SwitchStand RemoteEvent is missing." end
+		setStoragePending({
+			pending = true, data = slot.data, remote = slot.remote, label = slot.label,
+			current = current, stored = stored,
+		})
+		-- File APIs may yield, so verify once more after recording the intent.
+		if not running() or not autoStoreMatches or not sameRecord(readStandRecord(), current)
+			or not sameRecord(readStandRecord(slot.data), stored)
+			or not checkSlotMatch(current.stand, current.att) or checkSlotMatch(stored.stand, stored.att) then
+			setStoragePending(nil)
+			return false, "Storage cancelled before request."
+		end
+		storageMessage = "Confirming swap into " .. slot.label
+		lastStorageRequest = os.clock()
+		local ok, err = pcall(function() remote:FireServer(slot.remote) end)
+		if not ok then return false, "Storage request failed: " .. tostring(err) end
+		return awaitStorageConfirmation(running)
+	end
+	return false, "Storage cancelled or cooldown timed out."
+end
+
+local function saveOrbState()
+	getgenv().SUROrbState[accountKey] = table.clone(orbState)
+	persistState(orbFile, orbState)
+end
+
+local function orbRemaining()
+	return math.max(0, orbState.expiresAt - os.time())
+end
+
+local function orbAmount(item)
+	local ok, amount = pcall(function() return item:GetAttribute("ItemAmount") end)
+	return ok and type(amount) == "number" and amount or nil
+end
+
+local function checkOrbConsumption()
+	if not orbState.pending then return end
+	if orbPendingItem and localplr.Character == orbPendingCharacter then
+		local hum = orbPendingCharacter and orbPendingCharacter:FindFirstChildOfClass("Humanoid")
+		local currentAmount = orbAmount(orbPendingItem)
+		local consumed = orbPendingItem.Parent == nil
+			or (orbPendingAmount and currentAmount and currentAmount < orbPendingAmount)
+		if hum and hum.Health > 0 and consumed then
+			orbState.pending = false
+			orbState.expiresAt = orbState.requestedAt + 1800
+			orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+			farmStats.orbs = (farmStats.orbs or 0) + 1
+			orbMessage = "Use confirmed"
+			saveOrbState()
+			return
+		end
+	end
+	-- Without confirmation do not consume another orb during the possible buff window.
+	if os.time() - orbState.requestedAt >= 1800 then
+		orbState.pending = false
+		orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+		orbMessage = "Previous unconfirmed-use window ended"
+		saveOrbState()
+	end
+end
+
+local function ensureOrb(running, stand, att)
+	checkOrbConsumption()
+	if not autoUseOrb or not running() or orbRemaining() > 0 or orbState.pending or os.clock() < orbNextTry then return end
+	local item = findFarmItem("2x Orb")
+	if not item then
+		orbMessage = "No 2x Orb - farming without Orb"
+		orbNextTry = os.clock() + 5
+		return
+	end
+	local char = localplr.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return end
+	local using = item:FindFirstChild("Using")
+	if using and using.Value == true then
+		orbMessage = "Orb already in use; waiting"
+		orbNextTry = os.clock() + 2
+		return
+	end
+	local remote = getUseItemRemote(item)
+	if not remote then
+		orbMessage = "UseItem unavailable - farming without Orb"
+		orbNextTry = os.clock() + 30
+		return
+	end
+	local fired = false
+	local ok, err = pcall(function()
+		hum:EquipTool(item)
+		task.wait(0.1)
+		local s, a = readStandData()
+		if not running() or not autoUseOrb or localplr.Character ~= char or hum.Health <= 0
+			or item.Parent ~= char or s ~= stand or a ~= att or #farmSlots == 0 then return end
+		orbState = {pending = true, requestedAt = os.time(), expiresAt = 0}
+		orbPendingItem, orbPendingCharacter, orbPendingAmount = item, char, orbAmount(item)
+		saveOrbState()
+		s, a = readStandData()
+		if not running() or not autoUseOrb or localplr.Character ~= char or hum.Health <= 0
+			or item.Parent ~= char or s ~= stand or a ~= att or #farmSlots == 0 then
+			orbState.pending = false
+			orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+			saveOrbState()
+			return
+		end
+		fired = true
+		orbMessage = "Using 2x Orb..."
+		remote:FireServer()
+		local deadline = os.clock() + 10
+		while running() and os.clock() < deadline do
+			checkOrbConsumption()
+			if not orbState.pending then return end
+			task.wait(0.1)
+		end
+		orbMessage = "Use not confirmed - automatic reuse held"
+	end)
+	returnFarmItem(item)
+	if not ok then
+		orbMessage = "Orb error - farming continues"
+		warn("Orb: " .. tostring(err))
+		if not fired then
+			orbState.pending = false
+			orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+			saveOrbState()
+		end
+	end
+	orbNextTry = os.clock() + 30
+end
+
+local function orbStatusText()
+	local remaining = math.ceil(orbRemaining())
+	if remaining > 0 then
+		return string.format("2x Orb: ACTIVE (estimated) %02d:%02d | Auto: %s",
+			math.floor(remaining / 60), remaining % 60, autoUseOrb and "ON" or "OFF")
+	end
+	if orbState.pending then return "2x Orb: use unconfirmed; automatic reuse held" end
+	if orbState.expiresAt > 0 then
+		return "2x Orb: EXPIRED | Auto: " .. (autoUseOrb and "ON" or "OFF")
+	end
+	return "2x Orb: " .. orbMessage .. " | Auto: " .. (autoUseOrb and "ON" or "OFF")
+end
+
+local function updateFarmExtrasUI()
+	checkOrbConsumption()
+	if orbStatusSection then orbStatusSection:Set(orbStatusText()) end
+	if storageStatusSection then storageStatusSection:Set("Storage: " .. storageMessage) end
+	for i, slot in ipairs(storageMap) do
+		local sections = storageSlotSections[i]
+		if sections then
+			local r = readStandRecord(slot.data)
+			sections.stand:Set(slot.label .. ": " .. (r and getDisplayName(r.stand) or "data unavailable"))
+			sections.att:Set(r and ("Attribute: " .. r.att
+				.. (checkSlotMatch(r.stand, r.att) and " [KEEP]" or " [AVAILABLE]")) or "Unavailable - do not use")
+		end
+	end
+end
+
+do
+	local saved, err = readSavedState(storageFile)
+	storagePending = getgenv().SURStorageState[accountKey] or (saved and saved.pending ~= false and saved or nil)
+	if err or (storagePending and not validPending(storagePending)) then
+		storagePending = {invalid = true}
+		storageMessage = "Saved swap record unreadable; manual review required."
+	elseif storagePending then storageMessage = "Previous swap awaits verification." end
+
+	local cached = getgenv().SUROrbState[accountKey]
+	local savedOrb = readSavedState(orbFile)
+	local candidate = cached or savedOrb
+	local now = os.time()
+	if type(candidate) == "table" and type(candidate.expiresAt) == "number"
+		and type(candidate.requestedAt) == "number" and candidate.requestedAt <= now
+		and candidate.requestedAt >= now - 1800
+		and candidate.expiresAt >= 0 and candidate.expiresAt <= now + 1800 then
+		orbState = {expiresAt = candidate.expiresAt, requestedAt = candidate.requestedAt, pending = candidate.pending == true}
+		if orbRemaining() > 0 then orbMessage = "Restored local estimate" end
+	end
+end
+
+local function doStandFarm()
+	if isFarmingActive or not getgenv().farmstands or getgenv().SURFarmSession ~= hubSession then return end
 	isFarmingActive = true
-	farmStats = { arrows = 0, rokas = 0, errors = 0 }
-	local consecutiveErrors = 0
-	local MAX_CONSECUTIVE_ERRORS = 10
-	local FIRE_COOLDOWN = 0.4
-	local ARROW_TIMEOUT = 8
-	local ROKA_TIMEOUT = 8
-	local POLL_INTERVAL = 0.08
-	local ATT_SETTLE_TIME = 0.05
-	local lastFireTime = 0
-
-	local function getFreshData()
-		local data = localplr:FindFirstChild("Data")
-		if not data then return nil, nil, nil end
-		local standObj = data:FindFirstChild("Stand")
-		local attObj = data:FindFirstChild("Attri")
-		if not standObj or not attObj then return nil, nil, nil end
-		return data, standObj, attObj
+	farmRun = farmRun + 1
+	local run = farmRun
+	farmStats = { arrows = 0, rokas = 0, errors = 0, stored = 0, orbs = 0 }
+	local errors, lastFire = 0, 0
+	local pendingArrowNotice = false
+	local activeItem
+	local function running()
+		return getgenv().farmstands and farmRun == run and getgenv().SURFarmSession == hubSession
 	end
-
-	local function readFreshStandAtt()
-		local s, a = "None", "None"
-		pcall(function()
-			local d = localplr:FindFirstChild("Data")
-			s = d and d:FindFirstChild("Stand") and d.Stand.Value or "None"
-			a = d and d:FindFirstChild("Attri") and d.Attri.Value or "None"
-		end)
-		return s, a
-	end
-
-	local function isCharAlive()
+	local function alive()
 		local char = localplr.Character
-		if not char then return false, nil end
-		local hum = char:FindFirstChild("Humanoid")
-		if not hum or hum.Health <= 0 then return false, nil end
-		return true, char
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		return char, hum and hum.Health > 0
 	end
-
-	local function getBackpack()
-		return localplr:FindFirstChild("Backpack")
+	local function recordError(message)
+		if not running() then return end
+		errors = errors + 1
+		farmStats.errors = farmStats.errors + 1
+		notif("Farm retry " .. errors .. "/10", message)
+		task.wait(0.5)
 	end
-
-	local function safeEquipAndFire(item, char)
-		if not item or not char then return false, "missing item or char" end
-		-- Bypass inventory cooldown/equip animation delay by firing directly if possible, or force equip and fire.
-		local ok, err = pcall(function()
-			local hum = char:FindFirstChildOfClass("Humanoid")
-			if hum then
-				hum:EquipTool(item)
-			else
-				item.Parent = char
+	local function stableData()
+		local started, changedAt = os.clock(), os.clock()
+		local previousStand, previousAtt
+		while running() and os.clock() - started < 4 do
+			local s, a = readStandData()
+			if s == nil then return nil, nil end
+			if s ~= previousStand or a ~= previousAtt then
+				previousStand, previousAtt = s, a
+				changedAt = os.clock()
 			end
-		end)
-		if not ok then return false, "equip: " .. tostring(err) end
-		task.wait(0.1) -- small wait to ensure server registers the equip before firing
-		local ok2, err2 = pcall(function() game.ReplicatedStorage.Events.UseItem:FireServer() end)
-		if not ok2 then return false, "fire: " .. tostring(err2) end
-		return true, nil
-	end
-
-	local function safeReturnItem(item, backpack)
-		pcall(function()
-			if item and item.Parent and item.Parent ~= backpack then
-				item.Parent = backpack
+			if os.clock() - started >= 0.75 and os.clock() - changedAt >= 0.35 and a ~= "" then
+				return s, a
 			end
-		end)
+			task.wait(0.08)
+		end
+		return nil, nil
 	end
-
-	local function waitForStandChange(fromValue, timeout)
-		local elapsed = 0
-		while elapsed < timeout do
-			if not getgenv().farmstands then return false end
-			local val = readFreshStandAtt()
-			if val ~= fromValue then return true end
-			task.wait(POLL_INTERVAL)
-			elapsed = elapsed + POLL_INTERVAL
+	local function fireItem(item, expectedStand, expectedAtt)
+		local remaining = 0.4 - (os.clock() - lastFire)
+		if remaining > 0 then task.wait(remaining) end
+		if not running() then return false, "cancelled" end
+		local char, isAlive = alive()
+		if not isAlive or not item or not item.Parent then return false, "Character/item unavailable." end
+		local remote = getUseItemRemote(item)
+		if not remote then return false, "UseItem RemoteEvent was not found." end
+		activeItem = item
+		local equipOk, equipErr = pcall(function()
+			char:FindFirstChildOfClass("Humanoid"):EquipTool(item)
+		end)
+		if not equipOk then return false, tostring(equipErr) end
+		task.wait(0.1)
+		if not running() then return false, "cancelled" end
+		local currentChar, stillAlive = alive()
+		local s, a = readStandData()
+		if currentChar ~= char or not stillAlive or item.Parent ~= char then
+			return false, "Character/item changed during equip."
+		end
+		if s ~= expectedStand or a ~= expectedAtt then return false, "data changed" end
+		if #farmSlots == 0 or (expectedStand == "None" and item.Name ~= selectedArrowType) then
+			return false, "data changed"
+		end
+		if storagePending then return false, "Storage swap still requires verification." end
+		if autoStoreMatches then
+			local available = storageAvailability()
+			if not available then return false, "No confirmed storage space." end
+		end
+		-- Re-check the slots after every yield before consuming Rokakaka.
+		if expectedStand ~= "None" and checkSlotMatch(s, a) then return false, "data changed" end
+		local ok, err = pcall(function() remote:FireServer() end)
+		lastFire = os.clock()
+		return ok, err
+	end
+	local function waitForResult(usingArrow, fromStand)
+		local deadline = os.clock() + 8
+		while running() and os.clock() < deadline do
+			local s = readStandData()
+			if s ~= nil then
+				if usingArrow and s ~= "None" then return true end
+				if not usingArrow and s == "None" then return true end
+				if not usingArrow and s ~= fromStand then return false end
+			end
+			task.wait(0.08)
 		end
 		return false
 	end
 
-	local function cooldown()
-		local remaining = FIRE_COOLDOWN - (tick() - lastFireTime)
-		if remaining > 0 then task.wait(remaining) end
-	end
-
-	notif("Stand Farm", "⚡ Speed Farm started! Arrow: " .. selectedArrowType)
-
-	while getgenv().farmstands do
-		task.wait(0.05)
-		if not getgenv().farmstands then break end
-
-		if #farmSlots == 0 then
-			notif("Error", "Add at least 1 slot before farming!")
-			getgenv().farmstands = false
-			break
-		end
-
-		if consecutiveErrors >= MAX_CONSECUTIVE_ERRORS then
-			notif("❌ Farm Stopped", "Too many errors (" .. consecutiveErrors .. "). Check items/connection!")
-			getgenv().farmstands = false
-			break
-		end
-
-		local alive, char = isCharAlive()
-		if not alive then task.wait(0.5); consecutiveErrors = consecutiveErrors + 1; continue end
-
-		local backpack = getBackpack()
-		if not backpack then task.wait(0.5); consecutiveErrors = consecutiveErrors + 1; continue end
-
-		local currentStand, currentAtt = readFreshStandAtt()
-
-		if currentStand ~= "None" then
-			local matched, slotNum = checkSlotMatch(currentStand, currentAtt)
-			if matched then
-				local dn = getDisplayName(currentStand)
-				getgenv().farmstands = false
-				notif("✅ MATCH!", "Slot " .. slotNum .. ": " .. currentAtt .. " " .. dn)
-				notif("📊 Stats", "Arrows: " .. farmStats.arrows .. " | Rokas: " .. farmStats.rokas)
-				webhook("MATCH FOUND: " .. currentAtt:upper() .. " " .. dn:upper() .. " (Slot " .. slotNum .. ")", currentStand, tonumber(0x00FF00), currentAtt, true)
-				popupfunc("YOU GOT " .. currentAtt:upper() .. " " .. dn:upper() .. "!", false, currentStand)
+	local ok, err = xpcall(function()
+		notif("Stand Farm", "Started. Arrow: " .. selectedArrowType)
+		while running() do
+			task.wait(0.05)
+			if not running() then break end
+			if #farmSlots == 0 then
+				notif("Stand Farm", "Add at least 1 slot before farming.")
 				break
 			end
-
-			webhook("ROKA USED: " .. currentAtt:upper() .. " " .. getDisplayName(currentStand):upper(), currentStand, tonumber(0xFF0000), currentAtt, false)
-
-			local roka = nil
-			pcall(function() roka = backpack:FindFirstChild("Rokakaka") end)
-			if not roka then
-				getgenv().farmstands = false
-				notif("Hết Rokakaka!", "Đã dùng " .. farmStats.rokas .. " quả. Arrows: " .. farmStats.arrows)
+			if errors >= 10 then
+				notif("Farm Stopped", "Too many item-use errors. Check inventory/connection.")
 				break
 			end
-
-			cooldown()
-			alive, char = isCharAlive()
-			if not alive then consecutiveErrors = consecutiveErrors + 1; continue end
-
-			local fireOk, fireErr = safeEquipAndFire(roka, char)
-			lastFireTime = tick()
-			if not fireOk then
-				safeReturnItem(roka, backpack)
-				consecutiveErrors = consecutiveErrors + 1
+			local _, isAlive = alive()
+			if not isAlive or not localplr:FindFirstChild("Backpack") then
 				task.wait(0.5)
 				continue
 			end
-
-			local resetOk = waitForStandChange(currentStand, ROKA_TIMEOUT)
-			safeReturnItem(roka, backpack)
-
-			if resetOk then
-				farmStats.rokas = farmStats.rokas + 1
-				consecutiveErrors = 0
-			else
-				local freshVal = readFreshStandAtt()
-				if freshVal == "None" then
-					farmStats.rokas = farmStats.rokas + 1
-					consecutiveErrors = 0
-				else
-					consecutiveErrors = consecutiveErrors + 1
-					notif("⚠️ Roka Timeout", "Retry " .. consecutiveErrors .. "/" .. MAX_CONSECUTIVE_ERRORS)
-					task.wait(1)
-				end
+			-- Never use Arrow/Roka while an earlier swap has an uncertain outcome.
+			if storagePending then
+				local confirmed, detail = awaitStorageConfirmation(running)
+				if not confirmed then notif("Storage Stopped", detail); break end
+				farmStats.stored = farmStats.stored + 1
 			end
-		else
-			local arrowName = selectedArrowType
-			local arrow = nil
-			pcall(function() arrow = backpack:FindFirstChild(arrowName) end)
-			if not arrow then
-				getgenv().farmstands = false
-				notif("Hết Arrow!", "Hết " .. arrowName .. "! Arrows: " .. farmStats.arrows .. " | Rokas: " .. farmStats.rokas)
-				break
-			end
-
-			cooldown()
-			alive, char = isCharAlive()
-			if not alive then consecutiveErrors = consecutiveErrors + 1; continue end
-
-			local fireOk, fireErr = safeEquipAndFire(arrow, char)
-			lastFireTime = tick()
-			if not fireOk then
-				safeReturnItem(arrow, backpack)
-				consecutiveErrors = consecutiveErrors + 1
-				task.wait(0.5)
-				continue
-			end
-
-			local gotStand = waitForStandChange("None", ARROW_TIMEOUT)
-			safeReturnItem(arrow, backpack)
-
-			if not gotStand then
-				local freshVal = readFreshStandAtt()
-				if freshVal ~= "None" then
-					gotStand = true
-				end
-			end
-
-			if gotStand then
-				farmStats.arrows = farmStats.arrows + 1
-				consecutiveErrors = 0
-				task.wait(ATT_SETTLE_TIME)
-
-				local freshStand, freshAtt = readFreshStandAtt()
-				if freshStand ~= "None" then
-					local matched, slotNum = checkSlotMatch(freshStand, freshAtt)
-					local dn = getDisplayName(freshStand)
-
-					if matched then
-						getgenv().farmstands = false
-						notif("✅ MATCH!", "Slot " .. slotNum .. ": " .. freshAtt .. " " .. dn)
-						notif("📊 Stats", "Arrows: " .. farmStats.arrows .. " | Rokas: " .. farmStats.rokas)
-						webhook("MATCH FOUND: " .. freshAtt:upper() .. " " .. dn:upper() .. " (Slot " .. slotNum .. ")", freshStand, tonumber(0x00FF00), freshAtt, true)
-						popupfunc("YOU GOT " .. freshAtt:upper() .. " " .. dn:upper() .. "!", false, freshStand)
-						break
-					end
-
-					webhook("ARROW #" .. farmStats.arrows .. ": " .. freshAtt:upper() .. " " .. dn:upper() .. " -> ROKA", freshStand, tonumber(0xFFFF00), freshAtt, false)
-
-					local roka = nil
-					pcall(function() roka = backpack:FindFirstChild("Rokakaka") end)
-					if not roka then
-						getgenv().farmstands = false
-						notif("Hết Rokakaka!", "Đã dùng " .. farmStats.rokas .. " quả.")
-						break
-					end
-
-					cooldown()
-					alive, char = isCharAlive()
-					if not alive then consecutiveErrors = consecutiveErrors + 1; continue end
-
-					local rokaOk, rokaErr = safeEquipAndFire(roka, char)
-					lastFireTime = tick()
-					if not rokaOk then
-						safeReturnItem(roka, backpack)
-						consecutiveErrors = consecutiveErrors + 1
-						task.wait(0.5)
+			local stand, att = stableData()
+			if not running() then break end
+			if stand == nil then task.wait(0.25); continue end
+			local usingArrow = stand == "None"
+			if not usingArrow then
+				local matched, slotNum = checkSlotMatch(stand, att)
+				if matched then
+					local dn = getDisplayName(stand)
+					notif("MATCH!", "Slot " .. slotNum .. ": " .. att .. " " .. dn)
+					task.spawn(webhook, "MATCH FOUND: " .. att:upper() .. " " .. dn:upper()
+						.. " (Slot " .. slotNum .. ")", stand, 0x00FF00, att, true)
+					if autoStoreMatches then
+						local stored, detail = storeMatchedStand(stand, att, running)
+						if not stored then
+							storageMessage = detail
+							notif("Storage Stopped", detail)
+							break
+						end
+						farmStats.stored = farmStats.stored + 1
+						pendingArrowNotice = false
+						notif("Stand Stored", dn .. " / " .. att .. " -> " .. detail)
+						task.spawn(webhook, "STORED: " .. att:upper() .. " " .. dn:upper()
+							.. " -> " .. detail, stand, 0x00FF00, att, true)
+						-- Re-read the stand taken OUT of storage before deciding what to use.
 						continue
 					end
-
-					local resetOk = waitForStandChange(freshStand, ROKA_TIMEOUT)
-					safeReturnItem(roka, backpack)
-
-					if resetOk then
-						farmStats.rokas = farmStats.rokas + 1
-						consecutiveErrors = 0
-					else
-						local checkVal = readFreshStandAtt()
-						if checkVal == "None" then
-							farmStats.rokas = farmStats.rokas + 1
-							consecutiveErrors = 0
-						else
-							consecutiveErrors = consecutiveErrors + 1
-							notif("⚠️ Roka Timeout", "Retry " .. consecutiveErrors .. "/" .. MAX_CONSECUTIVE_ERRORS)
-							task.wait(1)
-						end
-					end
+					getgenv().farmstands = false
+					setFarmToggleOff()
+					popupfunc("YOU GOT " .. att:upper() .. " " .. dn:upper() .. "!", false, stand)
+					break
 				end
+				if pendingArrowNotice then
+					pendingArrowNotice = false
+					task.spawn(webhook, "ARROW #" .. farmStats.arrows .. ": " .. att:upper()
+						.. " " .. getDisplayName(stand):upper(), stand, 0xFFFF00, att, false)
+				end
+			end
+
+			if autoStoreMatches then
+				local available, reason = storageAvailability()
+				if not available then
+					storageMessage = reason == "full" and "All 3 slots are protected; farm stopped."
+						or "Storage data unavailable; farm stopped."
+					notif("Storage Stopped", storageMessage)
+					break
+				end
+			end
+			ensureOrb(running, stand, att)
+			if not running() then break end
+			local itemName = usingArrow and selectedArrowType or "Rokakaka"
+			local item = findFarmItem(itemName)
+			if not item then
+				notif("Farm Stopped", "No " .. itemName .. " found in Backpack/Character.")
+				break
+			end
+			local fired, fireError = fireItem(item, stand, att)
+			if not fired then
+				returnFarmItem(activeItem)
+				activeItem = nil
+				if not running() then break end
+				if fireError ~= "data changed" then recordError(tostring(fireError)) end
+				continue
+			end
+			local succeeded = waitForResult(usingArrow, stand)
+			returnFarmItem(activeItem)
+			activeItem = nil
+			if not running() then break end
+			if not succeeded then
+				recordError(itemName .. " timed out; no confirmed result.")
+				continue
+			end
+			errors = 0
+			if usingArrow then
+				farmStats.arrows = farmStats.arrows + 1
+				pendingArrowNotice = true
+				-- The next iteration waits for attribute replication and checks the slots.
 			else
-				consecutiveErrors = consecutiveErrors + 1
-				notif("⚠️ Arrow Timeout", "Retry " .. consecutiveErrors .. "/" .. MAX_CONSECUTIVE_ERRORS)
-				task.wait(1)
+				farmStats.rokas = farmStats.rokas + 1
+				task.spawn(webhook, "ROKA USED: " .. att:upper() .. " " .. getDisplayName(stand):upper(),
+					stand, 0xFF0000, att, false)
 			end
 		end
-	end
+	end, function(message) return debug.traceback(tostring(message), 2) end)
 
-	if not getgenv().farmstands then
-		notif("Farm Stopped", "📊 Arrows: " .. farmStats.arrows .. " | Rokas: " .. farmStats.rokas)
-	end
+	returnFarmItem(activeItem)
 	isFarmingActive = false
+	if farmRun == run and getgenv().SURFarmSession == hubSession then
+		getgenv().farmstands = false
+		setFarmToggleOff()
+	end
+	if not ok then
+		farmStats.errors = farmStats.errors + 1
+		warn(err)
+		notif("Farm Error", tostring(err))
+	end
+	notif("Farm Stopped", "Arrows: " .. farmStats.arrows .. " | Rokas: " .. farmStats.rokas)
+	-- An off/on action during an old worker's wait starts exactly one fresh worker.
+	if getgenv().farmstands and getgenv().SURFarmSession == hubSession then task.defer(startStandFarm) end
+end
+
+startStandFarm = function()
+	if getgenv().SURFarmSession ~= hubSession then return end
+	getgenv().farmstands = true
+	if not loadingConfiguration and not isFarmingActive then task.spawn(doStandFarm) end
 end
 
 --================== LOAD SAVED DATA ==================--
+local catalogLoaded, catalogLoadError = scanStandCatalog(5)
+if not catalogLoaded then
+	warn("Stand catalog fallback: " .. tostring(catalogLoadError))
+end
 local slotsLoaded, slotsLoadError = loadSlots()
 if not slotsLoaded and slotsLoadError then
 	warn("Failed to load saved farm slots: " .. tostring(slotsLoadError))
@@ -916,6 +1420,8 @@ local Window = Rayfield:CreateWindow({
 local TabFarm = Window:CreateTab("Stand Farm", "shopping-cart")
 
 TabFarm:CreateSection("Filter Information")
+catalogSection = TabFarm:CreateSection("Stand catalog: " .. (#standOptions - 1) .. " names (" .. catalogSource .. ")")
+TabFarm:CreateSection("All stands are shown. Arrow Type only chooses the item to use.")
 
 TabFarm:CreateDropdown({
 	Name = "Arrow Type",
@@ -924,28 +1430,35 @@ TabFarm:CreateDropdown({
 	MultipleOptions = false,
 	Flag = "ArrowType",
 	Callback = function(Options)
-		selectedArrowType = Options[1]
-		pcall(function()
-			if standDropdown then
-				local newList = getStandListByArrow()
-				standDropdown:Refresh(newList)
-				standDropdown:Set({"Any"})
-				selectedStandForSlot = "Any"
-			end
-		end)
+		local value = firstOption(Options, "Stand Arrow")
+		selectedArrowType = value == "Charged Arrow" and value or "Stand Arrow"
 	end,
 })
 
 TabFarm:CreateSection("Create New Slot")
 
+TabFarm:CreateButton({
+	Name = "Refresh Stand List",
+	Callback = function()
+		local ok, message = scanStandCatalog(5)
+		if ok then
+			local selected = selectedStandForSlot
+			standDropdown:Refresh(getStandList())
+			standDropdown:Set({selected})
+		end
+		catalogSection:Set("Stand catalog: " .. (#standOptions - 1) .. " names (" .. catalogSource .. ")")
+		notif("Stand Catalog", ok and message or (tostring(message) .. " Current list kept."))
+	end,
+})
+
 standDropdown = TabFarm:CreateDropdown({
 	Name = "Stand",
-	Options = getStandListByArrow(),
+	Options = getStandList(),
 	CurrentOption = {"Any"},
 	MultipleOptions = false,
 	Flag = "SlotStand",
 	Callback = function(Options)
-		selectedStandForSlot = Options[1]
+		selectedStandForSlot = firstOption(Options, "Any")
 	end,
 })
 
@@ -956,24 +1469,17 @@ TabFarm:CreateDropdown({
 	MultipleOptions = true,
 	Flag = "SlotAtts",
 	Callback = function(Options)
-		selectedAttsForSlot = Options
+		selectedAttsForSlot = normalizeAttributes(Options)
 	end,
 })
 
 TabFarm:CreateButton({
 	Name = "Add Slot",
 	Callback = function()
-		local attCopy = {}
-		if type(selectedAttsForSlot) == "table" then
-			for _, a in ipairs(selectedAttsForSlot) do
-				table.insert(attCopy, a)
-			end
-		else
-			attCopy = {"Any"}
-		end
 		local newSlot = {
 			stand = selectedStandForSlot or "Any",
-			att = attCopy,
+			standId = uniqueStandId(selectedStandForSlot),
+			att = normalizeAttributes(selectedAttsForSlot),
 		}
 		table.insert(farmSlots, newSlot)
 		autoSaveSlots()
@@ -994,7 +1500,7 @@ removeDropdown = TabFarm:CreateDropdown({
 	MultipleOptions = false,
 	Flag = "RemoveSlot",
 	Callback = function(Options)
-		local sel = Options[1]
+		local sel = firstOption(Options, nil)
 		if sel and sel ~= "-- No slots --" then
 			local num = string.match(sel, "Slot (%d+)")
 			selectedRemoveIndex = tonumber(num)
@@ -1093,6 +1599,7 @@ TabFarm:CreateSection("White Screen Info")
 
 local whiteScreenGui = nil
 local whiteScreenConn = nil
+local whiteScreenToggle = nil
 local hiddenMenuGuis = {}
 
 local function setOtherMenusHidden(hidden)
@@ -1100,10 +1607,9 @@ local function setOtherMenusHidden(hidden)
 	if not playerGui then return end
 
 	if hidden then
-		hiddenMenuGuis = {}
 		for _, gui in ipairs(playerGui:GetChildren()) do
 			if gui:IsA("ScreenGui") and gui ~= whiteScreenGui then
-				hiddenMenuGuis[gui] = gui.Enabled
+				if hiddenMenuGuis[gui] == nil then hiddenMenuGuis[gui] = gui.Enabled end
 				gui.Enabled = false
 			end
 		end
@@ -1195,7 +1701,7 @@ local function updateWhiteScreen()
 	)
 end
 
-TabFarm:CreateToggle({
+whiteScreenToggle = TabFarm:CreateToggle({
 	Name = "Enable White Screen Overlay",
 	CurrentValue = false,
 	Flag = "WhiteScreenToggle",
@@ -1293,21 +1799,27 @@ TabFarm:CreateToggle({
 						whiteScreenConn = nil
 					end
 					-- Restore 3D Rendering
-					game:GetService("RunService"):Set3dRenderingEnabled(true)
+					pcall(function() game:GetService("RunService"):Set3dRenderingEnabled(true) end)
+					if whiteScreenToggle then whiteScreenToggle:Set(false) end
 				end)
 
 			end
 			whiteScreenGui.Enabled = true
 			setOtherMenusHidden(true)
 			-- Suspend 3D Rendering to save resources
-			game:GetService("RunService"):Set3dRenderingEnabled(false)
+			pcall(function() game:GetService("RunService"):Set3dRenderingEnabled(false) end)
 
 			if whiteScreenConn then whiteScreenConn:Disconnect() end
 			
 			updateWhiteScreen()
 			
-			whiteScreenConn = game:GetService("RunService").Heartbeat:Connect(function()
-				updateWhiteScreen()
+			local elapsed = 0
+			whiteScreenConn = game:GetService("RunService").Heartbeat:Connect(function(dt)
+				elapsed = elapsed + dt
+				if elapsed >= 0.5 then
+					elapsed = 0
+					updateWhiteScreen()
+				end
 			end)
 		else
 			if whiteScreenGui then
@@ -1319,23 +1831,65 @@ TabFarm:CreateToggle({
 				whiteScreenConn = nil
 			end
 			-- Restore 3D Rendering
-			game:GetService("RunService"):Set3dRenderingEnabled(true)
+			pcall(function() game:GetService("RunService"):Set3dRenderingEnabled(true) end)
 		end
 	end,
 })
 
 TabFarm:CreateSection("Execution Engine")
 
+TabFarm:CreateSection("Storage on Match")
+TabFarm:CreateSection("KEEP = matches a Stand + Attribute target")
+TabFarm:CreateSection("Slots 1, 2, 6 only; slots 3, 4, 5 excluded")
+storageStatusSection = TabFarm:CreateSection("Storage: Ready")
+for i, slot in ipairs(storageMap) do
+	storageSlotSections[i] = {
+		stand = TabFarm:CreateSection(slot.label .. ": reading..."),
+		att = TabFarm:CreateSection("Attribute: reading..."),
+	}
+end
 TabFarm:CreateToggle({
+	Name = "Auto Store Matches (Slots 1, 2, 6)",
+	CurrentValue = true,
+	Flag = "AutoStoreMatchesV1",
+	Callback = function(value) autoStoreMatches = value == true end,
+})
+TabFarm:CreateButton({
+	Name = "Reset Pending Swap After Manual Check",
+	Callback = function()
+		if getgenv().farmstands or isFarmingActive then
+			notif("Storage", "Stop farming before resetting the pending-swap check.")
+			return
+		end
+		setStoragePending(nil)
+		storageMessage = "Pending check cleared. Contents will be re-read on start."
+		updateFarmExtrasUI()
+	end,
+})
+
+TabFarm:CreateSection("2x Orb")
+TabFarm:CreateSection("One 2x Orb per use while farming")
+TabFarm:CreateSection("30-minute timer = local estimate")
+orbStatusSection = TabFarm:CreateSection(orbStatusText())
+TabFarm:CreateToggle({
+	Name = "Auto Use 2x Orb",
+	CurrentValue = true,
+	Flag = "AutoUse2xOrbV1",
+	Callback = function(value) autoUseOrb = value == true end,
+})
+TabFarm:CreateSection("No Orb: farming continues")
+TabFarm:CreateSection("Recorded use time is saved for reload/rejoin")
+
+farmToggle = TabFarm:CreateToggle({
 	Name = "Enable Auto Use Arrow",
 	CurrentValue = false,
 	Flag = "AutoFarmStands",
 	Callback = function(Value)
+		if syncingFarmToggle then return end
 		if Value then
-			getgenv().farmstands = true
-			task.spawn(doStandFarm)
+			startStandFarm()
 		else
-			getgenv().farmstands = false
+			stopStandFarm()
 		end
 	end,
 })
@@ -1349,7 +1903,7 @@ TabFarm:CreateInput({
 	RemoveTextAfterFocusLost = false,
 	Flag = "WebhookURL",
 	Callback = function(Text)
-		webhookurl = Text
+		webhookurl = cleanText(Text)
 	end,
 })
 
@@ -1360,7 +1914,7 @@ TabFarm:CreateDropdown({
 	MultipleOptions = true,
 	Flag = "WebhookTagAtts",
 	Callback = function(Options)
-		webhookTagAtts = Options or {}
+		webhookTagAtts = type(Options) == "table" and table.clone(Options) or {}
 	end,
 })
 
@@ -1376,6 +1930,8 @@ local autolairToggle = false
 local currentBoss = nil
 local lairLoopConn = nil
 local lairSafeFloor = nil
+local lairWorkerVersion = 0
+local lastLairAttempt = 0
 
 TabLair:CreateSection("Target Settings")
 
@@ -1472,10 +2028,12 @@ local function findTargetedLairNPC()
 end
 
 local function tryEnterLair()
+	if os.clock() - lastLairAttempt < 1 then return end
 	local npc = findTargetedLairNPC()
 	if not npc then return end
 	local doneRemote = npc:FindFirstChild("Done")
-	if not doneRemote then return end
+	if not doneRemote or not doneRemote:IsA("RemoteEvent") then return end
+	lastLairAttempt = os.clock()
 	doneRemote:FireServer(localplr.Character)
 end
 
@@ -1537,6 +2095,8 @@ TabLair:CreateToggle({
 	CurrentValue = false,
 	Flag = "AutoLairMainToggle",
 	Callback = function(Value)
+		lairWorkerVersion = lairWorkerVersion + 1
+		local workerVersion = lairWorkerVersion
 		autolairToggle = Value
 		if autolairToggle then
 			targetedLairNPC = nil
@@ -1546,8 +2106,10 @@ TabLair:CreateToggle({
 			getgenv().G = true
 			getgenv().Creator = 'https://discord.gg/B3HqPPzFYr - HalloweenGaster'
 			task.spawn(function()
-				while getgenv().G and getgenv().Creator == 'https://discord.gg/B3HqPPzFYr - HalloweenGaster' do
-					wait(0.9)
+				while autolairToggle and workerVersion == lairWorkerVersion and getgenv().G
+					and getgenv().Creator == 'https://discord.gg/B3HqPPzFYr - HalloweenGaster' do
+					task.wait(0.9)
+					if not autolairToggle or workerVersion ~= lairWorkerVersion or not getgenv().G then break end
 					pcall(function()
 						sethiddenproperty(game.Players.LocalPlayer, "SimulationRadius", 112412400000)
 						sethiddenproperty(game.Players.LocalPlayer, "MaxSimulationRadius", 112412400000)
@@ -1650,12 +2212,15 @@ TabSettings:CreateSection("Anti-AFK")
 
 local antiAfkConn = nil
 local antiAfkLoop = nil
+local antiAfkVersion = 0
 
 TabSettings:CreateToggle({
 	Name = "Anti AFK (Strong)",
 	CurrentValue = false,
 	Flag = "AntiAFK",
 	Callback = function(Value)
+		antiAfkVersion = antiAfkVersion + 1
+		local workerVersion = antiAfkVersion
 		if Value then
 			if antiAfkConn then
 				pcall(function() antiAfkConn:Disconnect() end)
@@ -1672,12 +2237,12 @@ TabSettings:CreateToggle({
 			end)
 			antiAfkLoop = true
 			task.spawn(function()
-				while antiAfkLoop do
+				while antiAfkLoop and workerVersion == antiAfkVersion do
 					for _ = 1, 60 do
-						if not antiAfkLoop then break end
+						if not antiAfkLoop or workerVersion ~= antiAfkVersion then break end
 						task.wait(1)
 					end
-					if not antiAfkLoop then break end
+					if not antiAfkLoop or workerVersion ~= antiAfkVersion then break end
 					pcall(function()
 						local vu = game:GetService("VirtualUser")
 						vu:ClickButton2(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
@@ -1732,6 +2297,7 @@ TabSettings:CreateToggle({
 	CurrentValue = false,
 	Flag = "AntiRagdoll",
 	Callback = function(Value)
+		if oncharadded then oncharadded:Disconnect(); oncharadded = nil end
 		if Value then
 			local function setup(char)
 				if noplatformstand then noplatformstand:Disconnect() end
@@ -1821,10 +2387,23 @@ localplr.CharacterAdded:Connect(function(char)
 	if autolairToggle then
 		notif("Auto Resume", "Nhân vật respawn → Tiếp tục Auto Lair...")
 		resetAutoLairState()
+		loopAutoLair()
 	end
 end)
 
 task.wait(0.5)
 refreshUI()
+updateFarmExtrasUI()
+local extrasElapsed = 0
+local extrasConnection
+extrasConnection = game:GetService("RunService").Heartbeat:Connect(function(dt)
+	if getgenv().SURFarmSession ~= hubSession then extrasConnection:Disconnect(); return end
+	extrasElapsed = extrasElapsed + dt
+	if extrasElapsed >= 1 then
+		extrasElapsed = 0
+		local ok, err = pcall(updateFarmExtrasUI)
+		if not ok then warn("Storage/Orb display: " .. tostring(err)) end
+	end
+end)
 
 print("SUR Stand Farm loaded! Slots: " .. #farmSlots)
