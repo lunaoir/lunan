@@ -832,16 +832,16 @@ local function getUseItemRemote(item)
 end
 
 --================== STORAGE AND ORB STATE ==================--
--- Slot6 -> Slot4 data follows the user's observed UI sequence.
--- A swap is accepted only when both sides match the recorded GUIDs.
+-- User-confirmed open storage buttons are Slots 1, 2 and 4. Slot 4 uses the
+-- remote argument "Slot4" and Data.Slot4; Slots 3, 5 and 6 are excluded.
 local storageMap = {
 	{label = "Slot 1", remote = "Slot1", data = "Slot1"},
 	{label = "Slot 2", remote = "Slot2", data = "Slot2"},
-	{label = "Slot 6", remote = "Slot6", data = "Slot4"},
+	{label = "Slot 4", remote = "Slot4", data = "Slot4"},
 }
 local accountKey = tostring(localplr.UserId or localplr.Name)
-local storageFile = "sur_storage_pending_" .. accountKey .. ".json"
-local orbFile = "sur_orb_timer_" .. accountKey .. ".json"
+-- V2 intentionally ignores obsolete Slot5 pending records from the earlier map.
+local storageFile = "sur_storage_pending_v2_" .. accountKey .. ".json"
 local storageMessage = "Ready"
 local storagePending
 local orbState = {expiresAt = 0, requestedAt = 0, pending = false}
@@ -850,8 +850,11 @@ local orbNextTry = 0
 local orbMessage = "No recorded use"
 local lastStorageRequest = -math.huge
 
-getgenv().SURStorageState = getgenv().SURStorageState or {}
-getgenv().SUROrbState = getgenv().SUROrbState or {}
+getgenv().SURStorageStateV2 = getgenv().SURStorageStateV2 or {}
+-- Orb buffs disappear on leave/rejoin. Cache only against the exact live
+-- DataModel and LocalPlayer so reloading this hub in the same session is safe,
+-- while a new game session always requires a fresh Orb.
+getgenv().SUROrbSessionStateV2 = getgenv().SUROrbSessionStateV2 or {}
 
 local function persistState(path, value)
 	if type(writefile) ~= "function" then return false end
@@ -891,6 +894,17 @@ local function sameRecord(a, b)
 	return a and b and a.stand == b.stand and a.att == b.att and a.guid == b.guid
 end
 
+local function confirmedSwap(current, stored, pending)
+	if not sameRecord(stored, pending.current) then return false end
+	if pending.stored.stand == "None" then
+		-- Empty storage commonly has GUID "Generate", while the active empty
+		-- record may receive a fresh GUID. The valuable side must still arrive
+		-- intact in storage; the active side must be stably empty.
+		return current and current.stand == "None" and current.att == "None"
+	end
+	return sameRecord(current, pending.stored)
+end
+
 local function validRecord(record)
 	return type(record) == "table" and type(record.stand) == "string"
 		and type(record.att) == "string" and type(record.guid) == "string"
@@ -906,7 +920,7 @@ end
 
 local function setStoragePending(pending)
 	storagePending = pending
-	getgenv().SURStorageState[accountKey] = pending
+	getgenv().SURStorageStateV2[accountKey] = pending
 	persistState(storageFile, pending or {pending = false})
 end
 
@@ -942,7 +956,7 @@ local function awaitStorageConfirmation(running)
 	while running() and os.clock() < deadline do
 		local current = readStandRecord()
 		local stored = readStandRecord(pending.data)
-		if sameRecord(current, pending.stored) and sameRecord(stored, pending.current) then
+		if confirmedSwap(current, stored, pending) then
 			confirmedSince = confirmedSince or os.clock()
 			if os.clock() - confirmedSince >= 0.35 then
 				setStoragePending(nil)
@@ -971,7 +985,7 @@ local function storeMatchedStand(stand, att, running)
 		if not current or current.stand ~= stand or current.att ~= att then return false, "Current stand data changed." end
 		if not checkSlotMatch(current.stand, current.att) then return false, "Target list changed." end
 		local slot, reason = storageAvailability()
-		if not slot then return false, reason == "full" and "All 3 slots are protected." or "No confirmed usable storage slot." end
+		if not slot then return false, reason == "full" and "All enabled slots are protected." or "No confirmed usable storage slot." end
 		local stored = readStandRecord(slot.data)
 		if not stored or checkSlotMatch(stored.stand, stored.att) then return false, "Storage contents changed." end
 		-- Require a stable snapshot of both sides before sending the swap.
@@ -1005,8 +1019,11 @@ local function storeMatchedStand(stand, att, running)
 end
 
 local function saveOrbState()
-	getgenv().SUROrbState[accountKey] = table.clone(orbState)
-	persistState(orbFile, orbState)
+	getgenv().SUROrbSessionStateV2[accountKey] = {
+		gameRef = game,
+		playerRef = localplr,
+		state = table.clone(orbState),
+	}
 end
 
 local function orbRemaining()
@@ -1140,22 +1157,27 @@ end
 
 do
 	local saved, err = readSavedState(storageFile)
-	storagePending = getgenv().SURStorageState[accountKey] or (saved and saved.pending ~= false and saved or nil)
+	storagePending = getgenv().SURStorageStateV2[accountKey] or (saved and saved.pending ~= false and saved or nil)
 	if err or (storagePending and not validPending(storagePending)) then
 		storagePending = {invalid = true}
 		storageMessage = "Saved swap record unreadable; manual review required."
 	elseif storagePending then storageMessage = "Previous swap awaits verification." end
 
-	local cached = getgenv().SUROrbState[accountKey]
-	local savedOrb = readSavedState(orbFile)
-	local candidate = cached or savedOrb
+	local cached = getgenv().SUROrbSessionStateV2[accountKey]
+	local candidate = type(cached) == "table" and cached.gameRef == game
+		and cached.playerRef == localplr and cached.state or nil
 	local now = os.time()
 	if type(candidate) == "table" and type(candidate.expiresAt) == "number"
 		and type(candidate.requestedAt) == "number" and candidate.requestedAt <= now
 		and candidate.requestedAt >= now - 1800
 		and candidate.expiresAt >= 0 and candidate.expiresAt <= now + 1800 then
 		orbState = {expiresAt = candidate.expiresAt, requestedAt = candidate.requestedAt, pending = candidate.pending == true}
-		if orbRemaining() > 0 then orbMessage = "Restored local estimate" end
+		if orbRemaining() > 0 then orbMessage = "Restored same-session estimate"
+		elseif orbState.pending then orbMessage = "Restored same-session pending use" end
+	else
+		orbState = {expiresAt = 0, requestedAt = 0, pending = false}
+		orbMessage = "New game session - fresh Orb required"
+		saveOrbState()
 	end
 end
 
@@ -1208,11 +1230,13 @@ local function doStandFarm()
 		if not isAlive or not item or not item.Parent then return false, "Character/item unavailable." end
 		local remote = getUseItemRemote(item)
 		if not remote then return false, "UseItem RemoteEvent was not found." end
-		activeItem = item
 		local equipOk, equipErr = pcall(function()
 			char:FindFirstChildOfClass("Humanoid"):EquipTool(item)
 		end)
 		if not equipOk then return false, tostring(equipErr) end
+		-- Keep the previous farm Tool equipped until Roblox replaces it here.
+		-- This removes the visible empty-hand gap between Arrow and Rokakaka.
+		activeItem = item
 		task.wait(0.1)
 		if not running() then return false, "cancelled" end
 		local currentChar, stillAlive = alive()
@@ -1225,7 +1249,9 @@ local function doStandFarm()
 			return false, "data changed"
 		end
 		if storagePending then return false, "Storage swap still requires verification." end
-		if autoStoreMatches then
+		-- A retrieved junk Stand may still be removed even after storage becomes
+		-- full. Require free storage only before using the next Arrow.
+		if autoStoreMatches and expectedStand == "None" then
 			local available = storageAvailability()
 			if not available then return false, "No confirmed storage space." end
 		end
@@ -1280,6 +1306,10 @@ local function doStandFarm()
 			if not usingArrow then
 				local matched, slotNum = checkSlotMatch(stand, att)
 				if matched then
+					-- A kept Stand must never leave an Arrow/Roka equipped while the
+					-- hub stores it, stops, or displays the match popup.
+					returnFarmItem(activeItem)
+					activeItem = nil
 					local dn = getDisplayName(stand)
 					notif("MATCH!", "Slot " .. slotNum .. ": " .. att .. " " .. dn)
 					task.spawn(webhook, "MATCH FOUND: " .. att:upper() .. " " .. dn:upper()
@@ -1311,16 +1341,20 @@ local function doStandFarm()
 				end
 			end
 
-			if autoStoreMatches then
+			-- With a junk Stand active, use its Roka first. Once it becomes None,
+			-- stop before the next Arrow if every enabled slot is protected.
+			if autoStoreMatches and usingArrow then
 				local available, reason = storageAvailability()
 				if not available then
-					storageMessage = reason == "full" and "All 3 slots are protected; farm stopped."
+					storageMessage = reason == "full" and "All enabled slots are protected; farm stopped."
 						or "Storage data unavailable; farm stopped."
 					notif("Storage Stopped", storageMessage)
 					break
 				end
 			end
-			ensureOrb(running, stand, att)
+			-- Renew Orb at the safe None -> Arrow boundary. Never insert Orb
+			-- between an Arrow result and its immediate Rokakaka replacement.
+			if usingArrow then ensureOrb(running, stand, att) end
 			if not running() then break end
 			local itemName = usingArrow and selectedArrowType or "Rokakaka"
 			local item = findFarmItem(itemName)
@@ -1337,10 +1371,10 @@ local function doStandFarm()
 				continue
 			end
 			local succeeded = waitForResult(usingArrow, stand)
-			returnFarmItem(activeItem)
-			activeItem = nil
 			if not running() then break end
 			if not succeeded then
+				returnFarmItem(activeItem)
+				activeItem = nil
 				recordError(itemName .. " timed out; no confirmed result.")
 				continue
 			end
@@ -1840,7 +1874,7 @@ TabFarm:CreateSection("Execution Engine")
 
 TabFarm:CreateSection("Storage on Match")
 TabFarm:CreateSection("KEEP = matches a Stand + Attribute target")
-TabFarm:CreateSection("Slots 1, 2, 6 only; slots 3, 4, 5 excluded")
+TabFarm:CreateSection("Slots 1, 2, 4 only; slots 3, 5, 6 excluded")
 storageStatusSection = TabFarm:CreateSection("Storage: Ready")
 for i, slot in ipairs(storageMap) do
 	storageSlotSections[i] = {
@@ -1849,7 +1883,7 @@ for i, slot in ipairs(storageMap) do
 	}
 end
 TabFarm:CreateToggle({
-	Name = "Auto Store Matches (Slots 1, 2, 6)",
+	Name = "Auto Store Matches (Slots 1, 2, 4)",
 	CurrentValue = true,
 	Flag = "AutoStoreMatchesV1",
 	Callback = function(value) autoStoreMatches = value == true end,
@@ -1878,7 +1912,7 @@ TabFarm:CreateToggle({
 	Callback = function(value) autoUseOrb = value == true end,
 })
 TabFarm:CreateSection("No Orb: farming continues")
-TabFarm:CreateSection("Recorded use time is saved for reload/rejoin")
+TabFarm:CreateSection("Same-session reload keeps timer; leave/rejoin uses a new Orb")
 
 farmToggle = TabFarm:CreateToggle({
 	Name = "Enable Auto Use Arrow",
