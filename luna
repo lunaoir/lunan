@@ -76,6 +76,16 @@ end
 
 local hubSession = {}
 getgenv().SURFarmSession = hubSession
+-- Invalidate an older Luna aura worker before this copy can be enabled.
+-- The shared session token also lets future reloads disconnect cleanly.
+getgenv().G = false
+getgenv().Creator = hubSession
+getgenv().SURLairSession = hubSession
+local previousLairConnection = getgenv().SURLairLoopConnection
+if typeof(previousLairConnection) == "RBXScriptConnection" then
+	pcall(function() previousLairConnection:Disconnect() end)
+end
+getgenv().SURLairLoopConnection = nil
 local httpservice = game:GetService("HttpService")
 local jsonservice = httpservice
 local selectedArrowType = "Stand Arrow"
@@ -109,6 +119,7 @@ local autoUseOrb = true
 local storageStatusSection, orbStatusSection = nil, nil
 local storageSlotSections = {}
 local autolairToggle = false
+local lairCombatBusy = false
 
 -- Dynamic slots
 local farmSlots = {}
@@ -3286,6 +3297,7 @@ local function doStandFarm()
 		local remaining = 0.05 - (os.clock() - lastFire)
 		if remaining > 0 then task.wait(remaining) end
 		if not running() then return false, "cancelled" end
+		if lairCombatBusy then return false, "lair combat" end
 		local char, isAlive = alive()
 		if not isAlive or not item or not item.Parent then return false, "Character/item unavailable." end
 		local remote = getUseItemRemote(item)
@@ -3299,6 +3311,7 @@ local function doStandFarm()
 		activeItem = item
 		task.wait()
 		if not running() then return false, "cancelled" end
+		if lairCombatBusy then return false, "lair combat" end
 		local currentChar, stillAlive = alive()
 		local s, a = readStandData()
 		if currentChar ~= char or not stillAlive or item.Parent ~= char then
@@ -3354,6 +3367,12 @@ local function doStandFarm()
 			local _, isAlive = alive()
 			if not isAlive or not localplr:FindFirstChild("Backpack") then
 				task.wait(0.5)
+				continue
+			end
+			-- Boss combat gets a very short exclusive window. This prevents an
+			-- Arrow/Roka equip animation from swallowing the M1 used on the boss.
+			if lairCombatBusy then
+				task.wait(0.03)
 				continue
 			end
 			-- Never use Arrow/Roka while an earlier swap has an uncertain outcome.
@@ -3433,12 +3452,18 @@ local function doStandFarm()
 				notif("Stand Farm", itemName .. " found; resuming farming.")
 				waitingForItem = nil
 			end
+			if lairCombatBusy then
+				task.wait(0.03)
+				continue
+			end
 			local fired, fireError = fireItem(item, stand, att, fastReject)
 			if not fired then
 				returnFarmItem(activeItem)
 				activeItem = nil
 				if not running() then break end
-				if fireError ~= "data changed" then recordError(tostring(fireError)) end
+				if fireError ~= "data changed" and fireError ~= "lair combat" then
+					recordError(tostring(fireError))
+				end
 				continue
 			end
 			local succeeded = waitForResult(usingArrow, stand)
@@ -4130,7 +4155,7 @@ Tabs.Settings:CreateDropdown({
 
 Tabs.Settings:CreateSection("Empty list = tag all  •  Target match = always tag")
 
---================== TAB: AUTO LAIR (RESTORED ORIGINAL) ==================--
+--================== TAB: AUTO LAIR ==================--
 local useLairNPCName = "i_stabman"
 local targetedLairNPC = nil
 local useLairBoss = "Boss"
@@ -4140,6 +4165,16 @@ local lairLoopConn = nil
 local lairSafeFloor = nil
 local lastLairM1 = 0
 local lairM1Busy = false
+local lastLairAttempt = 0
+local lastLairClearScan = 0
+local lastLairClearVisible = false
+local lairClearWasVisible = false
+local lairBossStartY = nil
+local lairLastSafeCFrame = nil
+local lastSimulationBoost = 0
+local allowNearbyZeroBoss = true
+local retiredLairBosses = setmetatable({}, {__mode = "k"})
+local lairKillStates = setmetatable({}, {__mode = "k"})
 
 Tabs.Lair:CreateSection("Target Settings")
 
@@ -4158,6 +4193,9 @@ Tabs.Lair:CreateInput({
 local function resetAutoLairState()
 	if lairLoopConn then
 		lairLoopConn:Disconnect()
+		if getgenv().SURLairLoopConnection == lairLoopConn then
+			getgenv().SURLairLoopConnection = nil
+		end
 		lairLoopConn = nil
 	end
 	if lairSafeFloor then
@@ -4165,8 +4203,19 @@ local function resetAutoLairState()
 		lairSafeFloor = nil
 	end
 	currentBoss = nil
+	lairCombatBusy = false
 	lastLairM1 = 0
 	lairM1Busy = false
+	lastLairAttempt = 0
+	lastLairClearScan = 0
+	lastLairClearVisible = false
+	lairClearWasVisible = false
+	lairBossStartY = nil
+	lairLastSafeCFrame = nil
+	lastSimulationBoost = 0
+	allowNearbyZeroBoss = true
+	table.clear(retiredLairBosses)
+	table.clear(lairKillStates)
 end
 
 local function updateLairSafeFloor(farmCFrame)
@@ -4175,11 +4224,14 @@ local function updateLairSafeFloor(farmCFrame)
 		lairSafeFloor.Name = "LairAutoFloor"
 		lairSafeFloor.Anchored = true
 		lairSafeFloor.CanCollide = true
+		lairSafeFloor.CanTouch = false
+		lairSafeFloor.CanQuery = false
+		lairSafeFloor.CastShadow = false
 		lairSafeFloor.Transparency = 1
-		lairSafeFloor.Size = Vector3.new(30, 2, 30)
+		lairSafeFloor.Size = Vector3.new(36, 2, 36)
 		lairSafeFloor.Parent = workspace
 	end
-	lairSafeFloor.CFrame = farmCFrame * CFrame.new(0, -4, 0)
+	lairSafeFloor.CFrame = CFrame.new(farmCFrame.Position - Vector3.new(0, 4, 0))
 end
 
 local function getInstanceRootPart(instance)
@@ -4238,36 +4290,72 @@ local function findTargetedLairNPC()
 end
 
 local function tryEnterLair()
+	local now = os.clock()
+	-- Five attempts per second is still immediate, but avoids flooding the same
+	-- server remote every rendered frame while a Lair transition is pending.
+	if now - lastLairAttempt < 0.2 then return end
 	local npc = findTargetedLairNPC()
 	if not npc then return end
 	local doneRemote = npc:FindFirstChild("Done")
-	if not doneRemote then return end
-	doneRemote:FireServer(localplr.Character)
+	if not doneRemote or not doneRemote:IsA("RemoteEvent") then return end
+	lastLairAttempt = now
+	pcall(function() doneRemote:FireServer(localplr.Character) end)
 end
 
 local function getTargetBoss()
-	local bestBoss = nil
+	-- Once selected, keep the same model even when its client Health reaches 0.
+	-- The server can reject that local zero while the boss keeps attacking.
+	if currentBoss and currentBoss.Parent and not retiredLairBosses[currentBoss] then
+		local humanoid = currentBoss:FindFirstChildOfClass("Humanoid")
+		local root = getInstanceRootPart(currentBoss)
+		if humanoid and humanoid.Parent and root and root.Parent then
+			return currentBoss, humanoid, root
+		end
+	end
+
+	local bestBoss, bestHumanoid, bestRoot = nil, nil, nil
 	local bestDistance = math.huge
+	local zeroBoss, zeroHumanoid, zeroRoot = nil, nil, nil
+	local zeroDistance = math.huge
+	local seen = {}
 	local char = localplr.Character
 	local playerRoot = char and char:FindFirstChild("HumanoidRootPart")
 
 	local function consider(candidate)
-		if not candidate or not candidate:IsA("Model") or candidate.Name ~= useLairBoss then return end
+		if not candidate or seen[candidate] or not candidate:IsA("Model")
+			or candidate.Name ~= useLairBoss then return end
+		seen[candidate] = true
 		local humanoid = candidate:FindFirstChildOfClass("Humanoid")
-		local root = candidate:FindFirstChild("HumanoidRootPart")
-		if not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then return end
+		local root = getInstanceRootPart(candidate)
+		if not humanoid or not humanoid.Parent or not root or not root:IsA("BasePart") then return end
+		if retiredLairBosses[candidate] then
+			-- A reused model becomes eligible only after the server gives it a
+			-- genuinely fresh positive health value.
+			if humanoid.Health > 1 then
+				retiredLairBosses[candidate] = nil
+			else
+				return
+			end
+		end
 		local distance = playerRoot and (root.Position - playerRoot.Position).Magnitude or 0
-		if not bestBoss or distance < bestDistance then
-			bestBoss = candidate
-			bestDistance = distance
+		if humanoid.Health > 0 then
+			if not bestBoss or distance < bestDistance then
+				bestBoss, bestHumanoid, bestRoot = candidate, humanoid, root
+				bestDistance = distance
+			end
+		elseif allowNearbyZeroBoss and distance <= 250
+			and (not zeroBoss or distance < zeroDistance) then
+			-- Recovery path for a boss zeroed by an older Luna worker before this
+			-- version had time to select it. Distant map templates are ignored.
+			zeroBoss, zeroHumanoid, zeroRoot = candidate, humanoid, root
+			zeroDistance = distance
 		end
 	end
 
 	local living = game.Workspace:FindFirstChild("Living")
 	if living then
-		for _, npc in ipairs(living:GetChildren()) do consider(npc) end
+		for _, npc in ipairs(living:GetDescendants()) do consider(npc) end
 	end
-	if bestBoss then return bestBoss end
 
 	-- Some Lairs replicate the active boss under Map.LairSpawns before the
 	-- Workspace.Living copy appears. Use it as a fallback so TP never misses.
@@ -4276,7 +4364,8 @@ local function getTargetBoss()
 	if lairSpawns then
 		for _, candidate in ipairs(lairSpawns:GetDescendants()) do consider(candidate) end
 	end
-	return bestBoss
+	if bestBoss then return bestBoss, bestHumanoid, bestRoot end
+	return zeroBoss, zeroHumanoid, zeroRoot
 end
 
 local function getLairAttackCFrame(bossRoot)
@@ -4331,6 +4420,107 @@ local function pressLairM1()
 	end)
 end
 
+local function isGuiActuallyVisible(guiObject, playerGui)
+	local current = guiObject
+	while current and current ~= playerGui do
+		if current:IsA("GuiObject") and not current.Visible then return false end
+		if current:IsA("LayerCollector") and not current.Enabled then return false end
+		current = current.Parent
+	end
+	return current == playerGui
+end
+
+local function isLairClearVisible()
+	local now = os.clock()
+	if now - lastLairClearScan < 0.1 then return lastLairClearVisible end
+	lastLairClearScan = now
+	local playerGui = localplr:FindFirstChild("PlayerGui")
+	if not playerGui then
+		lastLairClearVisible = false
+		return false
+	end
+	for _, object in ipairs(playerGui:GetDescendants()) do
+		if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+			local text = string.lower(tostring(object.Text or ""))
+			if string.find(text, "lair clear", 1, true)
+				and isGuiActuallyVisible(object, playerGui) then
+				lastLairClearVisible = true
+				return true
+			end
+		end
+	end
+	lastLairClearVisible = false
+	return false
+end
+
+local function boostLairSimulationRadius()
+	local now = os.clock()
+	if now - lastSimulationBoost < 0.25 then return end
+	lastSimulationBoost = now
+	if type(setsimulationradius) == "function" then
+		pcall(setsimulationradius, 1000000, 1000000)
+	end
+	if type(sethiddenproperty) == "function" then
+		pcall(sethiddenproperty, localplr, "SimulationRadius", 1000000)
+		pcall(sethiddenproperty, localplr, "MaximumSimulationRadius", 1000000)
+	end
+end
+
+local function canReplicateBossHealth(root)
+	if type(isnetworkowner) ~= "function" then return true end
+	local ok, owned = pcall(isnetworkowner, root)
+	return not ok or owned == true
+end
+
+local function pulseCurrentBossKillAura(boss, humanoid, root)
+	if not boss or retiredLairBosses[boss] or not boss.Parent
+		or not humanoid or not humanoid.Parent or not root or not root.Parent then return end
+	boostLairSimulationRadius()
+	pcall(function() humanoid.BreakJointsOnDeath = false end)
+	if not canReplicateBossHealth(root) then return end
+
+	local now = os.clock()
+	local state = lairKillStates[boss]
+	if not state then
+		state = {lastAttempt = 0, rearming = false}
+		lairKillStates[boss] = state
+	end
+	if humanoid.Health > 0 and now - state.lastAttempt >= 0.05 then
+		state.lastAttempt = now
+		pcall(function() humanoid.Health = 0 end)
+	elseif humanoid.Health <= 0 and not state.rearming and now - state.lastAttempt >= 0.75 then
+		-- Health=0 can be client-only. Re-arm it briefly, then submit a fresh
+		-- zero attempt while M1 continues to provide a server-side hit fallback.
+		state.lastAttempt = now
+		state.rearming = true
+		pcall(function() humanoid.Health = 1 end)
+		task.delay(0.06, function()
+			if boss.Parent and humanoid.Parent and root.Parent
+				and not retiredLairBosses[boss] and canReplicateBossHealth(root) then
+				pcall(function() humanoid.Health = 0 end)
+			end
+			state.rearming = false
+		end)
+	end
+end
+
+local function retireClearedBoss()
+	if currentBoss then retiredLairBosses[currentBoss] = true end
+	-- Ignore every other zero-health duplicate left by this cleared Lair. A new
+	-- server boss arrives with positive health and is still selected immediately.
+	allowNearbyZeroBoss = false
+	currentBoss = nil
+	lairCombatBusy = false
+	lairBossStartY = nil
+	lastLairM1 = 0
+end
+
+local function isLairBossFalling(root)
+	if not root or not lairBossStartY then return false end
+	return root.Position.Y < lairBossStartY - 10
+		or root.AssemblyLinearVelocity.Y < -90
+end
+
 local function loopAutoLair()
 	if lairLoopConn then
 		lairLoopConn:Disconnect()
@@ -4338,41 +4528,62 @@ local function loopAutoLair()
 	end
 
 	lairLoopConn = game:GetService("RunService").Heartbeat:Connect(function()
-		if not autolairToggle then
+		if getgenv().SURLairSession ~= hubSession or not autolairToggle then
+			autolairToggle = false
 			resetAutoLairState()
 			return
 		end
 
 		local char = localplr.Character
-		if not char then return end
+		if not char then lairCombatBusy = false; return end
 
 		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if not hrp then return end
+		if not hrp then lairCombatBusy = false; return end
 
-		local boss = getTargetBoss()
+		local clearVisible = isLairClearVisible()
+		if clearVisible and not lairClearWasVisible then
+			retireClearedBoss()
+		end
+		lairClearWasVisible = clearVisible
 
-		if boss then
-			local bossRoot = boss:FindFirstChild("HumanoidRootPart")
-			if bossRoot then
-				local attackCFrame = getLairAttackCFrame(bossRoot)
-				updateLairSafeFloor(attackCFrame)
+		local previousBoss = currentBoss
+		local boss, bossHumanoid, bossRoot = getTargetBoss()
 
-				hrp.CFrame = attackCFrame
-				hrp.AssemblyLinearVelocity = Vector3.zero
-				hrp.AssemblyAngularVelocity = Vector3.zero
+		if boss and bossHumanoid and bossRoot then
+			if boss ~= previousBoss then
+				currentBoss = boss
+				allowNearbyZeroBoss = true
+				lairBossStartY = bossRoot.Position.Y
+				lairLastSafeCFrame = getLairAttackCFrame(bossRoot)
+				lastLairM1 = 0
+			end
+			lairCombatBusy = true
 
+			local bossFalling = isLairBossFalling(bossRoot)
+			if not bossFalling then
+				lairLastSafeCFrame = getLairAttackCFrame(bossRoot)
 				bossRoot.AssemblyLinearVelocity = Vector3.zero
 				bossRoot.AssemblyAngularVelocity = Vector3.zero
-				-- Publish the boss only after the player is already in attack range.
-				-- This prevents the parallel aura from killing it before TP happens.
-				currentBoss = boss
+			end
+			if lairLastSafeCFrame then
+				updateLairSafeFloor(lairLastSafeCFrame)
+				hrp.CFrame = lairLastSafeCFrame
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
+			end
+
+			pulseCurrentBossKillAura(boss, bossHumanoid, bossRoot)
+			if not bossFalling then
 				pressLairM1()
 			end
 		else
 			currentBoss = nil
+			lairCombatBusy = false
+			lairBossStartY = nil
 			tryEnterLair()
 		end
 	end)
+	getgenv().SURLairLoopConnection = lairLoopConn
 end
 
 executiveUI.lairToggleControl = Tabs.Lair:CreateToggle({
@@ -4385,28 +4596,28 @@ executiveUI.lairToggleControl = Tabs.Lair:CreateToggle({
 			targetedLairNPC = nil
 			resetAutoLairState()
 			loopAutoLair()
-			
+
 			getgenv().G = true
-			getgenv().Creator = 'https://discord.gg/B3HqPPzFYr - HalloweenGaster'
+			getgenv().Creator = hubSession
 			task.spawn(function()
-				while getgenv().G and getgenv().Creator == 'https://discord.gg/B3HqPPzFYr - HalloweenGaster' do
-					wait(0.9)
-					pcall(function()
-						sethiddenproperty(game.Players.LocalPlayer, "SimulationRadius", 112412400000)
-						sethiddenproperty(game.Players.LocalPlayer, "MaxSimulationRadius", 112412400000)
-					end)
-					for i,d in pairs(game.Workspace:GetDescendants()) do
+				while getgenv().G and getgenv().SURLairSession == hubSession
+					and getgenv().Creator == hubSession do
+					task.wait(0.9)
+					if not getgenv().G or getgenv().SURLairSession ~= hubSession
+						or getgenv().Creator ~= hubSession then break end
+					boostLairSimulationRadius()
+					for _, d in ipairs(game.Workspace:GetDescendants()) do
 						if d.ClassName == 'Humanoid' and d.Parent
 							and d.Parent.Name ~= game.Players.LocalPlayer.Name
-							and (d.Parent.Name ~= useLairBoss or d.Parent == currentBoss) then
-							d.Health = 0
+							and d.Parent.Name ~= useLairBoss then
+							pcall(function() d.Health = 0 end)
 						end
 					end
 				end
 			end)
 		else
 			resetAutoLairState()
-			getgenv().G = false
+			if getgenv().SURLairSession == hubSession then getgenv().G = false end
 		end
 	end,
 })
