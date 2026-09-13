@@ -3569,21 +3569,18 @@ executiveUI.dashboardTargetSection = Tabs.Dashboard:CreateSection("Targets  • 
 executiveUI.dashboardOrbSection = Tabs.Dashboard:CreateSection("2x Orb  •  Checking...")
 Tabs.Dashboard:CreateSection("Quick Actions")
 Tabs.Dashboard:CreateButton({
-	Name = "Start Stand Farm",
+	Name = "Start Stand + CArrow Farm",
 	Callback = function()
+		-- Lair starts first so boss positioning always wins immediately.
+		if executiveUI.lairToggleControl then executiveUI.lairToggleControl:Set(true) end
 		if farmToggle then farmToggle:Set(true) else startStandFarm() end
 	end,
 })
 Tabs.Dashboard:CreateButton({
-	Name = "Stop Stand Farm",
+	Name = "Stop Stand + CArrow Farm",
 	Callback = function()
 		if farmToggle then farmToggle:Set(false) else stopStandFarm() end
-	end,
-})
-Tabs.Dashboard:CreateButton({
-	Name = "Toggle Auto Lair",
-	Callback = function()
-		if executiveUI.lairToggleControl then executiveUI.lairToggleControl:Set(not autolairToggle) end
+		if executiveUI.lairToggleControl then executiveUI.lairToggleControl:Set(false) end
 	end,
 })
 Tabs.Dashboard:CreateSection("Configure each feature in its dedicated tab")
@@ -4141,6 +4138,8 @@ autolairToggle = false
 local currentBoss = nil
 local lairLoopConn = nil
 local lairSafeFloor = nil
+local lastLairM1 = 0
+local lairM1Busy = false
 
 Tabs.Lair:CreateSection("Target Settings")
 
@@ -4166,9 +4165,11 @@ local function resetAutoLairState()
 		lairSafeFloor = nil
 	end
 	currentBoss = nil
+	lastLairM1 = 0
+	lairM1Busy = false
 end
 
-local function updateLairSafeFloor(bossCFrame)
+local function updateLairSafeFloor(farmCFrame)
 	if not lairSafeFloor or not lairSafeFloor.Parent then
 		lairSafeFloor = Instance.new("Part")
 		lairSafeFloor.Name = "LairAutoFloor"
@@ -4178,7 +4179,7 @@ local function updateLairSafeFloor(bossCFrame)
 		lairSafeFloor.Size = Vector3.new(30, 2, 30)
 		lairSafeFloor.Parent = workspace
 	end
-	lairSafeFloor.CFrame = bossCFrame * CFrame.new(0, -14, 0)
+	lairSafeFloor.CFrame = farmCFrame * CFrame.new(0, -4, 0)
 end
 
 local function getInstanceRootPart(instance)
@@ -4245,17 +4246,89 @@ local function tryEnterLair()
 end
 
 local function getTargetBoss()
-	local living = game.Workspace:FindFirstChild("Living")
-	if not living then return nil end
-	for _, npc in ipairs(living:GetChildren()) do
-		if npc.Name == useLairBoss
-			and npc:FindFirstChild("Humanoid")
-			and npc.Humanoid.Health > 0
-			and npc:FindFirstChild("HumanoidRootPart") then
-			return npc
+	local bestBoss = nil
+	local bestDistance = math.huge
+	local char = localplr.Character
+	local playerRoot = char and char:FindFirstChild("HumanoidRootPart")
+
+	local function consider(candidate)
+		if not candidate or not candidate:IsA("Model") or candidate.Name ~= useLairBoss then return end
+		local humanoid = candidate:FindFirstChildOfClass("Humanoid")
+		local root = candidate:FindFirstChild("HumanoidRootPart")
+		if not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then return end
+		local distance = playerRoot and (root.Position - playerRoot.Position).Magnitude or 0
+		if not bestBoss or distance < bestDistance then
+			bestBoss = candidate
+			bestDistance = distance
 		end
 	end
+
+	local living = game.Workspace:FindFirstChild("Living")
+	if living then
+		for _, npc in ipairs(living:GetChildren()) do consider(npc) end
+	end
+	if bestBoss then return bestBoss end
+
+	-- Some Lairs replicate the active boss under Map.LairSpawns before the
+	-- Workspace.Living copy appears. Use it as a fallback so TP never misses.
+	local map = workspace:FindFirstChild("Map")
+	local lairSpawns = map and map:FindFirstChild("LairSpawns")
+	if lairSpawns then
+		for _, candidate in ipairs(lairSpawns:GetDescendants()) do consider(candidate) end
+	end
+	return bestBoss
+end
+
+local function getLairAttackCFrame(bossRoot)
+	-- Local +Z is behind a Roblox character. Stay close enough for M1 and
+	-- rotate toward the boss so the hitbox points into it.
+	local position = (bossRoot.CFrame * CFrame.new(0, 0, 2.5)).Position
+	local target = Vector3.new(bossRoot.Position.X, position.Y, bossRoot.Position.Z)
+	return CFrame.lookAt(position, target)
+end
+
+local function getLairM1Remotes()
+	local character = localplr.Character
+	if not character then return nil end
+	local combatModel = character
+	local standEvents = combatModel:FindFirstChild("StandEvents")
+	if not standEvents then
+		local living = workspace:FindFirstChild("Living")
+		combatModel = living and living:FindFirstChild(localplr.Name) or combatModel
+		standEvents = combatModel and combatModel:FindFirstChild("StandEvents")
+	end
+	local m1Remote = standEvents and standEvents:FindFirstChild("M1")
+	local events = ReplicatedStorage:FindFirstChild("Events")
+	local abilityInput = events and events:FindFirstChild("AbilityInput")
+	if m1Remote and m1Remote:IsA("RemoteEvent")
+		and abilityInput and abilityInput:IsA("RemoteEvent") then
+		return abilityInput, m1Remote
+	end
 	return nil
+end
+
+local function pressLairM1()
+	local now = os.clock()
+	if lairM1Busy or now - lastLairM1 < 0.15 then return end
+	local abilityInput, m1Remote = getLairM1Remotes()
+	if not abilityInput or not m1Remote then return end
+
+	lairM1Busy = true
+	lastLairM1 = now
+	local began = false
+	pcall(function()
+		abilityInput:FireServer("MouseButton1", "Begin", nil)
+		began = true
+		m1Remote:FireServer()
+	end)
+	task.delay(0.08, function()
+		if began and abilityInput.Parent then
+			pcall(function()
+				abilityInput:FireServer("MouseButton1", "End", nil)
+			end)
+		end
+		lairM1Busy = false
+	end)
 end
 
 local function loopAutoLair()
@@ -4277,21 +4350,26 @@ local function loopAutoLair()
 		if not hrp then return end
 
 		local boss = getTargetBoss()
-		currentBoss = boss
 
 		if boss then
 			local bossRoot = boss:FindFirstChild("HumanoidRootPart")
 			if bossRoot then
-				updateLairSafeFloor(bossRoot.CFrame)
-				
-				hrp.CFrame = bossRoot.CFrame * CFrame.new(0, -10, 0)
+				local attackCFrame = getLairAttackCFrame(bossRoot)
+				updateLairSafeFloor(attackCFrame)
+
+				hrp.CFrame = attackCFrame
 				hrp.AssemblyLinearVelocity = Vector3.zero
 				hrp.AssemblyAngularVelocity = Vector3.zero
 
 				bossRoot.AssemblyLinearVelocity = Vector3.zero
 				bossRoot.AssemblyAngularVelocity = Vector3.zero
+				-- Publish the boss only after the player is already in attack range.
+				-- This prevents the parallel aura from killing it before TP happens.
+				currentBoss = boss
+				pressLairM1()
 			end
 		else
+			currentBoss = nil
 			tryEnterLair()
 		end
 	end)
@@ -4318,7 +4396,9 @@ executiveUI.lairToggleControl = Tabs.Lair:CreateToggle({
 						sethiddenproperty(game.Players.LocalPlayer, "MaxSimulationRadius", 112412400000)
 					end)
 					for i,d in pairs(game.Workspace:GetDescendants()) do
-						if d.ClassName == 'Humanoid' and d.Parent and d.Parent.Name ~= game.Players.LocalPlayer.Name then
+						if d.ClassName == 'Humanoid' and d.Parent
+							and d.Parent.Name ~= game.Players.LocalPlayer.Name
+							and (d.Parent.Name ~= useLairBoss or d.Parent == currentBoss) then
 							d.Health = 0
 						end
 					end
@@ -4589,6 +4669,7 @@ localplr.CharacterAdded:Connect(function(char)
 	if autolairToggle then
 		notif("Auto Resume", "Nhân vật respawn → Tiếp tục Auto Lair...")
 		resetAutoLairState()
+		loopAutoLair()
 	end
 end)
 
