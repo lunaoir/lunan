@@ -1,10 +1,10 @@
 --[[
     Luna Hub - Stand Upright Rebooted
-    Main project file: LunaHub.lua
-    UI: Rayfield Interface Suite (Mobile + PC)
+    Main project file: LunaHub_Executive.lua
+    UI: Embedded Luna Interface Library (Mobile + PC)
     Game: https://web.roblox.com/games/8540168650
     Focus: Stand Farming + Utility
-    Revision: fast non-target rerolls, original UseItem remote and target checks
+    Revision: self-contained Luna Executive menu; farming behavior preserved
 ]]
 
 --================== SETTINGS ==================--
@@ -17,6 +17,7 @@ local webhookTagAtts = {}
 --================== SETTINGS ==================--
 
 print("script starting..")
+warn("[LUNA] BOOT START")
 
 --================== VARIABLES ==================--
 getgenv().farmstands = false
@@ -27,6 +28,52 @@ if not localplr then
 	return
 end
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Native bootstrap status: this remains visible even if the downloaded UI
+-- library fails, so startup can no longer disappear without an explanation.
+local bootstrapGui, bootstrapLabel
+do
+	local playerGui = localplr:WaitForChild("PlayerGui")
+	local previous = playerGui:FindFirstChild("LunaHubBootStatus")
+	if previous then previous:Destroy() end
+	bootstrapGui = Instance.new("ScreenGui")
+	bootstrapGui.Name = "LunaHubBootStatus"
+	bootstrapGui.ResetOnSpawn = false
+	bootstrapGui.IgnoreGuiInset = true
+	bootstrapGui.DisplayOrder = 1000000
+	bootstrapGui.Parent = playerGui
+	bootstrapLabel = Instance.new("TextLabel")
+	bootstrapLabel.Name = "Status"
+	bootstrapLabel.AnchorPoint = Vector2.new(0.5, 0)
+	bootstrapLabel.Position = UDim2.new(0.5, 0, 0, 12)
+	bootstrapLabel.Size = UDim2.new(0, 420, 0, 38)
+	bootstrapLabel.BackgroundColor3 = Color3.fromRGB(15, 22, 40)
+	bootstrapLabel.BackgroundTransparency = 0.08
+	bootstrapLabel.BorderSizePixel = 0
+	bootstrapLabel.Font = Enum.Font.GothamSemibold
+	bootstrapLabel.Text = "Luna Hub  •  Starting..."
+	bootstrapLabel.TextColor3 = Color3.fromRGB(244, 247, 255)
+	bootstrapLabel.TextSize = 14
+	bootstrapLabel.ZIndex = 1000001
+	bootstrapLabel.Parent = bootstrapGui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = bootstrapLabel
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(139, 92, 246)
+	stroke.Thickness = 1
+	stroke.Parent = bootstrapLabel
+end
+
+local function setBootstrapStatus(text, failed)
+	warn("[LUNA] " .. tostring(text))
+	if bootstrapLabel and bootstrapLabel.Parent then
+		bootstrapLabel.Text = "Luna Hub  •  " .. tostring(text)
+		bootstrapLabel.TextColor3 = failed and Color3.fromRGB(255, 130, 150)
+			or Color3.fromRGB(244, 247, 255)
+	end
+end
+
 local hubSession = {}
 getgenv().SURFarmSession = hubSession
 local httpservice = game:GetService("HttpService")
@@ -35,6 +82,10 @@ local selectedArrowType = "Stand Arrow"
 local selectedStandForSlot = "Any"
 local selectedAttsForSlot = {"Any"}
 local selectedRemoveIndex = nil
+local executiveUI = {
+	selectedTargetMode = "Stand + Attribute",
+	recentStandSelections = {},
+}
 
 local showhitbox = nil
 local oncharadded = nil
@@ -57,6 +108,7 @@ local autoStoreMatches = true
 local autoUseOrb = true
 local storageStatusSection, orbStatusSection = nil, nil
 local storageSlotSections = {}
+local autolairToggle = false
 
 -- Dynamic slots
 local farmSlots = {}
@@ -311,23 +363,1956 @@ local function normalizeFarmSlots(decoded)
 	return normalized
 end
 
-local function loadRayfieldLibrary()
-	local okResponse, response = pcall(function()
-		return game:HttpGet("https://gist.githubusercontent.com/ngocne0822-sys/c863b0b49c5564b48f30337e028857f3/raw/nhap.lua")
+local function createEmbeddedLunaUI()
+--================== EMBEDDED LUNA UI LIBRARY ==================--
+local UI_CONFIG = {
+    Theme = "BananaCat", -- Các sự lựa chọn: "Dendro", "Kawaii", "Midnight", "BananaCat"
+    LogoID = "75597990690752",
+    HubName = "Selina Hub",
+    HubSubtitle = "Banana Cat Theme"
+}
+
+local Library = {}
+
+UI_CONFIG.Theme = "BananaCat"
+UI_CONFIG.HubSubtitle = "Glass Banana Theme"
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local ContentProvider = game:GetService("ContentProvider")
+local Lighting = game:GetService("Lighting")
+local CoreGui = game:GetService("StarterGui")
+local Mouse = Players.LocalPlayer:GetMouse()
+
+Library._compat = {
+    flags = {},
+    bindings = {},
+    config = nil,
+}
+
+local function cloneArray(list)
+    local result = {}
+    if type(list) == "table" then
+        for _, value in ipairs(list) do
+            table.insert(result, value)
+        end
+    end
+    return result
+end
+
+function Library:_setFlag(flag, value, fromLoad)
+    if not flag or flag == "" then return end
+    self._compat.flags[flag] = value
+    local setter = self._compat.bindings[flag]
+    if setter then
+        setter(value, fromLoad)
+    end
+end
+
+function Library:_bindFlag(flag, defaultValue, setter)
+    if not flag or flag == "" then return end
+    if self._compat.flags[flag] == nil then
+        self._compat.flags[flag] = defaultValue
+    end
+    self._compat.bindings[flag] = setter
+end
+
+Library.THEMES = {
+    ["Dendro"] = {
+        bg = Color3.fromRGB(12, 17, 15),          
+        panel = Color3.fromRGB(20, 28, 24),       
+        accent1 = Color3.fromRGB(111, 255, 119),  
+        accent2 = Color3.fromRGB(247, 217, 89),   
+        text = Color3.fromRGB(255, 255, 255),
+        textSub = Color3.fromRGB(200, 225, 210),
+        muted = Color3.fromRGB(90, 130, 105),     
+        navHover = Color3.fromRGB(35, 50, 42),    
+        glow = Color3.fromRGB(110, 255, 110)      
+    },
+    ["Kawaii"] = {
+        bg = Color3.fromRGB(24, 14, 20),
+        panel = Color3.fromRGB(35, 20, 28),
+        accent1 = Color3.fromRGB(255, 105, 180),
+        accent2 = Color3.fromRGB(255, 182, 193),
+        text = Color3.fromRGB(255, 250, 255),
+        textSub = Color3.fromRGB(240, 210, 230),
+        muted = Color3.fromRGB(160, 110, 140),
+        navHover = Color3.fromRGB(55, 30, 45),
+        glow = Color3.fromRGB(255, 120, 200)
+    },
+    ["Midnight"] = {
+        bg = Color3.fromRGB(10, 14, 22),
+        panel = Color3.fromRGB(18, 24, 38),
+        accent1 = Color3.fromRGB(80, 150, 255),
+        accent2 = Color3.fromRGB(200, 100, 255),
+        text = Color3.fromRGB(240, 245, 255),
+        textSub = Color3.fromRGB(180, 200, 225),
+        muted = Color3.fromRGB(90, 110, 140),
+        navHover = Color3.fromRGB(30, 40, 60),
+        glow = Color3.fromRGB(100, 180, 255)
+    },
+    ["BananaCat"] = {
+        bg = Color3.fromRGB(15, 15, 15),          -- Nền đen sẫm (Dark Gray) giống ảnh
+        panel = Color3.fromRGB(24, 24, 24),       -- Màu nền ô chức năng (Lighter Gray)
+        accent1 = Color3.fromRGB(232, 200, 56),   -- Màu Vàng Chuối (Banana Gold) của nút bấm
+        accent2 = Color3.fromRGB(255, 215, 0),    -- Vàng tươi tạo viền sáng
+        text = Color3.fromRGB(255, 255, 255),     -- Chữ trắng tinh
+        textSub = Color3.fromRGB(190, 190, 190),  
+        muted = Color3.fromRGB(130, 130, 130),    
+        navHover = Color3.fromRGB(35, 35, 35),    -- Khi lướt qua thành mảng xám nhạt
+        glow = Color3.fromRGB(200, 170, 40)       -- Độ nhòe hắt viền vàng sậm
+    }
+}
+
+Library.THEMES["BananaGlass"] = {
+    bg = Color3.fromRGB(12, 13, 15),
+    panel = Color3.fromRGB(20, 21, 24),
+    accent1 = Color3.fromRGB(229, 195, 88),
+    accent2 = Color3.fromRGB(255, 228, 138),
+    text = Color3.fromRGB(247, 243, 235),
+    textSub = Color3.fromRGB(201, 194, 181),
+    muted = Color3.fromRGB(149, 141, 126),
+    navHover = Color3.fromRGB(34, 36, 40),
+    glow = Color3.fromRGB(214, 181, 79)
+}
+
+Library.THEMES["ForgePanel"] = {
+    bg = Color3.fromRGB(8, 14, 26),
+    panel = Color3.fromRGB(11, 19, 34),
+    accent1 = Color3.fromRGB(255, 123, 34),
+    accent2 = Color3.fromRGB(255, 181, 59),
+    text = Color3.fromRGB(238, 242, 255),
+    textSub = Color3.fromRGB(156, 176, 214),
+    muted = Color3.fromRGB(98, 122, 171),
+    navHover = Color3.fromRGB(23, 35, 61),
+    glow = Color3.fromRGB(255, 132, 48)
+}
+
+Library.COLORS = Library.THEMES[UI_CONFIG.Theme] or Library.THEMES["BananaGlass"]
+
+local function tween(obj, goal, duration, style, dir)
+    style = style or Enum.EasingStyle.Quart
+    dir = dir or Enum.EasingDirection.Out
+    local t = TweenService:Create(obj, TweenInfo.new(duration or 0.25, style, dir), goal)
+    t:Play()
+    return t
+end
+
+function Library:ChangeTheme(themeName)
+    local NEW_COLORS = Library.THEMES[themeName]
+    if not NEW_COLORS then return end
+
+    local OLD_COLORS = Library.COLORS
+
+    local colorMap = {}
+    for key, oldColor in pairs(OLD_COLORS) do
+        colorMap[oldColor:ToHex()] = NEW_COLORS[key]
+    end
+
+    local gui = Players.LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("TienTaiStandHub")
+    if gui then
+        for _, obj in ipairs(gui:GetDescendants()) do
+            if obj:IsA("GuiObject") then
+                if pcall(function() return obj.BackgroundColor3 end) then
+                    local hex = obj.BackgroundColor3:ToHex()
+                    if colorMap[hex] then tween(obj, {BackgroundColor3 = colorMap[hex]}, 0.5) end
+                end
+                if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                    local hex = obj.TextColor3:ToHex()
+                    if colorMap[hex] then tween(obj, {TextColor3 = colorMap[hex]}, 0.5) end
+                end
+                if obj:IsA("ScrollingFrame") then
+                    local hex = obj.ScrollBarImageColor3:ToHex()
+                    if colorMap[hex] then tween(obj, {ScrollBarImageColor3 = colorMap[hex]}, 0.5) end
+                end
+            end
+
+            if obj:IsA("UIStroke") then
+                local hex = obj.Color:ToHex()
+                if colorMap[hex] then tween(obj, {Color = colorMap[hex]}, 0.5) end
+            end
+
+            if obj:IsA("UIGradient") then
+                local cs = obj.Color
+                local newKeys = {}
+                local changed = false
+                for _, kp in ipairs(cs.Keypoints) do
+                    local hex = kp.Value:ToHex()
+                    if colorMap[hex] then
+                        table.insert(newKeys, ColorSequenceKeypoint.new(kp.Time, colorMap[hex]))
+                        changed = true
+                    else
+                        table.insert(newKeys, kp)
+                    end
+                end
+                if changed then 
+                    obj.Color = ColorSequence.new(newKeys) 
+                end
+            end
+        end
+    end
+
+    Library.COLORS = NEW_COLORS
+end
+
+local function setBlur(active)
+    local existing = Lighting:FindFirstChild("MenuBlurEffect_AI")
+    if active then
+        if not existing then
+            existing = Instance.new("BlurEffect")
+            existing.Name = "MenuBlurEffect_AI"
+            existing.Parent = Lighting
+        end
+        existing.Size = 15
+    else
+        if existing then
+            existing:Destroy()
+        end
+    end
+end
+
+local function createRipple(button, clickPosX, clickPosY)
+    button.ClipsDescendants = true
+    local ripple = Instance.new("Frame")
+    ripple.BackgroundColor3 = Color3.new(1, 1, 1)
+    ripple.BackgroundTransparency = 0.5
+    ripple.BorderSizePixel = 0
+    ripple.ZIndex = button.ZIndex + 1
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = ripple
+
+    ripple.Parent = button
+
+    local bSize = button.AbsoluteSize
+    local bPos = button.AbsolutePosition
+    local relX = clickPosX - bPos.X
+    local relY = clickPosY - bPos.Y
+
+    local maxDim = math.max(bSize.X, bSize.Y) * 1.5
+
+    ripple.Size = UDim2.fromOffset(0, 0)
+    ripple.Position = UDim2.fromOffset(relX, relY)
+    ripple.AnchorPoint = Vector2.new(0.5, 0.5)
+
+    tween(ripple, {Size = UDim2.fromOffset(maxDim, maxDim), BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Sine).Completed:Connect(function()
+        ripple:Destroy()
+    end)
+end
+
+local function applyGradient(parent, c1, c2)
+	local grad = Instance.new("UIGradient")
+	grad.Color = ColorSequence.new{
+		ColorSequenceKeypoint.new(0, c1),
+		ColorSequenceKeypoint.new(1, c2)
+	}
+	grad.Rotation = 45
+	grad.Parent = parent
+	return grad
+end
+
+local function corner(r)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r)
+	return c
+end
+
+local function padding(px)
+	local p = Instance.new("UIPadding")
+	p.PaddingLeft = UDim.new(0, px)
+	p.PaddingRight = UDim.new(0, px)
+	p.PaddingTop = UDim.new(0, px)
+	p.PaddingBottom = UDim.new(0, px)
+	return p
+end
+
+local function parseLogoAssetId(raw)
+	if type(raw) ~= "string" then return nil end
+	local s = raw:gsub("%s+", "")
+	if s == "" then return nil end
+	local fromMarker = s:match("rbxassetid://(%d+)") or s:match("rbxasset://(%d+)")
+	if fromMarker then return fromMarker end
+	local fromUrl = s:match("[Ll]ibrary/(%d+)") or s:match("asset/?%?id=(%d+)") or s:match("assetId=(%d+)")
+	if fromUrl then return fromUrl end
+	if s:match("^%d+$") then return s end
+	return nil
+end
+
+local function resolveLocalImageAsset(path)
+    if type(path) ~= "string" or path == "" then return nil end
+    if type(getsynasset) == "function" then
+        local ok, asset = pcall(getsynasset, path)
+        if ok and asset then return asset end
+    end
+    if type(getcustomasset) == "function" then
+        local ok, asset = pcall(getcustomasset, path)
+        if ok and asset then return asset end
+    end
+    return nil
+end
+
+local function logoImageCandidates(id)
+	if not id then return {} end
+	return {
+		"rbxassetid://" .. id,
+		"rbxthumb://type=Asset&id=" .. id .. "&w=420&h=420",
+		"rbxthumb://type=Asset&id=" .. id .. "&w=150&h=150",
+	}
+end
+
+local function applyLogoToImage(guiWithImage, rawId)
+	local localAsset = resolveLocalImageAsset(rawId)
+	if localAsset then
+		guiWithImage.ImageTransparency = 0
+		guiWithImage.ScaleType = Enum.ScaleType.Crop
+		guiWithImage.Image = localAsset
+		return true
+	end
+	local id = parseLogoAssetId(rawId)
+	if not id then return false end
+	guiWithImage.ImageTransparency = 0
+	guiWithImage.ScaleType = Enum.ScaleType.Crop
+	local list = logoImageCandidates(id)
+	task.spawn(function()
+		for _, uri in ipairs(list) do
+			if not guiWithImage.Parent then return end
+			guiWithImage.Image = uri
+			pcall(function() ContentProvider:PreloadAsync({ guiWithImage }) end)
+			task.wait(0.5)
+			local isLoaded = false
+			pcall(function() isLoaded = guiWithImage.IsLoaded and guiWithImage:IsLoaded() end)
+			if isLoaded then return end
+		end
 	end)
-	if not okResponse then
-		return nil, "Unable to fetch custom UI library: " .. tostring(response)
-	end
-	if type(response) ~= "string" or response == "" then
-		return nil, "Custom UI library returned an empty payload."
-	end
-	local okChunk, chunk = pcall(loadstring, response)
-	if not okChunk or type(chunk) ~= "function" then
-		return nil, "Custom UI loader payload is invalid: " .. tostring(chunk)
-	end
-	local okLibrary, library = pcall(chunk)
+	return true
+end
+
+local function makeDragMoveTarget(handle, target)
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		local startMouse = UserInputService:GetMouseLocation()
+		local startAbs = target.AbsolutePosition
+		local changedConn, endedConn
+
+		changedConn = UserInputService.InputChanged:Connect(function(inp)
+			if inp.UserInputType ~= Enum.UserInputType.MouseMovement and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+			local now = UserInputService:GetMouseLocation()
+			target.Position = UDim2.fromOffset(startAbs.X + now.X - startMouse.X, startAbs.Y + now.Y - startMouse.Y)
+		end)
+		endedConn = UserInputService.InputEnded:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+				if changedConn then changedConn:Disconnect() end
+				if endedConn then endedConn:Disconnect() end
+			end
+		end)
+	end)
+end
+
+local DRAG_THRESHOLD_PX = 5
+local function makeDockImageDragAndTap(dockBtn, onTap)
+	dockBtn.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		local startMouse = UserInputService:GetMouseLocation()
+		local startAbs = dockBtn.AbsolutePosition
+		local moved = false
+		local changedConn, endedConn
+
+		changedConn = UserInputService.InputChanged:Connect(function(inp)
+			if inp.UserInputType ~= Enum.UserInputType.MouseMovement and inp.UserInputType ~= Enum.UserInputType.Touch then return end
+			local now = UserInputService:GetMouseLocation()
+			if (now - startMouse).Magnitude > DRAG_THRESHOLD_PX then moved = true end
+			if moved then dockBtn.Position = UDim2.fromOffset(startAbs.X + now.X - startMouse.X, startAbs.Y + now.Y - startMouse.Y) end
+		end)
+		endedConn = UserInputService.InputEnded:Connect(function(inp)
+			if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+				if changedConn then changedConn:Disconnect() end
+				if endedConn then endedConn:Disconnect() end
+				if not moved then onTap() end
+			end
+		end)
+	end)
+end
+
+function Library:MakeWindow(Config)
+    local WindowName = Config.Name or UI_CONFIG.HubName
+    local WindowSub = Config.Subtitle or UI_CONFIG.HubSubtitle
+    local LogoId = Config.LogoID or UI_CONFIG.LogoID
+    local StartHidden = Config.StartHidden or false
+    local toggleKey = tostring(Config.ToggleKeybind or "RightShift")
+
+    local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+    local existing = playerGui:FindFirstChild("TienTaiStandHub")
+    if existing then existing:Destroy() end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "TienTaiStandHub"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = playerGui
+
+    local currentCamera = workspace.CurrentCamera
+
+    local function getViewport()
+        currentCamera = workspace.CurrentCamera or currentCamera
+        if currentCamera then
+            return currentCamera.ViewportSize
+        end
+        return Vector2.new(1280, 720)
+    end
+
+    local function buildLayout()
+        local viewport = getViewport()
+        local isMobile = viewport.X <= 900
+        local width = math.clamp(math.floor(viewport.X * (isMobile and 0.94 or 0.54)), isMobile and 500 or 560, isMobile and 620 or 640)
+        local height = math.clamp(math.floor(viewport.Y * (isMobile and 0.74 or 0.6)), isMobile and 400 or 420, isMobile and 620 or 500)
+        local headerPadTop = isMobile and 10 or 12
+        local headerHeight = isMobile and 40 or 42
+        local sidePad = isMobile and 8 or 14
+        local bottomPad = isMobile and 18 or 24
+        local contentGap = isMobile and 10 or 16
+        local topContentY = headerPadTop + headerHeight + contentGap
+        local navWidth = math.clamp(math.floor(width * (isMobile and 0.17 or 0.16)), isMobile and 82 or 90, isMobile and 96 or 104)
+        local headerWidth = width - (sidePad * 2)
+        local panelHeight = height - (topContentY + bottomPad)
+        local navInset = isMobile and 6 or 8
+        local contentInset = isMobile and 6 or 12
+        local searchHeight = isMobile and 28 or 30
+        local navBodyTop = navInset + searchHeight + 8
+        local contentBodyTop = contentInset + searchHeight + 8
+        local navBodyHeight = panelHeight - navBodyTop - navInset
+        local contentWidth = headerWidth - navWidth - contentGap
+        local contentBodyHeight = panelHeight - contentBodyTop - contentInset
+        return {
+            isMobile = isMobile,
+            width = width,
+            height = height,
+            headerPadTop = headerPadTop,
+            headerHeight = headerHeight,
+            headerWidth = headerWidth,
+            panelHeight = panelHeight,
+            sidePad = sidePad,
+            bottomPad = bottomPad,
+            contentGap = contentGap,
+            topContentY = topContentY,
+            navWidth = navWidth,
+            navInset = navInset,
+            contentInset = contentInset,
+            searchHeight = searchHeight,
+            navBodyTop = navBodyTop,
+            navBodyHeight = navBodyHeight,
+            contentWidth = contentWidth,
+            contentBodyTop = contentBodyTop,
+            contentBodyHeight = contentBodyHeight,
+            headerButtonInset = isMobile and 34 or 40,
+            dockSize = isMobile and 52 or 60,
+            dockInset = isMobile and 18 or 26,
+            titleTextSize = isMobile and 16 or 18,
+            subtitleTextSize = isMobile and 8 or 9,
+        }
+    end
+
+    local layout = buildLayout()
+
+    local function centeredRootPosition(offsetY)
+        local baseYOffset = layout.isMobile and -6 or -10
+        return UDim2.new(0.5, -math.floor(layout.width / 2), 0.5, -math.floor(layout.height / 2) + baseYOffset + (offsetY or 0))
+    end
+
+    local root = Instance.new("Frame")
+    root.Name = "Root"
+    root.Size = UDim2.fromOffset(layout.width, layout.height)
+    root.Position = centeredRootPosition()
+    root.BackgroundColor3 = Library.COLORS.bg
+    root.BackgroundTransparency = 1
+    root.BorderSizePixel = 0
+    root.ZIndex = 5
+    root.Visible = not StartHidden
+    root.ClipsDescendants = false
+    root.Parent = screenGui
+    corner(16).Parent = root
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Library.COLORS.glow
+    stroke.Thickness = 2
+    stroke.Transparency = 1
+    stroke.Parent = root
+
+    local HEADER_PAD_TOP, HEADER_H, HEADER_W = layout.headerPadTop, layout.headerHeight, layout.headerWidth
+    local SIDE_PAD, BOTTOM_PAD = layout.sidePad, layout.bottomPad
+    local TOP_CONTENT_Y = layout.topContentY
+    local NAV_W = layout.navWidth
+    local PANEL_H = layout.panelHeight
+    local NAV_INSET = layout.navInset
+    local CONTENT_INSET = layout.contentInset
+    local SEARCH_H = layout.searchHeight
+    local NAV_BODY_TOP, NAV_BODY_H = layout.navBodyTop, layout.navBodyHeight
+    local CONTENT_W = layout.contentWidth
+    local CONTENT_BODY_TOP, CONTENT_BODY_H = layout.contentBodyTop, layout.contentBodyHeight
+
+    local header = Instance.new("TextButton")
+    header.Name = "Header"
+    header.Text = ""
+    header.AutoButtonColor = false
+    header.BackgroundColor3 = Library.COLORS.panel
+    header.BackgroundTransparency = 0.36
+    header.BorderSizePixel = 0
+    header.Size = UDim2.fromOffset(HEADER_W, HEADER_H)
+    header.Position = UDim2.fromOffset(SIDE_PAD, HEADER_PAD_TOP)
+    header.ZIndex = 6
+    header.Parent = root
+    corner(12).Parent = header
+    local headerStroke = Instance.new("UIStroke", header)
+    headerStroke.Color = Library.COLORS.accent1
+    headerStroke.Transparency = 0.94
+    makeDragMoveTarget(header, root)
+
+    local headerLine = Instance.new("Frame")
+    headerLine.Size = UDim2.new(1, 40, 0, 2)
+    headerLine.Position = UDim2.new(0, -5, 1, 0)
+    headerLine.BackgroundColor3 = Color3.new(1,1,1)
+    headerLine.BorderSizePixel = 0
+    headerLine.Visible = false
+    headerLine.Parent = header
+    applyGradient(headerLine, Library.COLORS.accent1, Library.COLORS.accent2).Rotation = 0
+
+    local titleHost = Instance.new("Frame")
+    titleHost.BackgroundTransparency = 1
+    titleHost.Size = UDim2.new(1, -8, 1, 0)
+    titleHost.Parent = header
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -76, 0, 22)
+    title.Position = UDim2.new(0.5, 0, 0, 1)
+    title.AnchorPoint = Vector2.new(0.5, 0)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBlack
+    title.TextSize = layout.titleTextSize
+    title.TextColor3 = Color3.new(1,1,1)
+    title.TextXAlignment = Enum.TextXAlignment.Center
+    title.Text = WindowName
+    title.Parent = titleHost
+    applyGradient(title, Library.COLORS.accent1, Library.COLORS.accent2)
+
+    local subtitle = Instance.new("TextLabel")
+    subtitle.Size = UDim2.new(1, -76, 0, 12)
+    subtitle.Position = UDim2.new(0.5, 0, 0, 22)
+    subtitle.AnchorPoint = Vector2.new(0.5, 0)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Font = Enum.Font.GothamSemibold
+    subtitle.TextSize = layout.subtitleTextSize
+    subtitle.TextColor3 = Library.COLORS.textSub
+    subtitle.TextXAlignment = Enum.TextXAlignment.Center
+    subtitle.Text = WindowSub
+    subtitle.Parent = titleHost
+
+    local nav = Instance.new("Frame")
+    nav.Size = UDim2.fromOffset(NAV_W, PANEL_H)
+    nav.Position = UDim2.fromOffset(SIDE_PAD, TOP_CONTENT_Y)
+    nav.BackgroundColor3 = Library.COLORS.panel
+    nav.BackgroundTransparency = 0.24
+    nav.ClipsDescendants = true
+    nav.Parent = root
+    corner(12).Parent = nav
+    local navPanelStroke = Instance.new("UIStroke", nav)
+    navPanelStroke.Color = Library.COLORS.accent1
+    navPanelStroke.Transparency = 0.97
+
+    local navSearchShell = Instance.new("Frame")
+    navSearchShell.Size = UDim2.new(1, -(NAV_INSET * 2), 0, SEARCH_H)
+    navSearchShell.Position = UDim2.fromOffset(NAV_INSET, NAV_INSET)
+    navSearchShell.BackgroundColor3 = Library.COLORS.bg
+    navSearchShell.BackgroundTransparency = 0.64
+    navSearchShell.BorderSizePixel = 0
+    navSearchShell.Parent = nav
+    corner(8).Parent = navSearchShell
+    local navSearchStroke = Instance.new("UIStroke", navSearchShell)
+    navSearchStroke.Color = Library.COLORS.navHover
+    navSearchStroke.Transparency = 0.9
+
+    local navSearchBox = Instance.new("TextBox")
+    navSearchBox.Size = UDim2.new(1, -18, 1, 0)
+    navSearchBox.Position = UDim2.new(0, 9, 0, 0)
+    navSearchBox.BackgroundTransparency = 1
+    navSearchBox.BorderSizePixel = 0
+    navSearchBox.PlaceholderText = "Find"
+    navSearchBox.ClearTextOnFocus = false
+    navSearchBox.Text = ""
+    navSearchBox.Font = Enum.Font.Gotham
+    navSearchBox.TextSize = 11
+    navSearchBox.TextColor3 = Library.COLORS.text
+    navSearchBox.PlaceholderColor3 = Library.COLORS.muted
+    navSearchBox.Parent = navSearchShell
+
+    local navBody = Instance.new("Frame")
+    navBody.BackgroundTransparency = 1
+    navBody.Size = UDim2.new(1, -(NAV_INSET * 2), 0, NAV_BODY_H)
+    navBody.Position = UDim2.fromOffset(NAV_INSET, NAV_BODY_TOP)
+    navBody.Parent = nav
+
+    local navLayout = Instance.new("UIListLayout")
+    navLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    navLayout.Padding = UDim.new(0, 8)
+    navLayout.Parent = navBody
+
+    local content = Instance.new("Frame")
+    content.Size = UDim2.fromOffset(CONTENT_W, PANEL_H)
+    content.Position = UDim2.fromOffset(SIDE_PAD + NAV_W + layout.contentGap, TOP_CONTENT_Y)
+    content.BackgroundColor3 = Library.COLORS.panel
+    content.BackgroundTransparency = 0.24
+    content.ClipsDescendants = false
+    content.Parent = root
+    corner(12).Parent = content
+    local contentPanelStroke = Instance.new("UIStroke", content)
+    contentPanelStroke.Color = Library.COLORS.accent1
+    contentPanelStroke.Transparency = 0.97
+
+    local contentSearchShell = Instance.new("Frame")
+    contentSearchShell.Size = UDim2.new(1, -(CONTENT_INSET * 2), 0, SEARCH_H)
+    contentSearchShell.Position = UDim2.fromOffset(CONTENT_INSET, CONTENT_INSET)
+    contentSearchShell.BackgroundColor3 = Library.COLORS.bg
+    contentSearchShell.BackgroundTransparency = 0.64
+    contentSearchShell.BorderSizePixel = 0
+    contentSearchShell.Parent = content
+    corner(8).Parent = contentSearchShell
+    local contentSearchStroke = Instance.new("UIStroke", contentSearchShell)
+    contentSearchStroke.Color = Library.COLORS.navHover
+    contentSearchStroke.Transparency = 0.9
+
+    local contentSearchBox = Instance.new("TextBox")
+    contentSearchBox.Size = UDim2.new(1, -18, 1, 0)
+    contentSearchBox.Position = UDim2.new(0, 9, 0, 0)
+    contentSearchBox.BackgroundTransparency = 1
+    contentSearchBox.BorderSizePixel = 0
+    contentSearchBox.PlaceholderText = "Search settings..."
+    contentSearchBox.ClearTextOnFocus = false
+    contentSearchBox.Text = ""
+    contentSearchBox.Font = Enum.Font.Gotham
+    contentSearchBox.TextSize = 12
+    contentSearchBox.TextColor3 = Library.COLORS.text
+    contentSearchBox.PlaceholderColor3 = Library.COLORS.muted
+    contentSearchBox.Parent = contentSearchShell
+
+    local contentBody = Instance.new("Frame")
+    contentBody.BackgroundTransparency = 1
+    contentBody.Size = UDim2.new(1, -(CONTENT_INSET * 2), 0, CONTENT_BODY_H)
+    contentBody.Position = UDim2.fromOffset(CONTENT_INSET, CONTENT_BODY_TOP)
+    contentBody.Parent = content
+
+    local dockSize = Instance.new("UIScale", root)
+    local isAnimating = false
+
+    local function headerHiddenPosition()
+        return UDim2.fromOffset(SIDE_PAD, -80)
+    end
+
+    local function navHiddenPosition()
+        return UDim2.fromOffset(-NAV_W - 50, TOP_CONTENT_Y)
+    end
+
+    local function contentVisiblePosition()
+        return UDim2.fromOffset(SIDE_PAD + NAV_W + layout.contentGap, TOP_CONTENT_Y)
+    end
+
+    local function contentHiddenPosition()
+        return UDim2.fromOffset(layout.width + 50, TOP_CONTENT_Y)
+    end
+
+    local function rootClosedPosition()
+        return centeredRootPosition(layout.isMobile and 70 or 60)
+    end
+
+    local function toggleMenuPanel()
+        if isAnimating then return end
+        isAnimating = true
+
+        if not root.Visible then
+            root.Visible = true
+            setBlur(true)
+            dockSize.Scale = 1
+            root.Position = centeredRootPosition()
+            root.Rotation = 0
+            header.Position = UDim2.fromOffset(SIDE_PAD, HEADER_PAD_TOP)
+            nav.Position = UDim2.fromOffset(SIDE_PAD, TOP_CONTENT_Y)
+            content.Position = contentVisiblePosition()
+            isAnimating = false
+
+        else
+            setBlur(false)
+            root.Visible = false
+            dockSize.Scale = 1
+            root.Position = centeredRootPosition()
+            root.Rotation = 0
+            isAnimating = false
+        end
+    end
+
+    local themeBtn = Instance.new("TextButton")
+    themeBtn.Size = UDim2.fromOffset(26, 26)
+    themeBtn.Position = UDim2.new(0, 150, 0, 2) -- nằm cạnh title (cánh thẻ Selina)
+    themeBtn.BackgroundColor3 = Library.COLORS.panel
+    themeBtn.BackgroundTransparency = 0.42
+    themeBtn.Text = ""
+    themeBtn.AutoButtonColor = false
+    themeBtn.ZIndex = 7
+    themeBtn.Parent = titleHost
+    themeBtn.AnchorPoint = Vector2.new(1, 0)
+    themeBtn.Position = UDim2.new(1, -2, 0, 2)
+    corner(8).Parent = themeBtn
+
+    local hmLayout = Instance.new("UIListLayout", themeBtn)
+    hmLayout.Padding = UDim.new(0, 3)
+    hmLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    hmLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    for i = 1, 3 do
+        local line = Instance.new("Frame")
+        line.Size = UDim2.fromOffset(12, 2)
+        line.BackgroundColor3 = Library.COLORS.text
+        line.BorderSizePixel = 0
+        line.ZIndex = 8
+        line.Parent = themeBtn
+        corner(2).Parent = line
+    end
+
+    local dropList = Instance.new("ScrollingFrame")
+    dropList.Size = UDim2.fromOffset(130, 0) 
+    dropList.Position = UDim2.new(0, 150, 0, 32) -- rớt xuống dọc theo icon
+    dropList.BackgroundColor3 = Library.COLORS.panel
+    dropList.BackgroundTransparency = 0.2
+    dropList.ClipsDescendants = true
+    dropList.Visible = false -- Che giấu triệt để lúc ban đầu, tránh bị viền stroke phát sáng
+    dropList.ZIndex = 15
+    dropList.ScrollBarThickness = 0
+    dropList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    dropList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    dropList.Parent = titleHost
+    dropList.AnchorPoint = Vector2.new(1, 0)
+    dropList.Position = UDim2.new(1, 0, 0, 32)
+    corner(8).Parent = dropList
+    local dropStroke = Instance.new("UIStroke", dropList)
+    dropStroke.Color = Library.COLORS.navHover
+    dropStroke.Transparency = 0.9
+
+    local dropLayout = Instance.new("UIListLayout", dropList)
+    dropLayout.Padding = UDim.new(0, 4)
+    dropLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+    local dropPad = Instance.new("UIPadding", dropList)
+    dropPad.PaddingTop = UDim.new(0, 6)
+    dropPad.PaddingBottom = UDim.new(0, 6)
+
+    local isThemeDropOpen = false
+    local hoverDrop = false
+
+    local function toggleDrop(state)
+        isThemeDropOpen = state
+        if state then
+            dropList.Visible = true
+            tween(dropList, {Size = UDim2.fromOffset(130, 110)}, 0.3, Enum.EasingStyle.Back)
+        else
+            tween(dropList, {Size = UDim2.fromOffset(130, 0)}, 0.3, Enum.EasingStyle.Back).Completed:Connect(function()
+                if not isThemeDropOpen then dropList.Visible = false end
+            end)
+        end
+    end
+
+    themeBtn.MouseButton1Click:Connect(function()
+        toggleDrop(not isThemeDropOpen)
+    end)
+
+    themeBtn.MouseEnter:Connect(function()
+        tween(themeBtn, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+    end)
+    themeBtn.MouseLeave:Connect(function()
+        tween(themeBtn, {BackgroundColor3 = Library.COLORS.panel}, 0.2)
+    end)
+
+    for themeK, v in pairs(Library.THEMES) do
+        local choice = Instance.new("TextButton")
+        choice.Size = UDim2.new(1, -12, 0, 28)
+        choice.BackgroundColor3 = Library.COLORS.bg
+        choice.Text = themeK
+        choice.Font = Enum.Font.GothamSemibold
+        choice.TextSize = 12
+        choice.TextColor3 = Library.COLORS.text
+        choice.AutoButtonColor = false
+        choice.ZIndex = 16
+        choice.Parent = dropList
+        corner(6).Parent = choice
+        local cStroke = Instance.new("UIStroke", choice)
+        cStroke.Color = Library.COLORS.navHover
+        cStroke.Transparency = 0.9
+
+        choice.MouseEnter:Connect(function() 
+            tween(choice, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+        end)
+        choice.MouseLeave:Connect(function() 
+            tween(choice, {BackgroundColor3 = Library.COLORS.bg}, 0.2)
+        end)
+        choice.MouseButton1Click:Connect(function()
+            createRipple(choice, Mouse.X, Mouse.Y)
+            Library:ChangeTheme(themeK)
+            hoverDrop = false
+            toggleDrop(false)
+        end)
+    end
+
+    local dockLogo = Instance.new("ImageButton")
+    dockLogo.AutoButtonColor = false
+    dockLogo.Size = UDim2.fromOffset(layout.dockSize, layout.dockSize)
+    dockLogo.Position = UDim2.new(1, -(layout.dockInset + layout.dockSize), 1, -(layout.dockInset + layout.dockSize))
+    dockLogo.AnchorPoint = Vector2.new(0, 0)
+    dockLogo.BackgroundColor3 = Library.COLORS.panel
+    dockLogo.BackgroundTransparency = 0.12
+    dockLogo.ZIndex = 20
+    dockLogo.Parent = screenGui
+    local dockCorner = Instance.new("UICorner", dockLogo)
+    dockCorner.CornerRadius = UDim.new(1, 0)
+    local dockStroke = Instance.new("UIStroke", dockLogo)
+    dockStroke.Color = Library.COLORS.navHover
+    dockStroke.Thickness = 1
+    dockStroke.Transparency = 1
+
+    local function dockBasePosition()
+        return UDim2.new(1, -(layout.dockInset + layout.dockSize), 1, -(layout.dockInset + layout.dockSize))
+    end
+
+    local viewportConnection
+
+    local function applyResponsiveLayout()
+        layout = buildLayout()
+        HEADER_PAD_TOP, HEADER_H, HEADER_W = layout.headerPadTop, layout.headerHeight, layout.headerWidth
+        SIDE_PAD, BOTTOM_PAD = layout.sidePad, layout.bottomPad
+        TOP_CONTENT_Y = layout.topContentY
+        NAV_W = layout.navWidth
+        PANEL_H = layout.panelHeight
+        NAV_INSET = layout.navInset
+        CONTENT_INSET = layout.contentInset
+        SEARCH_H = layout.searchHeight
+        NAV_BODY_TOP, NAV_BODY_H = layout.navBodyTop, layout.navBodyHeight
+        CONTENT_W = layout.contentWidth
+        CONTENT_BODY_TOP, CONTENT_BODY_H = layout.contentBodyTop, layout.contentBodyHeight
+
+        root.Size = UDim2.fromOffset(layout.width, layout.height)
+        header.Size = UDim2.fromOffset(HEADER_W, HEADER_H)
+        title.Size = UDim2.new(1, -76, 0, layout.isMobile and 20 or 22)
+        title.Position = UDim2.new(0.5, 0, 0, 1)
+        title.TextSize = layout.titleTextSize
+        subtitle.Size = UDim2.new(1, -76, 0, layout.isMobile and 10 or 12)
+        subtitle.Position = UDim2.new(0.5, 0, 0, layout.isMobile and 20 or 22)
+        subtitle.TextSize = layout.subtitleTextSize
+        nav.Size = UDim2.fromOffset(NAV_W, PANEL_H)
+        navSearchShell.Size = UDim2.new(1, -(NAV_INSET * 2), 0, SEARCH_H)
+        navSearchShell.Position = UDim2.fromOffset(NAV_INSET, NAV_INSET)
+        navBody.Size = UDim2.new(1, -(NAV_INSET * 2), 0, NAV_BODY_H)
+        navBody.Position = UDim2.fromOffset(NAV_INSET, NAV_BODY_TOP)
+        content.Size = UDim2.fromOffset(CONTENT_W, PANEL_H)
+        contentSearchShell.Size = UDim2.new(1, -(CONTENT_INSET * 2), 0, SEARCH_H)
+        contentSearchShell.Position = UDim2.fromOffset(CONTENT_INSET, CONTENT_INSET)
+        contentBody.Size = UDim2.new(1, -(CONTENT_INSET * 2), 0, CONTENT_BODY_H)
+        contentBody.Position = UDim2.fromOffset(CONTENT_INSET, CONTENT_BODY_TOP)
+        dockLogo.Size = UDim2.fromOffset(layout.dockSize, layout.dockSize)
+        dockLogo.Position = dockBasePosition()
+
+        if not isAnimating then
+            if root.Visible then
+                root.Position = centeredRootPosition()
+                header.Position = UDim2.fromOffset(SIDE_PAD, HEADER_PAD_TOP)
+                nav.Position = UDim2.fromOffset(SIDE_PAD, TOP_CONTENT_Y)
+                content.Position = contentVisiblePosition()
+            else
+                root.Position = rootClosedPosition()
+            end
+        end
+    end
+
+    local function bindViewportListener()
+        if viewportConnection then
+            viewportConnection:Disconnect()
+            viewportConnection = nil
+        end
+        currentCamera = workspace.CurrentCamera or currentCamera
+        if currentCamera then
+            viewportConnection = currentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsiveLayout)
+        end
+    end
+
+    bindViewportListener()
+    workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        bindViewportListener()
+        applyResponsiveLayout()
+    end)
+    applyResponsiveLayout()
+
+    if not applyLogoToImage(dockLogo, LogoId) then
+        local dockPh = Instance.new("TextLabel", dockLogo)
+        dockPh.Size = UDim2.new(1, 0, 1, 0)
+        dockPh.BackgroundTransparency = 1
+        dockPh.Text = "Menu"
+        dockPh.TextColor3 = Library.COLORS.accent1
+        dockPh.Font = Enum.Font.GothamBold
+        dockPh.TextSize = 14
+        dockPh.ZIndex = 21
+    end
+
+    makeDockImageDragAndTap(dockLogo, toggleMenuPanel)
+
+    UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode[toggleKey] or (Enum.KeyCode[toggleKey] == nil and input.KeyCode == Enum.KeyCode.RightShift) then
+            toggleMenuPanel()
+        end
+    end)
+
+    local WindowObject = {}
+    local Pages = {}
+    local FirstTab = true
+    local activeTabName
+    local dropdownClosers = {}
+
+    local function closeAllDropdowns(exceptCloser)
+        for _, closer in ipairs(dropdownClosers) do
+            if closer ~= exceptCloser then
+                pcall(closer)
+            end
+        end
+    end
+
+    local function buildSearchText(...)
+        local parts = {}
+        for index = 1, select("#", ...) do
+            local value = select(index, ...)
+            if type(value) == "table" then
+                for _, nested in ipairs(value) do
+                    table.insert(parts, tostring(nested))
+                end
+            elseif value ~= nil and value ~= "" then
+                table.insert(parts, tostring(value))
+            end
+        end
+        return string.lower(table.concat(parts, " "))
+    end
+
+    local function matchesSearchQuery(text, query)
+        if query == nil or query == "" then
+            return true
+        end
+        return string.find(text or "", query, 1, true) ~= nil
+    end
+
+    local function setActiveTab(tabName)
+        activeTabName = tabName
+        for name, dat in pairs(Pages) do
+            local isActive = name == tabName and dat.Btn.Visible ~= false
+            dat.Page.Visible = isActive
+            if isActive then
+                tween(dat.Btn, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+                tween(dat.Label, {TextColor3 = Library.COLORS.text}, 0.2)
+                tween(dat.Marker, {BackgroundTransparency = 0}, 0.2)
+                tween(dat.Label, {Position = UDim2.new(0, 18, 0, 0)}, 0.2)
+            else
+                tween(dat.Btn, {BackgroundColor3 = Library.COLORS.panel}, 0.2)
+                tween(dat.Label, {TextColor3 = Library.COLORS.muted}, 0.2)
+                tween(dat.Marker, {BackgroundTransparency = 1}, 0.2)
+                tween(dat.Label, {Position = UDim2.new(0, 14, 0, 0)}, 0.2)
+            end
+        end
+    end
+
+    local function applyPageSearch(pageData)
+        if not pageData then
+            return
+        end
+        local query = string.lower(contentSearchBox.Text or "")
+        for _, entry in ipairs(pageData.SearchEntries or {}) do
+            if entry.Instance and entry.Instance.Parent then
+                entry.Instance.Visible = matchesSearchQuery(entry.SearchText, query)
+            end
+        end
+    end
+
+    local function applyAllPageSearch()
+        for _, pageData in pairs(Pages) do
+            applyPageSearch(pageData)
+        end
+    end
+
+    local function applyNavSearch()
+        local query = string.lower(navSearchBox.Text or "")
+        local firstVisible
+        for name, dat in pairs(Pages) do
+            local isVisible = matchesSearchQuery(string.lower(name), query)
+            dat.Btn.Visible = isVisible
+            if isVisible and not firstVisible then
+                firstVisible = name
+            end
+        end
+
+        if activeTabName and Pages[activeTabName] and Pages[activeTabName].Btn.Visible ~= false then
+            setActiveTab(activeTabName)
+            applyPageSearch(Pages[activeTabName])
+            return
+        end
+
+        if firstVisible then
+            setActiveTab(firstVisible)
+            applyPageSearch(Pages[firstVisible])
+            return
+        end
+
+        activeTabName = nil
+        for _, dat in pairs(Pages) do
+            dat.Page.Visible = false
+        end
+    end
+
+    navSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+        applyNavSearch()
+    end)
+
+    contentSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+        applyAllPageSearch()
+    end)
+
+    function WindowObject:MakeTab(TabConfig)
+        local TabName = TabConfig.Name or "Tab"
+
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, 0, 0, 32)
+        btn.BackgroundColor3 = Library.COLORS.navHover
+        btn.BackgroundTransparency = 0.18
+        btn.Text = ""
+        btn.AutoButtonColor = false
+        btn.Parent = navBody
+        corner(8).Parent = btn
+
+        local tabLabel = Instance.new("TextLabel")
+        tabLabel.Size = UDim2.new(1, -22, 1, 0)
+        tabLabel.Position = UDim2.new(0, 14, 0, 0)
+        tabLabel.BackgroundTransparency = 1
+        tabLabel.Text = TabName
+        tabLabel.Font = Enum.Font.GothamBold
+        tabLabel.TextSize = 11
+        tabLabel.TextColor3 = Library.COLORS.muted
+        tabLabel.TextXAlignment = Enum.TextXAlignment.Left
+        tabLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        tabLabel.Parent = btn
+
+        local marker = Instance.new("Frame")
+        marker.Size = UDim2.new(0, 2, 0, 16)
+        marker.Position = UDim2.new(0, 7, 0.5, -8)
+        marker.BackgroundColor3 = Library.COLORS.accent1
+        marker.BorderSizePixel = 0
+        marker.BackgroundTransparency = 1
+        marker.Parent = btn
+        corner(2).Parent = marker
+
+        local page = Instance.new("ScrollingFrame")
+        page.Size = UDim2.new(1, 0, 1, 0)
+        page.BackgroundTransparency = 1
+        page.BorderSizePixel = 0
+        page.ScrollBarThickness = 0
+        page.ScrollBarImageColor3 = Library.COLORS.accent1
+        page.CanvasSize = UDim2.new(0, 0, 0, 0)
+        page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        page.Visible = FirstTab
+        page.Parent = contentBody
+
+        local list = Instance.new("UIListLayout")
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Padding = UDim.new(0, 8)
+        list.Parent = page
+
+        local pageSearchEntries = {}
+
+        local function registerSearchTarget(instance, ...)
+            local entry = {
+                Instance = instance,
+                SearchText = buildSearchText(...)
+            }
+            table.insert(pageSearchEntries, entry)
+            return entry
+        end
+
+        local function updateSearchTarget(entry, ...)
+            if entry then
+                entry.SearchText = buildSearchText(...)
+            end
+        end
+
+        Pages[TabName] = {
+            Page = page,
+            Btn = btn,
+            Label = tabLabel,
+            Marker = marker,
+            SearchEntries = pageSearchEntries
+        }
+
+        if FirstTab then
+            activeTabName = TabName
+            setActiveTab(TabName)
+            FirstTab = false
+        end
+
+        btn.MouseEnter:Connect(function() 
+            if marker.BackgroundTransparency ~= 0 then
+                tween(btn, {BackgroundColor3 = Library.COLORS.navHover}, 0.2) 
+                tween(tabLabel, {Position = UDim2.new(0, 18, 0, 0)}, 0.2)
+            end
+        end)
+        btn.MouseLeave:Connect(function() 
+            if marker.BackgroundTransparency ~= 0 then
+                tween(btn, {BackgroundColor3 = Library.COLORS.panel}, 0.2) 
+                tween(tabLabel, {Position = UDim2.new(0, 14, 0, 0)}, 0.2)
+            end
+        end)
+
+        btn.MouseButton1Click:Connect(function()
+            createRipple(btn, Mouse.X, Mouse.Y)
+            setActiveTab(TabName)
+            applyPageSearch(Pages[TabName])
+        end)
+
+        local TabObject = {}
+
+        function TabObject:AddToggle(TogConfig)
+            local titleText = TogConfig.Name or "Toggle"
+            local initial   = TogConfig.Default
+            if initial == nil then initial = TogConfig.CurrentValue end
+            initial = initial or false
+            local callback  = TogConfig.Callback or function() end
+            local flag = TogConfig.Flag
+
+            local row = Instance.new("TextButton")
+            row.Size = UDim2.new(1, 0, 0, 36)
+            row.BackgroundColor3 = Library.COLORS.panel
+            row.BackgroundTransparency = 0.14
+            row.Text = ""
+            row.AutoButtonColor = false
+            row.Parent = page
+            corner(6).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.navHover
+            rStroke.Transparency = 0.88
+            registerSearchTarget(row, titleText)
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(1, -58, 1, 0)
+            lbl.Position = UDim2.new(0, 10, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = titleText
+            lbl.Font = Enum.Font.GothamSemibold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+
+            local on = initial
+            local knobOuter = Instance.new("Frame")
+            knobOuter.Size = UDim2.fromOffset(36, 20)
+            knobOuter.Position = UDim2.new(1, -44, 0.5, -10)
+            knobOuter.BackgroundColor3 = on and Library.COLORS.accent1 or Library.COLORS.navHover
+            knobOuter.Parent = row
+            corner(9).Parent = knobOuter
+
+            local knobInner = Instance.new("Frame")
+            knobInner.Size = UDim2.fromOffset(14, 14)
+            knobInner.Position = UDim2.new(0, on and 19 or 3, 0.5, -7)
+            knobInner.BackgroundColor3 = Library.COLORS.text
+            knobInner.Parent = knobOuter
+            corner(6).Parent = knobInner
+
+            local shade = Instance.new("UIStroke", knobOuter)
+            shade.Color = Library.COLORS.glow
+            shade.Transparency = on and 0.45 or 1
+            shade.Thickness = 1
+
+            row.MouseEnter:Connect(function() 
+                tween(rStroke, {Color = Library.COLORS.muted}, 0.2) 
+            end)
+            row.MouseLeave:Connect(function() 
+                tween(rStroke, {Color = Library.COLORS.navHover}, 0.2) 
+            end)
+
+            local function applyToggle(nextValue, fromLoad)
+                on = nextValue == true
+                createRipple(row, Mouse.X, Mouse.Y) 
+                if on then
+                    tween(knobOuter, {BackgroundColor3 = Library.COLORS.accent1}, 0.25)
+                    tween(knobInner, {Position = UDim2.new(0, 19, 0.5, -7)}, 0.25, Enum.EasingStyle.Back)
+                    tween(shade, {Transparency = 0.45}, 0.25)
+                else
+                    tween(knobOuter, {BackgroundColor3 = Library.COLORS.navHover}, 0.25)
+                    tween(knobInner, {Position = UDim2.new(0, 3, 0.5, -7)}, 0.25, Enum.EasingStyle.Quart)
+                    tween(shade, {Transparency = 1}, 0.25)
+                end
+
+                tween(knobInner, {Size = UDim2.fromOffset(16, 14)}, 0.1).Completed:Connect(function()
+                    tween(knobInner, {Size = UDim2.fromOffset(14, 14)}, 0.15)
+                end)
+
+                if flag then
+                    Library._compat.flags[flag] = on
+                end
+                if not fromLoad then
+                    pcall(callback, on)
+                else
+                    pcall(callback, on)
+                end
+            end
+
+            if flag then
+                Library:_bindFlag(flag, on, function(value)
+                    applyToggle(value, true)
+                end)
+            end
+
+            row.MouseButton1Click:Connect(function()
+                applyToggle(not on, false)
+            end)
+
+            if on then
+                pcall(callback, on)
+            end
+
+            return {
+                Set = function(_, value)
+                    applyToggle(value, true)
+                end
+            }
+        end
+
+        function TabObject:AddButton(BtnConfig)
+            local btnText = BtnConfig.Name or "Button"
+            local callback = BtnConfig.Callback or function() end
+
+            local btnUI = Instance.new("TextButton")
+            btnUI.Size = UDim2.new(1, 0, 0, 34)
+            btnUI.BackgroundColor3 = Library.COLORS.navHover
+            btnUI.BackgroundTransparency = 0.14
+            btnUI.Text = "  " .. btnText
+            btnUI.Font = Enum.Font.GothamBold
+            btnUI.TextSize = 12
+            btnUI.TextColor3 = Library.COLORS.text
+            btnUI.TextXAlignment = Enum.TextXAlignment.Left
+            btnUI.TextTruncate = Enum.TextTruncate.AtEnd
+            btnUI.AutoButtonColor = false
+            btnUI.ClipsDescendants = true
+            btnUI.Parent = page
+            corner(8).Parent = btnUI
+            registerSearchTarget(btnUI, btnText)
+
+            local pad = Instance.new("UIPadding", btnUI)
+            pad.PaddingLeft = UDim.new(0, 12)
+
+            local bStroke = Instance.new("UIStroke", btnUI)
+            bStroke.Color = Library.COLORS.navHover
+            bStroke.Transparency = 0.88
+
+            btnUI.MouseEnter:Connect(function() 
+                tween(btnUI, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+                tween(bStroke, {Color = Library.COLORS.accent1}, 0.2)
+                tween(pad, {PaddingLeft = UDim.new(0, 16)}, 0.2) 
+            end)
+            btnUI.MouseLeave:Connect(function() 
+                tween(btnUI, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+                tween(bStroke, {Color = Library.COLORS.navHover}, 0.2)
+                tween(pad, {PaddingLeft = UDim.new(0, 12)}, 0.2)
+            end)
+
+            btnUI.MouseButton1Click:Connect(function() 
+                createRipple(btnUI, Mouse.X, Mouse.Y)
+                    tween(btnUI, {Size = UDim2.new(0.98, 0, 0, 32)}, 0.08).Completed:Connect(function()
+                    tween(btnUI, {Size = UDim2.new(1, 0, 0, 34)}, 0.3, Enum.EasingStyle.Quad)
+                end)
+                pcall(callback) 
+            end)
+        end
+        
+        function TabObject:AddSlider(SliderConfig)
+            local sliderText = SliderConfig.Name or "Slider"
+            local sliderRange = SliderConfig.Range
+            local min = SliderConfig.Min or (type(sliderRange) == "table" and sliderRange[1]) or 0
+            local max = SliderConfig.Max or (type(sliderRange) == "table" and sliderRange[2]) or 100
+            local increment = SliderConfig.Increment or 1
+            local suffix = SliderConfig.Suffix or ""
+            local default = SliderConfig.Default
+            if default == nil then default = SliderConfig.CurrentValue end
+            default = default or min
+            local callback = SliderConfig.Callback or function() end
+            local flag = SliderConfig.Flag
+            
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 46)
+            row.BackgroundColor3 = Library.COLORS.panel
+            row.BackgroundTransparency = 0.14
+            row.Parent = page
+            corner(8).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.navHover
+            rStroke.Transparency = 0.88
+            registerSearchTarget(row, sliderText)
+            
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.34, 0, 1, 0)
+            lbl.Position = UDim2.new(0, 10, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = sliderText
+            lbl.Font = Enum.Font.GothamSemibold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+            
+            local valLbl = Instance.new("TextLabel")
+            valLbl.Size = UDim2.new(0, 54, 0, 14)
+            valLbl.Position = UDim2.new(1, -56, 0, 6)
+            valLbl.BackgroundTransparency = 1
+            valLbl.Text = tostring(default)
+            valLbl.Font = Enum.Font.GothamBold
+            valLbl.TextSize = 11
+            valLbl.TextColor3 = Library.COLORS.accent1
+            valLbl.TextXAlignment = Enum.TextXAlignment.Right
+            valLbl.Parent = row
+            
+            local track = Instance.new("Frame")
+            track.Size = UDim2.new(0.58, -20, 0, 5)
+            track.Position = UDim2.new(0.36, 0, 0.5, 2)
+            track.BackgroundColor3 = Library.COLORS.navHover
+            track.Parent = row
+            corner(3).Parent = track
+            
+            local fill = Instance.new("Frame")
+            local startPct = math.clamp((default - min)/(max - min), 0, 1)
+            fill.Size = UDim2.new(startPct, 0, 1, 0)
+            fill.BackgroundColor3 = Library.COLORS.accent1
+            fill.Parent = track
+            corner(3).Parent = fill
+            
+            local dragBtn = Instance.new("TextButton")
+            dragBtn.Size = UDim2.new(1, 0, 1, 14)
+            dragBtn.Position = UDim2.new(0, 0, 0, -5)
+            dragBtn.BackgroundTransparency = 1
+            dragBtn.Text = ""
+            dragBtn.Parent = track
+            
+            local dragging = false
+            local currentValue = default
+
+            local function normalizeValue(value)
+                value = math.clamp(tonumber(value) or min, min, max)
+                local stepped = min + math.floor(((value - min) / increment) + 0.5) * increment
+                return math.clamp(stepped, min, max)
+            end
+
+            local function applyValue(value, fromLoad)
+                currentValue = normalizeValue(value)
+                local percent = max == min and 0 or ((currentValue - min) / (max - min))
+                tween(fill, {Size = UDim2.new(percent, 0, 1, 0)}, 0.1)
+                valLbl.Text = tostring(currentValue) .. suffix
+                if flag then
+                    Library._compat.flags[flag] = currentValue
+                end
+                pcall(callback, currentValue)
+            end
+
+            local function updateSlider(input)
+                local posX = math.clamp(input.Position.X - track.AbsolutePosition.X, 0, track.AbsoluteSize.X)
+                local percent = posX / track.AbsoluteSize.X
+                local value = min + ((max - min) * percent)
+                applyValue(value, false)
+            end
+            
+            dragBtn.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = true
+                    updateSlider(input)
+                end
+            end)
+            
+            UserInputService.InputChanged:Connect(function(input)
+                if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    updateSlider(input)
+                end
+            end)
+            
+            UserInputService.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = false
+                end
+            end)
+            
+            if flag then
+                Library:_bindFlag(flag, currentValue, function(value)
+                    applyValue(value, true)
+                end)
+            end
+
+            applyValue(default, true)
+
+            row.MouseEnter:Connect(function() tween(rStroke, {Color = Library.COLORS.muted}, 0.2) end)
+            row.MouseLeave:Connect(function() tween(rStroke, {Color = Library.COLORS.navHover}, 0.2) end)
+
+            return {
+                Set = function(_, value)
+                    applyValue(value, true)
+                end
+            }
+        end
+
+        function TabObject:CreateSection(text)
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 28)
+            row.BackgroundColor3 = Library.COLORS.navHover
+            row.BackgroundTransparency = 0.14
+            row.Parent = page
+            corner(6).Parent = row
+            local line = Instance.new("UIStroke", row)
+            line.Color = Library.COLORS.accent1
+            line.Transparency = 0.84
+            local searchEntry = registerSearchTarget(row, text)
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(1, -20, 1, 0)
+            label.Position = UDim2.new(0, 10, 0, 0)
+            label.BackgroundTransparency = 1
+            label.Text = tostring(text or "")
+            label.Font = Enum.Font.GothamBold
+            label.TextSize = 12
+            label.TextColor3 = Library.COLORS.accent2
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Parent = row
+
+            return {
+                Set = function(_, newText)
+                    label.Text = tostring(newText or "")
+                    updateSearchTarget(searchEntry, newText)
+                end
+            }
+        end
+
+        function TabObject:CreateInput(InputConfig)
+            local titleText = InputConfig.Name or "Input"
+            local current = tostring(InputConfig.CurrentValue or "")
+            local callback = InputConfig.Callback or function() end
+            local flag = InputConfig.Flag
+
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 38)
+            row.BackgroundColor3 = Library.COLORS.panel
+            row.BackgroundTransparency = 0.14
+            row.Parent = page
+            corner(8).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.navHover
+            rStroke.Transparency = 0.88
+            registerSearchTarget(row, titleText)
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.34, -6, 1, 0)
+            lbl.Position = UDim2.new(0, 10, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = titleText
+            lbl.Font = Enum.Font.GothamSemibold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+
+            local input = Instance.new("TextBox")
+            input.Size = UDim2.new(0.62, -12, 0, 24)
+            input.Position = UDim2.new(0.36, 0, 0.5, -12)
+            input.BackgroundColor3 = Library.COLORS.navHover
+            input.BackgroundTransparency = 0.16
+            input.BorderSizePixel = 0
+            input.Text = current
+            input.PlaceholderText = tostring(InputConfig.PlaceholderText or "")
+            input.ClearTextOnFocus = false
+            input.Font = Enum.Font.Gotham
+            input.TextSize = 12
+            input.TextColor3 = Library.COLORS.text
+            input.PlaceholderColor3 = Library.COLORS.muted
+            input.Parent = row
+            corner(6).Parent = input
+
+            local function applyText(value, fromLoad)
+                current = tostring(value or "")
+                input.Text = current
+                if flag then
+                    Library._compat.flags[flag] = current
+                end
+                pcall(callback, current)
+            end
+
+            if flag then
+                Library:_bindFlag(flag, current, function(value)
+                    applyText(value, true)
+                end)
+            end
+
+            input.FocusLost:Connect(function()
+                local finalValue = input.Text
+                if InputConfig.RemoveTextAfterFocusLost then
+                    input.Text = ""
+                end
+                applyText(finalValue, false)
+            end)
+
+            return {
+                Set = function(_, value)
+                    applyText(value, true)
+                end
+            }
+        end
+
+        function TabObject:CreateDropdown(DropConfig)
+            local titleText = DropConfig.Name or "Dropdown"
+            local options = cloneArray(DropConfig.Options)
+            local current = cloneArray(DropConfig.CurrentOption)
+            local multiple = DropConfig.MultipleOptions == true
+            local callback = DropConfig.Callback or function() end
+            local flag = DropConfig.Flag
+            local open = false
+            local searchText = ""
+
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 38)
+            row.BackgroundColor3 = Library.COLORS.panel
+            row.BackgroundTransparency = 0.14
+            row.Parent = page
+            corner(8).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.navHover
+            rStroke.Transparency = 0.88
+            local dropdownSearchEntry = registerSearchTarget(row, titleText, options)
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.34, -6, 1, 0)
+            lbl.Position = UDim2.new(0, 10, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = titleText
+            lbl.Font = Enum.Font.GothamSemibold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+
+            local selector = Instance.new("TextButton")
+            selector.Size = UDim2.new(0.62, -12, 0, 24)
+            selector.Position = UDim2.new(0.36, 0, 0.5, -12)
+            selector.BackgroundColor3 = Library.COLORS.navHover
+            selector.BackgroundTransparency = 0.16
+            selector.BorderSizePixel = 0
+            selector.TextXAlignment = Enum.TextXAlignment.Left
+            selector.Font = Enum.Font.Gotham
+            selector.TextSize = 12
+            selector.TextColor3 = Library.COLORS.text
+            selector.TextTruncate = Enum.TextTruncate.AtEnd
+            selector.AutoButtonColor = false
+            selector.Parent = row
+            corner(6).Parent = selector
+
+            local menu = Instance.new("Frame")
+            menu.Size = UDim2.fromOffset(0, 0)
+            menu.BackgroundColor3 = Library.COLORS.panel
+            menu.BackgroundTransparency = 0
+            menu.BorderSizePixel = 0
+            menu.Visible = false
+            menu.ClipsDescendants = true
+            menu.ZIndex = 40
+            menu.Parent = content
+            corner(8).Parent = menu
+            local menuStroke = Instance.new("UIStroke", menu)
+            menuStroke.Color = Library.COLORS.navHover
+            menuStroke.Transparency = 0.9
+
+            local searchBox = Instance.new("TextBox")
+            searchBox.Size = UDim2.new(1, -12, 0, 26)
+            searchBox.Position = UDim2.new(0, 6, 0, 6)
+            searchBox.BackgroundColor3 = Library.COLORS.bg
+            searchBox.BackgroundTransparency = 0
+            searchBox.BorderSizePixel = 0
+            searchBox.PlaceholderText = "Search..."
+            searchBox.ClearTextOnFocus = false
+            searchBox.Text = ""
+            searchBox.Font = Enum.Font.Gotham
+            searchBox.TextSize = 12
+            searchBox.TextColor3 = Library.COLORS.text
+            searchBox.PlaceholderColor3 = Library.COLORS.muted
+            searchBox.Visible = false
+            searchBox.ZIndex = 41
+            searchBox.Parent = menu
+            corner(6).Parent = searchBox
+
+            local menuScroll = Instance.new("ScrollingFrame")
+            menuScroll.Size = UDim2.new(1, -12, 0, 0)
+            menuScroll.Position = UDim2.new(0, 6, 0, 38)
+            menuScroll.BackgroundTransparency = 1
+            menuScroll.BorderSizePixel = 0
+            menuScroll.ScrollBarThickness = 3
+            menuScroll.ScrollBarImageColor3 = Library.COLORS.accent1
+            menuScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+            menuScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            menuScroll.Visible = false
+            menuScroll.ZIndex = 41
+            menuScroll.Parent = menu
+
+            local menuLayout = Instance.new("UIListLayout", menuScroll)
+            menuLayout.Padding = UDim.new(0, 4)
+
+            local function updateSummary()
+                if #current == 0 then
+                    selector.Text = "  Select option"
+                else
+                    local summary = table.concat(current, ", ")
+                    if #summary > 28 then
+                        summary = string.sub(summary, 1, 25) .. "..."
+                    end
+                    selector.Text = "  " .. summary
+                end
+            end
+
+            local function applySelection(nextSelection, fromLoad)
+                current = cloneArray(nextSelection)
+                if flag then
+                    Library._compat.flags[flag] = cloneArray(current)
+                end
+                updateSummary()
+                pcall(callback, cloneArray(current))
+            end
+
+            local function positionPopup(totalHeight)
+                local menuWidth = math.max(180, math.floor(row.AbsoluteSize.X))
+                local relX = row.AbsolutePosition.X - content.AbsolutePosition.X
+                local relY = row.AbsolutePosition.Y - content.AbsolutePosition.Y
+                local maxX = math.max(CONTENT_INSET, content.AbsoluteSize.X - menuWidth - CONTENT_INSET)
+                local finalX = math.clamp(relX, CONTENT_INSET, maxX)
+                local openAbove = relY + row.AbsoluteSize.Y + totalHeight > content.AbsoluteSize.Y - CONTENT_INSET and relY > totalHeight
+                local finalY
+                if openAbove then
+                    finalY = relY - totalHeight - 6
+                else
+                    finalY = relY + row.AbsoluteSize.Y + 6
+                end
+                menu.Size = UDim2.fromOffset(menuWidth, totalHeight)
+                menu.Position = UDim2.fromOffset(finalX, finalY)
+            end
+
+            local setOpen
+            local closeDropdown
+
+            local function rebuildOptions()
+                for _, child in ipairs(menuScroll:GetChildren()) do
+                    if child:IsA("TextButton") then
+                        child:Destroy()
+                    end
+                end
+                for _, optionValue in ipairs(options) do
+                    local optionText = tostring(optionValue)
+                    if searchText ~= "" and not string.find(string.lower(optionText), string.lower(searchText), 1, true) then
+                        continue
+                    end
+                    local optionBtn = Instance.new("TextButton")
+                    optionBtn.Size = UDim2.new(1, 0, 0, 26)
+                    optionBtn.BackgroundColor3 = Library.COLORS.bg
+                    optionBtn.BackgroundTransparency = 0
+                    optionBtn.BorderSizePixel = 0
+                    optionBtn.Text = "  " .. optionText
+                    optionBtn.TextXAlignment = Enum.TextXAlignment.Left
+                    optionBtn.Font = Enum.Font.Gotham
+                    optionBtn.TextSize = 12
+                    optionBtn.TextColor3 = Library.COLORS.text
+                    optionBtn.TextTruncate = Enum.TextTruncate.AtEnd
+                    optionBtn.AutoButtonColor = false
+                    optionBtn.ZIndex = 42
+                    optionBtn.Parent = menuScroll
+                    corner(6).Parent = optionBtn
+
+                    optionBtn.MouseEnter:Connect(function()
+                        tween(optionBtn, {BackgroundColor3 = Library.COLORS.navHover}, 0.15)
+                    end)
+                    optionBtn.MouseLeave:Connect(function()
+                        tween(optionBtn, {BackgroundColor3 = Library.COLORS.bg}, 0.15)
+                    end)
+
+                    optionBtn.MouseButton1Click:Connect(function()
+                        if multiple then
+                            local nextSelection = cloneArray(current)
+                            local existingIndex = nil
+                            for index, existing in ipairs(nextSelection) do
+                                if existing == optionValue then
+                                    existingIndex = index
+                                    break
+                                end
+                            end
+                            if existingIndex then
+                                table.remove(nextSelection, existingIndex)
+                            else
+                                table.insert(nextSelection, optionValue)
+                            end
+                            applySelection(nextSelection, false)
+                        else
+                            applySelection({optionValue}, false)
+                            setOpen(false)
+                        end
+                    end)
+                end
+            end
+
+            searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                searchText = searchBox.Text or ""
+                rebuildOptions()
+            end)
+
+            setOpen = function(state)
+                open = state
+                menu.Visible = open
+                if open then
+                    searchBox.Visible = true
+                    menuScroll.Visible = true
+                    rebuildOptions()
+                    local visibleCount = 0
+                    for _, child in ipairs(menuScroll:GetChildren()) do
+                        if child:IsA("TextButton") then
+                            visibleCount = visibleCount + 1
+                        end
+                    end
+                    local listHeight = math.max(30, math.min(visibleCount, 6) * 30)
+                    local scrollTop = 38
+                    local totalHeight = 44 + listHeight + 8
+                    positionPopup(totalHeight)
+                    menuScroll.Position = UDim2.new(0, 6, 0, scrollTop)
+                    menuScroll.Size = UDim2.new(1, -12, 0, listHeight)
+                else
+                    searchBox.Visible = false
+                    menuScroll.Visible = false
+                    searchBox.Text = ""
+                    searchText = ""
+                    menu.Size = UDim2.fromOffset(0, 0)
+                    menu.Visible = false
+                end
+            end
+
+            closeDropdown = function()
+                if open then
+                    setOpen(false)
+                end
+            end
+            table.insert(dropdownClosers, closeDropdown)
+
+            page:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+                if open then
+                    setOpen(false)
+                end
+            end)
+
+            page:GetPropertyChangedSignal("Visible"):Connect(function()
+                if not page.Visible and open then
+                    setOpen(false)
+                end
+            end)
+
+            selector.MouseButton1Click:Connect(function()
+                if open then
+                    setOpen(false)
+                else
+                    closeAllDropdowns(closeDropdown)
+                    setOpen(true)
+                end
+            end)
+
+            UserInputService.InputBegan:Connect(function(input, gp)
+                if gp or not open then
+                    return
+                end
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+                    return
+                end
+
+                local inputPos = Vector2.new(input.Position.X, input.Position.Y)
+                local function isInside(guiObject)
+                    local absPos = guiObject.AbsolutePosition
+                    local absSize = guiObject.AbsoluteSize
+                    return inputPos.X >= absPos.X
+                        and inputPos.X <= absPos.X + absSize.X
+                        and inputPos.Y >= absPos.Y
+                        and inputPos.Y <= absPos.Y + absSize.Y
+                end
+
+                if not isInside(menu) and not isInside(selector) then
+                    setOpen(false)
+                end
+            end)
+
+            if flag then
+                Library:_bindFlag(flag, current, function(value)
+                    if type(value) == "table" then
+                        applySelection(value, true)
+                    elseif value == nil then
+                        applySelection({}, true)
+                    else
+                        applySelection({value}, true)
+                    end
+                end)
+            end
+
+            rebuildOptions()
+            updateSummary()
+
+            return {
+                Refresh = function(_, newOptions)
+                    options = cloneArray(newOptions)
+                    updateSearchTarget(dropdownSearchEntry, titleText, options)
+                    rebuildOptions()
+                    setOpen(false)
+                end,
+                Set = function(_, value)
+                    if type(value) == "table" then
+                        applySelection(value, true)
+                    elseif value == nil then
+                        applySelection({}, true)
+                    else
+                        applySelection({value}, true)
+                    end
+                end
+            }
+        end
+
+        function TabObject:CreateToggle(TogConfig)
+            return self:AddToggle(TogConfig)
+        end
+
+        function TabObject:CreateButton(BtnConfig)
+            return self:AddButton(BtnConfig)
+        end
+
+        function TabObject:CreateSlider(SliderConfig)
+            return self:AddSlider(SliderConfig)
+        end
+
+        function TabObject:AddInput(InputConfig)
+            return self:CreateInput(InputConfig)
+        end
+
+        function TabObject:AddDropdown(DropConfig)
+            return self:CreateDropdown(DropConfig)
+        end
+
+        applyNavSearch()
+        applyPageSearch(Pages[TabName])
+
+        return TabObject
+    end
+
+    function WindowObject:CreateTab(TabName, _Icon)
+        return self:MakeTab({Name = TabName})
+    end
+
+    return WindowObject
+end
+
+function Library:CreateWindow(Config)
+    local configSaving = Config and Config.ConfigurationSaving
+    if type(configSaving) == "table" and configSaving.Enabled then
+        self._compat.config = {
+            FolderName = configSaving.FolderName or "SelinaHub_SUR",
+            FileName = configSaving.FileName or "SUR_Settings"
+        }
+    else
+        self._compat.config = nil
+    end
+
+    return self:MakeWindow({
+        Name = Config and Config.Name or UI_CONFIG.HubName,
+        Subtitle = (Config and (Config.LoadingSubtitle or Config.Subtitle)) or UI_CONFIG.HubSubtitle,
+        LogoID = (Config and Config.LogoID)
+            or ((Config and Config.Icon and Config.Icon ~= 0) and tostring(Config.Icon))
+            or UI_CONFIG.LogoID,
+        StartHidden = false,
+        ToggleKeybind = (Config and Config.ToggleUIKeybind) or "K",
+    })
+end
+
+function Library:SaveConfiguration()
+    local cfg = self._compat.config
+    if not cfg then return true end
+    if type(writefile) ~= "function" then
+        return false, "Configuration saver is unavailable."
+    end
+    if type(isfolder) == "function" and type(makefolder) == "function" then
+        local exists = false
+        local ok = pcall(function()
+            exists = isfolder(cfg.FolderName)
+        end)
+        if ok and not exists then
+            pcall(makefolder, cfg.FolderName)
+        end
+    end
+    local okEncode, encoded = pcall(function()
+        return game:GetService("HttpService"):JSONEncode({
+            flags = self._compat.flags
+        })
+    end)
+    if not okEncode then
+        return false, encoded
+    end
+    local okWrite, err = pcall(function()
+        writefile(cfg.FolderName .. "/" .. cfg.FileName .. ".json", encoded)
+    end)
+    if not okWrite then
+        return false, err
+    end
+    return true
+end
+
+function Library:LoadConfiguration()
+    local cfg = self._compat.config
+    if not cfg then return true end
+    if type(readfile) ~= "function" or type(isfile) ~= "function" then
+        return false, "Configuration loader is unavailable."
+    end
+    local path = cfg.FolderName .. "/" .. cfg.FileName .. ".json"
+    local exists = false
+    local okExists = pcall(function()
+        exists = isfile(path)
+    end)
+    if not okExists or not exists then
+        return true
+    end
+    local okRead, raw = pcall(function()
+        return readfile(path)
+    end)
+    if not okRead then
+        return false, raw
+    end
+    local okDecode, data = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(raw)
+    end)
+    if not okDecode then
+        return false, data
+    end
+    if type(data) ~= "table" or type(data.flags) ~= "table" then
+        return true
+    end
+    for flag, value in pairs(data.flags) do
+        self:_setFlag(flag, value, true)
+    end
+    return true
+end
+
+return Library
+--================ END EMBEDDED LUNA UI LIBRARY ================--
+end
+
+local function loadRayfieldLibrary()
+	local okLibrary, library = pcall(createEmbeddedLunaUI)
 	if not okLibrary or library == nil then
-		return nil, "Custom UI library failed to initialize: " .. tostring(library)
+		return nil, "Embedded Luna UI failed to initialize: " .. tostring(library)
 	end
 	return library, nil
 end
@@ -389,6 +2374,64 @@ local function getStandList()
 	return table.clone(standOptions)
 end
 
+function executiveUI.standAbbreviation(value)
+	local letters = {}
+	for word in cleanText(value):gmatch("[%w]+") do
+		table.insert(letters, word:sub(1, 1):lower())
+	end
+	return table.concat(letters)
+end
+
+function executiveUI.rememberStandSelection(value)
+	value = cleanText(value)
+	if value == "" or value == "Any" then return end
+	for i = #executiveUI.recentStandSelections, 1, -1 do
+		if nameKey(executiveUI.recentStandSelections[i]) == nameKey(value) then
+			table.remove(executiveUI.recentStandSelections, i)
+		end
+	end
+	table.insert(executiveUI.recentStandSelections, 1, value)
+	while #executiveUI.recentStandSelections > 5 do table.remove(executiveUI.recentStandSelections) end
+	if executiveUI.recentStandSection then
+		executiveUI.recentStandSection:Set("Recent: " .. table.concat(executiveUI.recentStandSelections, "  •  "))
+	end
+end
+
+function executiveUI.getFilteredStandList(query)
+	query = nameKey(query)
+	local result, seen = {}, {}
+	local function add(value)
+		local key = nameKey(value)
+		if value and value ~= "" and not seen[key] and #result < 8 then
+			seen[key] = true
+			table.insert(result, value)
+		end
+	end
+	if query == "" then
+		add("Any")
+		for _, value in ipairs(executiveUI.recentStandSelections) do add(value) end
+		for _, value in ipairs(standOptions) do add(value) end
+	else
+		for _, value in ipairs(standOptions) do
+			local key = nameKey(value)
+			local id = uniqueStandId(value)
+			if key:find(query, 1, true) or executiveUI.standAbbreviation(value):find(query, 1, true)
+				or (id and nameKey(id):find(query, 1, true)) then
+				add(value)
+			end
+		end
+	end
+	if #result == 0 then return {"-- No matches --"} end
+	return result
+end
+
+function executiveUI.targetKey(slot)
+	local attributes = normalizeAttributes(slot and slot.att or {"Any"})
+	table.sort(attributes)
+	local standKey = slot and (slot.standId or nameKey(slot.stand)) or "any"
+	return tostring(standKey) .. "|" .. table.concat(attributes, ",")
+end
+
 local function getSlotDisplayText(slot)
 	local attText = "Any"
 	if type(slot.att) == "table" then
@@ -410,21 +2453,25 @@ end
 local function buildSlotListForDropdown()
 	local names = {}
 	for i, slot in ipairs(farmSlots) do
-		table.insert(names, "Slot " .. i .. ": " .. getSlotDisplayText(slot))
+		table.insert(names, "Target " .. i .. ": " .. getSlotDisplayText(slot))
 	end
 	if #names == 0 then
-		return {"-- No slots --"}
+		return {"-- No targets --"}
 	end
 	return names
 end
 
 local function buildSlotsDisplayText()
 	if #farmSlots == 0 then
-		return "No slots - add one above!"
+		return "No targets yet"
 	end
 	local lines = {}
-	for i, slot in ipairs(farmSlots) do
+	for i = 1, math.min(3, #farmSlots) do
+		local slot = farmSlots[i]
 		table.insert(lines, "[" .. i .. "] " .. getSlotDisplayText(slot))
+	end
+	if #farmSlots > 3 then
+		table.insert(lines, "+" .. (#farmSlots - 3) .. " more — use Manage Targets")
 	end
 	return table.concat(lines, " | ")
 end
@@ -597,7 +2644,7 @@ local function webhook(text, stand, color, attValue, isSlotMatch)
 
 	if isSlotMatch then
 		table.insert(fields, 3, {
-			["name"] = "Matched Slot",
+			["name"] = "Matched Target",
 			["value"] = "`Yes`",
 			["inline"] = true
 		})
@@ -778,24 +2825,24 @@ local function loadSlots()
 		return jsonservice:JSONDecode(raw)
 	end)
 	if not okDecode or type(decoded) ~= "table" then
-		return false, "Invalid farm slot save data."
+		return false, "Invalid target save data."
 	end
 	local normalized = normalizeFarmSlots(decoded)
 	local count = 0
 	for key in pairs(decoded) do
 		if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
-			return false, "Saved slots must be an array."
+			return false, "Saved targets must be an array."
 		end
 		count = count + 1
 	end
-	if #normalized ~= count then return false, "Invalid slot entry; current slots kept." end
+	if #normalized ~= count then return false, "Invalid target entry; current targets kept." end
 	farmSlots = normalized
 	return true, nil
 end
 
 local function autoSaveSlots()
 	local ok, err = saveSlots()
-	if not ok then notif("Slot Save Failed", tostring(err)) end
+	if not ok then notif("Target Save Failed", tostring(err)) end
 end
 
 local isFarmingActive = false
@@ -1297,7 +3344,7 @@ local function doStandFarm()
 			task.wait()
 			if not running() then break end
 			if #farmSlots == 0 then
-				notif("Stand Farm", "Add at least 1 slot before farming.")
+				notif("Stand Farm", "Add at least 1 target before farming.")
 				break
 			end
 			if errors >= 10 then
@@ -1327,9 +3374,9 @@ local function doStandFarm()
 					returnFarmItem(activeItem)
 					activeItem = nil
 					local dn = getDisplayName(stand)
-					notif("MATCH!", "Slot " .. slotNum .. ": " .. att .. " " .. dn)
+					notif("MATCH!", "Target " .. slotNum .. ": " .. att .. " " .. dn)
 					task.spawn(webhook, "MATCH FOUND: " .. att:upper() .. " " .. dn:upper()
-						.. " (Slot " .. slotNum .. ")", stand, 0x00FF00, att, true)
+						.. " (Target " .. slotNum .. ")", stand, 0x00FF00, att, true)
 					if autoStoreMatches then
 						local stored, detail = storeMatchedStand(stand, att, running)
 						if not stored then
@@ -1438,50 +3485,114 @@ startStandFarm = function()
 end
 
 --================== LOAD SAVED DATA ==================--
+setBootstrapStatus("Loading Stand catalog...", false)
 local catalogLoaded, catalogLoadError = scanStandCatalog(5)
 if not catalogLoaded then
 	warn("Stand catalog fallback: " .. tostring(catalogLoadError))
 end
 local slotsLoaded, slotsLoadError = loadSlots()
 if not slotsLoaded and slotsLoadError then
-	warn("Failed to load saved farm slots: " .. tostring(slotsLoadError))
+	warn("Failed to load saved targets: " .. tostring(slotsLoadError))
 end
 
 --================== RAYFIELD UI ==================--
 
+setBootstrapStatus("Starting embedded interface...", false)
 local rayfieldError = nil
 Rayfield, rayfieldError = loadRayfieldLibrary()
 if not Rayfield then
-	warn(tostring(rayfieldError or "Rayfield UI failed to load."))
+	setBootstrapStatus(tostring(rayfieldError or "Interface library failed to load."), true)
 	return
 end
 
-local Window = Rayfield:CreateWindow({
-	Name = "Luna Hub",
-	Icon = 0,
-	LoadingTitle = "Stand Upright Rebooted",
-	LoadingSubtitle = "Auto Farm & Auto Lair",
-	ShowText = "Luna Hub",
-	Theme = "Default",
-	ToggleUIKeybind = "K",
-	DisableRayfieldPrompts = false,
-	DisableBuildWarnings = true,
-	ConfigurationSaving = {
-		Enabled = true,
-		FolderName = "LunaHub_SUR",
-		FileName = "LunaHub_Settings"
-	},
-	KeySystem = false,
+-- Built-in and already exercised by the downloaded interface library.
+if type(Rayfield.THEMES) == "table" and Rayfield.THEMES.Midnight then
+	Rayfield.COLORS = Rayfield.THEMES.Midnight
+end
+
+setBootstrapStatus("Creating window...", false)
+local windowOk, Window = pcall(function()
+	return Rayfield:CreateWindow({
+		Name = "Luna Hub",
+		Icon = 0,
+		LogoID = "",
+		LoadingTitle = "Stand Upright Rebooted",
+		LoadingSubtitle = "Luna Executive",
+		ShowText = "Luna Hub",
+		Theme = "Midnight",
+		ToggleUIKeybind = "K",
+		DisableRayfieldPrompts = false,
+		DisableBuildWarnings = true,
+		ConfigurationSaving = {
+			Enabled = true,
+			FolderName = "LunaHub_SUR",
+			FileName = "LunaHub_Settings"
+		},
+		KeySystem = false,
+	})
+end)
+if not windowOk or not Window then
+	setBootstrapStatus("Window error: " .. tostring(Window), true)
+	return
+end
+
+local function forceExecutiveWindowVisible()
+	local playerGui = localplr:FindFirstChild("PlayerGui")
+	local gui = playerGui and playerGui:FindFirstChild("TienTaiStandHub")
+	if not gui then return false end
+	gui.Enabled = true
+	gui.DisplayOrder = 999999
+	local root = gui:FindFirstChild("Root")
+	if root then root.Visible = true end
+	return true
+end
+
+forceExecutiveWindowVisible()
+setBootstrapStatus("Building navigation...", false)
+
+-- Create navigation once in its final order. Features below keep their original
+-- callbacks and are only assigned to clearer destinations.
+local Tabs = {}
+Tabs.Dashboard = Window:CreateTab("Dashboard", "layout-dashboard")
+Tabs.Farm = Window:CreateTab("Stand Farm", "shopping-cart")
+Tabs.Targets = Window:CreateTab("Targets", "crosshair")
+Tabs.Storage = Window:CreateTab("Storage & Orb", "archive")
+Tabs.Lair = Window:CreateTab("Auto Lair", "swords")
+Tabs.Utilities = Window:CreateTab("Utilities", "wrench")
+Tabs.Settings = Window:CreateTab("Settings", "settings")
+
+Tabs.Dashboard:CreateSection("LUNA EXECUTIVE  •  CONTROL CENTER")
+executiveUI.dashboardFarmSection = Tabs.Dashboard:CreateSection("Stand Farm  •  OFF")
+executiveUI.dashboardLairSection = Tabs.Dashboard:CreateSection("Auto Lair  •  OFF")
+executiveUI.dashboardCurrentSection = Tabs.Dashboard:CreateSection("Current  •  Loading...")
+executiveUI.dashboardTargetSection = Tabs.Dashboard:CreateSection("Targets  •  " .. #farmSlots)
+executiveUI.dashboardOrbSection = Tabs.Dashboard:CreateSection("2x Orb  •  Checking...")
+Tabs.Dashboard:CreateSection("Quick Actions")
+Tabs.Dashboard:CreateButton({
+	Name = "Start Stand Farm",
+	Callback = function()
+		if farmToggle then farmToggle:Set(true) else startStandFarm() end
+	end,
 })
+Tabs.Dashboard:CreateButton({
+	Name = "Stop Stand Farm",
+	Callback = function()
+		if farmToggle then farmToggle:Set(false) else stopStandFarm() end
+	end,
+})
+Tabs.Dashboard:CreateButton({
+	Name = "Toggle Auto Lair",
+	Callback = function()
+		if executiveUI.lairToggleControl then executiveUI.lairToggleControl:Set(not autolairToggle) end
+	end,
+})
+Tabs.Dashboard:CreateSection("Configure each feature in its dedicated tab")
 
---================== TAB 1: STAND FARM ==================--
-local TabFarm = Window:CreateTab("Stand Farm", "shopping-cart")
+--================== TAB: STAND FARM ==================--
+Tabs.Farm:CreateSection("STAND FARM  •  EXECUTION")
+Tabs.Farm:CreateSection("Choose the Arrow, then start or stop the farming engine")
 
-TabFarm:CreateSection("Filter Information")
-catalogSection = TabFarm:CreateSection("Stand catalog: " .. (#standOptions - 1) .. " names (" .. catalogSource .. ")")
-TabFarm:CreateSection("All stands are shown. Arrow Type only chooses the item to use.")
-
-TabFarm:CreateDropdown({
+Tabs.Farm:CreateDropdown({
 	Name = "Arrow Type",
 	Options = {"Stand Arrow", "Charged Arrow"},
 	CurrentOption = {"Stand Arrow"},
@@ -1493,34 +3604,67 @@ TabFarm:CreateDropdown({
 	end,
 })
 
-TabFarm:CreateSection("Create New Slot")
+--================== TAB: TARGETS ==================--
+Tabs.Targets:CreateSection("TARGET BUILDER")
+Tabs.Targets:CreateSection("Target rules are separate from in-game Storage Slots")
+catalogSection = Tabs.Targets:CreateSection("Catalog: " .. (#standOptions - 1) .. " stands  •  " .. catalogSource)
 
-TabFarm:CreateButton({
-	Name = "Refresh Stand List",
+Tabs.Targets:CreateDropdown({
+	Name = "Match Mode",
+	Options = {"Stand + Attribute", "Stand Only", "Attribute Only"},
+	CurrentOption = {"Stand + Attribute"},
+	MultipleOptions = false,
+	Flag = "TargetMatchModeV1",
+	Callback = function(Options)
+		executiveUI.selectedTargetMode = firstOption(Options, "Stand + Attribute")
+	end,
+})
+
+Tabs.Targets:CreateInput({
+	Name = "Search Stand",
+	CurrentValue = "",
+	PlaceholderText = "Name or abbreviation: GE, GER, KQ...",
+	RemoveTextAfterFocusLost = false,
+	Flag = "TargetStandSearchV1",
+	Callback = function(Text)
+		if standDropdown then
+			standDropdown:Refresh(executiveUI.getFilteredStandList(Text))
+		end
+	end,
+})
+
+executiveUI.recentStandSection = Tabs.Targets:CreateSection("Recent: none yet")
+
+Tabs.Targets:CreateButton({
+	Name = "Refresh Stand Catalog",
 	Callback = function()
 		local ok, message = scanStandCatalog(5)
 		if ok then
 			local selected = selectedStandForSlot
-			standDropdown:Refresh(getStandList())
-			standDropdown:Set({selected})
+			standDropdown:Refresh(executiveUI.getFilteredStandList(selected))
+			pcall(function() standDropdown:Set({selected}) end)
 		end
-		catalogSection:Set("Stand catalog: " .. (#standOptions - 1) .. " names (" .. catalogSource .. ")")
+		catalogSection:Set("Catalog: " .. (#standOptions - 1) .. " stands  •  " .. catalogSource)
 		notif("Stand Catalog", ok and message or (tostring(message) .. " Current list kept."))
 	end,
 })
 
-standDropdown = TabFarm:CreateDropdown({
+standDropdown = Tabs.Targets:CreateDropdown({
 	Name = "Stand",
-	Options = getStandList(),
+	Options = executiveUI.getFilteredStandList(""),
 	CurrentOption = {"Any"},
 	MultipleOptions = false,
 	Flag = "SlotStand",
 	Callback = function(Options)
-		selectedStandForSlot = firstOption(Options, "Any")
+		local value = firstOption(Options, selectedStandForSlot)
+		if value ~= "-- No matches --" then
+			selectedStandForSlot = value
+			executiveUI.rememberStandSelection(value)
+		end
 	end,
 })
 
-TabFarm:CreateDropdown({
+Tabs.Targets:CreateDropdown({
 	Name = "Attributes (select multiple)",
 	Options = allAttributes,
 	CurrentOption = {"Any"},
@@ -1531,36 +3675,49 @@ TabFarm:CreateDropdown({
 	end,
 })
 
-TabFarm:CreateButton({
-	Name = "Add Slot",
+Tabs.Targets:CreateButton({
+	Name = "Add Target",
 	Callback = function()
+		local targetStand = selectedStandForSlot or "Any"
+		local targetAttributes = normalizeAttributes(selectedAttsForSlot)
+		if executiveUI.selectedTargetMode == "Stand Only" then
+			targetAttributes = {"Any"}
+		elseif executiveUI.selectedTargetMode == "Attribute Only" then
+			targetStand = "Any"
+		end
 		local newSlot = {
-			stand = selectedStandForSlot or "Any",
-			standId = uniqueStandId(selectedStandForSlot),
-			att = normalizeAttributes(selectedAttsForSlot),
+			stand = targetStand,
+			standId = targetStand ~= "Any" and uniqueStandId(targetStand) or nil,
+			att = targetAttributes,
 		}
+		for i, existing in ipairs(farmSlots) do
+			if executiveUI.targetKey(existing) == executiveUI.targetKey(newSlot) then
+				notif("Target Exists", "Same as Target " .. i .. ".")
+				return
+			end
+		end
 		table.insert(farmSlots, newSlot)
 		autoSaveSlots()
-		notif("Added", "Slot " .. #farmSlots .. ": " .. getSlotDisplayText(newSlot))
+		notif("Target Added", "Target " .. #farmSlots .. ": " .. getSlotDisplayText(newSlot))
 		refreshUI()
 	end,
 })
 
-TabFarm:CreateSection("Your Slot List")
-slotDisplaySection = TabFarm:CreateSection(buildSlotsDisplayText())
+Tabs.Targets:CreateSection("TARGET SUMMARY  •  FIRST 3")
+slotDisplaySection = Tabs.Targets:CreateSection(buildSlotsDisplayText())
 
-TabFarm:CreateSection("Manage Slots")
+Tabs.Targets:CreateSection("MANAGE TARGETS")
 
-removeDropdown = TabFarm:CreateDropdown({
-	Name = "Select Slot",
+removeDropdown = Tabs.Targets:CreateDropdown({
+	Name = "Select Target",
 	Options = buildSlotListForDropdown(),
 	CurrentOption = {},
 	MultipleOptions = false,
 	Flag = "RemoveSlot",
 	Callback = function(Options)
 		local sel = firstOption(Options, nil)
-		if sel and sel ~= "-- No slots --" then
-			local num = string.match(sel, "Slot (%d+)")
+		if sel and sel ~= "-- No targets --" then
+			local num = string.match(sel, "Target (%d+)")
 			selectedRemoveIndex = tonumber(num)
 		else
 			selectedRemoveIndex = nil
@@ -1568,8 +3725,8 @@ removeDropdown = TabFarm:CreateDropdown({
 	end,
 })
 
-TabFarm:CreateButton({
-	Name = "Remove Selected Slot",
+Tabs.Targets:CreateButton({
+	Name = "Remove Selected Target",
 	Callback = function()
 		if selectedRemoveIndex and selectedRemoveIndex >= 1 and selectedRemoveIndex <= #farmSlots then
 			local removed = farmSlots[selectedRemoveIndex]
@@ -1579,29 +3736,29 @@ TabFarm:CreateButton({
 			notif("Removed", getSlotDisplayText(removed))
 			refreshUI()
 		else
-			notif("Error", "Select a slot first!")
+			notif("Error", "Select a target first!")
 		end
 	end,
 })
 
-TabFarm:CreateButton({
-	Name = "Clear All Slots",
+Tabs.Targets:CreateButton({
+	Name = "Clear All Targets",
 	Callback = function()
 		table.clear(farmSlots)
 		selectedRemoveIndex = nil
 		local ok, err = saveSlots()
 		refreshUI()
 		if ok then
-			notif("Cleared", "All slots removed and saved.")
+			notif("Cleared", "All targets removed and saved.")
 		else
-			notif("Cleared", "All slots removed, but save failed: " .. tostring(err))
+			notif("Cleared", "All targets removed, but save failed: " .. tostring(err))
 		end
 	end,
 })
 
-TabFarm:CreateSection("Controls")
+Tabs.Utilities:CreateSection("QUICK TOOLS")
 
-TabFarm:CreateButton({
+Tabs.Utilities:CreateButton({
 	Name = "Teleport to Safe Zone",
 	Callback = function()
 		local char = localplr.Character
@@ -1612,7 +3769,7 @@ TabFarm:CreateButton({
 	end,
 })
 
-TabFarm:CreateButton({
+Tabs.Utilities:CreateButton({
 	Name = "Storage Stand",
 	Callback = function()
 		local npc = game.Workspace:FindFirstChild("Map")
@@ -1628,32 +3785,32 @@ TabFarm:CreateButton({
 	end,
 })
 
-TabFarm:CreateButton({
-	Name = "Save Slots List",
+Tabs.Targets:CreateButton({
+	Name = "Save Targets",
 	Callback = function()
 		local ok, err = saveSlots()
 		if ok then
-			notif("Saved", #farmSlots .. " slots saved to file!")
+			notif("Saved", #farmSlots .. " targets saved to file!")
 		else
-			notif("Save Failed", err or "Unable to save farm slots.")
+			notif("Save Failed", err or "Unable to save targets.")
 		end
 	end,
 })
 
-TabFarm:CreateButton({
-	Name = "Load Saved Slots",
+Tabs.Targets:CreateButton({
+	Name = "Load Saved Targets",
 	Callback = function()
 		local ok, err = loadSlots()
 		if ok then
-			notif("Loaded", #farmSlots .. " slots loaded!")
+			notif("Loaded", #farmSlots .. " targets loaded!")
 		else
-			notif("Load Failed", err or "Unable to load farm slots.")
+			notif("Load Failed", err or "Unable to load targets.")
 		end
 		refreshUI()
 	end,
 })
 
-TabFarm:CreateSection("White Screen Info")
+Tabs.Utilities:CreateSection("WHITE SCREEN")
 
 local whiteScreenGui = nil
 local whiteScreenConn = nil
@@ -1759,7 +3916,7 @@ local function updateWhiteScreen()
 	)
 end
 
-whiteScreenToggle = TabFarm:CreateToggle({
+whiteScreenToggle = Tabs.Utilities:CreateToggle({
 	Name = "Enable White Screen Overlay",
 	CurrentValue = false,
 	Flag = "WhiteScreenToggle",
@@ -1894,25 +4051,25 @@ whiteScreenToggle = TabFarm:CreateToggle({
 	end,
 })
 
-TabFarm:CreateSection("Execution Engine")
+Tabs.Farm:CreateSection("EXECUTION ENGINE")
 
-TabFarm:CreateSection("Storage on Match")
-TabFarm:CreateSection("KEEP = matches a Stand + Attribute target")
-TabFarm:CreateSection("Slots 1, 2, 4 only; slots 3, 5, 6 excluded")
-storageStatusSection = TabFarm:CreateSection("Storage: Ready")
+Tabs.Storage:CreateSection("STORAGE ON MATCH")
+Tabs.Storage:CreateSection("KEEP means a Stand matched one of your Target rules")
+Tabs.Storage:CreateSection("Available Storage Slots: 1, 2 and 4")
+storageStatusSection = Tabs.Storage:CreateSection("Storage: Ready")
 for i, slot in ipairs(storageMap) do
 	storageSlotSections[i] = {
-		stand = TabFarm:CreateSection(slot.label .. ": reading..."),
-		att = TabFarm:CreateSection("Attribute: reading..."),
+		stand = Tabs.Storage:CreateSection(slot.label .. ": reading..."),
+		att = Tabs.Storage:CreateSection("Attribute: reading..."),
 	}
 end
-TabFarm:CreateToggle({
+Tabs.Storage:CreateToggle({
 	Name = "Auto Store Matches (Slots 1, 2, 4)",
 	CurrentValue = true,
 	Flag = "AutoStoreMatchesV1",
 	Callback = function(value) autoStoreMatches = value == true end,
 })
-TabFarm:CreateButton({
+Tabs.Storage:CreateButton({
 	Name = "Reset Pending Swap After Manual Check",
 	Callback = function()
 		if getgenv().farmstands or isFarmingActive then
@@ -1925,20 +4082,18 @@ TabFarm:CreateButton({
 	end,
 })
 
-TabFarm:CreateSection("2x Orb")
-TabFarm:CreateSection("One 2x Orb per use while farming")
-TabFarm:CreateSection("30-minute timer = local estimate")
-orbStatusSection = TabFarm:CreateSection(orbStatusText())
-TabFarm:CreateToggle({
+Tabs.Storage:CreateSection("2X ORB")
+Tabs.Storage:CreateSection("One Orb per use  •  30-minute local estimate")
+orbStatusSection = Tabs.Storage:CreateSection(orbStatusText())
+Tabs.Storage:CreateToggle({
 	Name = "Auto Use 2x Orb",
 	CurrentValue = true,
 	Flag = "AutoUse2xOrbV1",
 	Callback = function(value) autoUseOrb = value == true end,
 })
-TabFarm:CreateSection("No Orb: farming continues")
-TabFarm:CreateSection("Same-session reload keeps timer; leave/rejoin uses a new Orb")
+Tabs.Storage:CreateSection("No Orb: farming continues  •  Rejoin: fresh Orb required")
 
-farmToggle = TabFarm:CreateToggle({
+farmToggle = Tabs.Farm:CreateToggle({
 	Name = "Enable Auto Use Arrow",
 	CurrentValue = false,
 	Flag = "AutoFarmStands",
@@ -1952,9 +4107,9 @@ farmToggle = TabFarm:CreateToggle({
 	end,
 })
 
-TabFarm:CreateSection("Webhook Notifications")
+Tabs.Settings:CreateSection("WEBHOOK NOTIFICATIONS")
 
-TabFarm:CreateInput({
+Tabs.Settings:CreateInput({
 	Name = "Webhook URL",
 	CurrentValue = "",
 	PlaceholderText = "https://discord.com/api/webhooks/...",
@@ -1965,7 +4120,7 @@ TabFarm:CreateInput({
 	end,
 })
 
-TabFarm:CreateDropdown({
+Tabs.Settings:CreateDropdown({
 	Name = "Tag @everyone for Attributes",
 	Options = {"Strong","Powerful","Manic","Tough","Enrage","Sloppy","Lethargic","Godly","Daemon","Glass Cannon","Invincible","Scourge","Tragic","Hacker","Legendary"},
 	CurrentOption = {},
@@ -1976,40 +4131,20 @@ TabFarm:CreateDropdown({
 	end,
 })
 
-TabFarm:CreateSection("ℹ️ Tag Logic: Empty list = tag all | Selected = tag only those | Slot match = always tag")
+Tabs.Settings:CreateSection("Empty list = tag all  •  Target match = always tag")
 
---================== TAB 1.5: AUTO LAIR ==================--
-local TabLair = Window:CreateTab("Auto Lair", "swords")
-
+--================== TAB: AUTO LAIR (RESTORED ORIGINAL) ==================--
 local useLairNPCName = "i_stabman"
 local targetedLairNPC = nil
 local useLairBoss = "Boss"
-local autolairToggle = false
+autolairToggle = false
 local currentBoss = nil
 local lairLoopConn = nil
 local lairSafeFloor = nil
-local lastLairAttempt = 0
-local lairBossCandidates = {}
-local lastLairBossScan = 0
-local lairKillStates = setmetatable({}, {__mode = "k"})
-local lastKillAuraPulse = 0
-local lastSimulationBoost = 0
-local lairPhase = "idle"
-local lairEnterPendingUntil = 0
-local lairNextTransitionAt = 0
-local lairBossSeenAt = 0
-local lairBossStartY = nil
-local lairLastSafeCFrame = nil
-local lairArrowBaseline = nil
-local lastLairClearScan = 0
-local lastLairClearVisible = false
-local lairClearUiLatched = false
-local lairM1LastAt = 0
-local lairM1Busy = false
 
-TabLair:CreateSection("Target Settings")
+Tabs.Lair:CreateSection("Target Settings")
 
-TabLair:CreateInput({
+Tabs.Lair:CreateInput({
 	Name = "Boss Target Name (Optional)",
 	CurrentValue = "Boss",
 	PlaceholderText = "Defaut is 'Boss'",
@@ -2019,8 +4154,6 @@ TabLair:CreateInput({
 		useLairBoss = (Text and Text ~= "") and Text or "Boss"
 	end,
 })
-
-TabLair:CreateSection("0.2s reaction | one-hit first | M1 fallback")
 
 
 local function resetAutoLairState()
@@ -2033,40 +4166,19 @@ local function resetAutoLairState()
 		lairSafeFloor = nil
 	end
 	currentBoss = nil
-	table.clear(lairBossCandidates)
-	table.clear(lairKillStates)
-	lastLairBossScan = 0
-	lastKillAuraPulse = 0
-	lastSimulationBoost = 0
-	lairPhase = "idle"
-	lairEnterPendingUntil = 0
-	lairNextTransitionAt = 0
-	lairBossSeenAt = 0
-	lairBossStartY = nil
-	lairLastSafeCFrame = nil
-	lairArrowBaseline = nil
-	lastLairClearScan = 0
-	lastLairClearVisible = false
-	lairClearUiLatched = false
-	lairM1LastAt = 0
-	lairM1Busy = false
 end
 
-local function updateLairSafeFloor(safeCFrame)
+local function updateLairSafeFloor(bossCFrame)
 	if not lairSafeFloor or not lairSafeFloor.Parent then
 		lairSafeFloor = Instance.new("Part")
 		lairSafeFloor.Name = "LairAutoFloor"
 		lairSafeFloor.Anchored = true
 		lairSafeFloor.CanCollide = true
-		lairSafeFloor.CanTouch = false
-		lairSafeFloor.CanQuery = false
-		lairSafeFloor.CastShadow = false
 		lairSafeFloor.Transparency = 1
-		lairSafeFloor.Size = Vector3.new(36, 2, 36)
+		lairSafeFloor.Size = Vector3.new(30, 2, 30)
 		lairSafeFloor.Parent = workspace
 	end
-	local position = safeCFrame.Position - Vector3.new(0, 4, 0)
-	lairSafeFloor.CFrame = CFrame.new(position)
+	lairSafeFloor.CFrame = bossCFrame * CFrame.new(0, -14, 0)
 end
 
 local function getInstanceRootPart(instance)
@@ -2124,316 +4236,26 @@ local function findTargetedLairNPC()
 	return npc
 end
 
-local function getLairItemAmount(item)
-	if not item then return 0 end
-	local ok, amount = pcall(function() return item:GetAttribute("ItemAmount") end)
-	if ok and type(amount) == "number" then return math.max(0, math.floor(amount)) end
-	return 1
-end
-
-local function countLairChargedArrows()
-	local total = 0
-	local function scan(parent)
-		if not parent then return end
-		for _, item in ipairs(parent:GetChildren()) do
-			if item.Name == "Charged Arrow" then
-				total = total + getLairItemAmount(item)
-			end
-		end
-	end
-	scan(localplr:FindFirstChild("Backpack"))
-	scan(localplr.Character)
-	return total
-end
-
-local function isGuiActuallyVisible(guiObject, playerGui)
-	local current = guiObject
-	while current and current ~= playerGui do
-		if current:IsA("GuiObject") and not current.Visible then return false end
-		if current:IsA("LayerCollector") and not current.Enabled then return false end
-		current = current.Parent
-	end
-	return current == playerGui
-end
-
-local function isLairClearVisible()
-	local now = os.clock()
-	if now - lastLairClearScan < 0.1 then return lastLairClearVisible end
-	lastLairClearScan = now
-	local playerGui = localplr:FindFirstChild("PlayerGui")
-	if not playerGui then
-		lastLairClearVisible = false
-		return false
-	end
-	for _, object in ipairs(playerGui:GetDescendants()) do
-		if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
-			local text = string.lower(tostring(object.Text or ""))
-			if string.find(text, "lair clear", 1, true) and isGuiActuallyVisible(object, playerGui) then
-				lastLairClearVisible = true
-				return true
-			end
-		end
-	end
-	lastLairClearVisible = false
-	return false
-end
-
 local function tryEnterLair()
-	local now = os.clock()
-	if now < lairEnterPendingUntil or now < lairNextTransitionAt
-		or now - lastLairAttempt < 0.2 then return end
 	local npc = findTargetedLairNPC()
 	if not npc then return end
 	local doneRemote = npc:FindFirstChild("Done")
-	if not doneRemote or not doneRemote:IsA("RemoteEvent") then return end
-
-	lastLairAttempt = now
-	lairArrowBaseline = countLairChargedArrows()
-	lairPhase = "entering"
-	lairEnterPendingUntil = now + 1.5
+	if not doneRemote then return end
 	doneRemote:FireServer(localplr.Character)
 end
 
-local function addLairBossCandidate(results, seen, candidate, referencePosition)
-	if not candidate or seen[candidate] or candidate == localplr.Character
-		or not candidate:IsA("Model") or candidate.Name ~= useLairBoss then return end
-	local humanoid = candidate:FindFirstChildOfClass("Humanoid")
-	local root = getInstanceRootPart(candidate)
-	if not humanoid or not root or not root:IsA("BasePart") then return end
-	seen[candidate] = true
-	table.insert(results, {
-		model = candidate,
-		humanoid = humanoid,
-		root = root,
-		distance = referencePosition and (root.Position - referencePosition).Magnitude or math.huge,
-	})
-end
-
-local function refreshLairBossCandidates(referencePosition, force)
-	local now = os.clock()
-	if not force and now - lastLairBossScan < 0.15 then return lairBossCandidates end
-	lastLairBossScan = now
-
-	local results, seen = {}, {}
-	local living = workspace:FindFirstChild("Living")
-	if living then
-		for _, candidate in ipairs(living:GetChildren()) do
-			addLairBossCandidate(results, seen, candidate, referencePosition)
-		end
-	end
-
-	local map = workspace:FindFirstChild("Map")
-	local lairSpawns = map and map:FindFirstChild("LairSpawns")
-	if lairSpawns then
-		for _, candidate in ipairs(lairSpawns:GetDescendants()) do
-			if candidate:IsA("Model") and candidate.Name == useLairBoss then
-				addLairBossCandidate(results, seen, candidate, referencePosition)
-			end
-		end
-	end
-
-	table.sort(results, function(a, b)
-		local aAlive, bAlive = a.humanoid.Health > 0, b.humanoid.Health > 0
-		if aAlive ~= bAlive then return aAlive end
-		return a.distance < b.distance
-	end)
-	lairBossCandidates = results
-	return results
-end
-
-local function getTargetBoss(candidates)
-	for _, candidate in ipairs(candidates) do
-		if candidate.model.Parent and candidate.root.Parent and candidate.humanoid.Parent
-			and candidate.humanoid.Health > 0 then
-			return candidate.model, candidate.humanoid, candidate.root
-		end
-	end
-
-	-- A local Health value of 0 is not proof that the server killed the boss.
-	-- Keep the same target until its model, Humanoid, or root is actually removed.
-	if currentBoss and currentBoss.Parent then
-		local humanoid = currentBoss:FindFirstChildOfClass("Humanoid")
-		local root = getInstanceRootPart(currentBoss)
-		if humanoid and humanoid.Parent and root and root.Parent then
-			return currentBoss, humanoid, root
-		end
-	end
-
-	for _, candidate in ipairs(candidates) do
-		if candidate.model.Parent and candidate.root.Parent and candidate.humanoid.Parent then
-			return candidate.model, candidate.humanoid, candidate.root
+local function getTargetBoss()
+	local living = game.Workspace:FindFirstChild("Living")
+	if not living then return nil end
+	for _, npc in ipairs(living:GetChildren()) do
+		if npc.Name == useLairBoss
+			and npc:FindFirstChild("Humanoid")
+			and npc.Humanoid.Health > 0
+			and npc:FindFirstChild("HumanoidRootPart") then
+			return npc
 		end
 	end
 	return nil
-end
-
-local function getLairFarmCFrame(bossRoot)
-	local position = bossRoot.Position + Vector3.new(0, 1.5, 3)
-	local lookAt = Vector3.new(bossRoot.Position.X, position.Y, bossRoot.Position.Z)
-	return CFrame.new(position, lookAt)
-end
-
-local function boostLairSimulationRadius()
-	local now = os.clock()
-	if now - lastSimulationBoost < 0.25 then return end
-	lastSimulationBoost = now
-	if type(setsimulationradius) == "function" then
-		pcall(setsimulationradius, 1000000, 1000000)
-	end
-	if type(sethiddenproperty) == "function" then
-		pcall(sethiddenproperty, localplr, "SimulationRadius", 1000000)
-		pcall(sethiddenproperty, localplr, "MaximumSimulationRadius", 1000000)
-	end
-end
-
-local function getBossNetworkOwnership(root)
-	if type(isnetworkowner) ~= "function" then return nil end
-	local ok, owned = pcall(isnetworkowner, root)
-	if not ok then return nil end
-	return owned == true
-end
-
-local function getLairM1Remotes()
-	local character = localplr.Character
-	if not character or not character.Parent then return nil end
-	local combatModel = character
-	local standEvents = combatModel:FindFirstChild("StandEvents")
-	if not standEvents then
-		local living = workspace:FindFirstChild("Living")
-		combatModel = living and living:FindFirstChild(localplr.Name) or combatModel
-		standEvents = combatModel and combatModel:FindFirstChild("StandEvents")
-	end
-	local m1Remote = standEvents and standEvents:FindFirstChild("M1")
-	local events = ReplicatedStorage:FindFirstChild("Events")
-	local abilityInput = events and events:FindFirstChild("AbilityInput")
-	if m1Remote and m1Remote:IsA("RemoteEvent")
-		and abilityInput and abilityInput:IsA("RemoteEvent") then
-		return abilityInput, m1Remote
-	end
-	return nil
-end
-
-local function fireLairM1Fallback()
-	local now = os.clock()
-	if lairM1Busy or now - lairM1LastAt < 0.18 then return false end
-	local abilityInput, m1Remote = getLairM1Remotes()
-	if not abilityInput or not m1Remote then return false end
-
-	lairM1Busy = true
-	lairM1LastAt = now
-	local began = false
-	local ok = pcall(function()
-		abilityInput:FireServer("MouseButton1", "Begin", nil)
-		began = true
-		m1Remote:FireServer()
-	end)
-	task.delay(0.1, function()
-		if began then
-			pcall(function()
-				if abilityInput.Parent then
-					abilityInput:FireServer("MouseButton1", "End", nil)
-				end
-			end)
-		end
-		lairM1Busy = false
-	end)
-	return ok
-end
-
-local function pulseBossKillAura(candidates)
-	local now = os.clock()
-	if now - lastKillAuraPulse < 0.03 then return end
-	lastKillAuraPulse = now
-	boostLairSimulationRadius()
-
-	-- The one-hit phase itself sends no combat remote. Never force the Dead state;
-	-- that can break accessories locally while the server still considers the boss alive.
-	for _, candidate in ipairs(candidates) do
-		local model, humanoid, root = candidate.model, candidate.humanoid, candidate.root
-		if model.Parent and humanoid.Parent and root.Parent then
-			local state = lairKillStates[model]
-			if not state then
-				state = {lastAttempt = 0, rearming = false}
-				lairKillStates[model] = state
-			end
-			pcall(function() humanoid.BreakJointsOnDeath = false end)
-
-			local owned = getBossNetworkOwnership(root)
-			if owned ~= false then
-				if humanoid.Health > 0 and now - state.lastAttempt >= 0.05 then
-					state.lastAttempt = now
-					pcall(function() humanoid.Health = 0 end)
-				elseif humanoid.Health <= 0 and not state.rearming
-					and now - state.lastAttempt >= 0.75 then
-					-- If the model still exists, zero may only be local. Re-arm the
-					-- property so the next 0 is a fresh replication attempt.
-					state.lastAttempt = now
-					state.rearming = true
-					pcall(function() humanoid.Health = 1 end)
-					task.delay(0.06, function()
-						if model.Parent and humanoid.Parent and root.Parent
-							and getBossNetworkOwnership(root) ~= false then
-							pcall(function() humanoid.Health = 0 end)
-						end
-						state.rearming = false
-					end)
-				end
-			end
-		end
-	end
-end
-
-local function markLairCleared()
-	lairPhase = "cleared"
-	lairNextTransitionAt = os.clock() + 0.2
-	lairEnterPendingUntil = 0
-	currentBoss = nil
-	table.clear(lairBossCandidates)
-	table.clear(lairKillStates)
-	lastLairBossScan = 0
-	lairBossSeenAt = 0
-	lairBossStartY = nil
-	lairArrowBaseline = countLairChargedArrows()
-	lairClearUiLatched = true
-	lairM1LastAt = 0
-end
-
-local function hasLairCompletionSignal()
-	local clearVisible = isLairClearVisible()
-	if lairPhase ~= "fighting" then
-		lairArrowBaseline = countLairChargedArrows()
-		if clearVisible then
-			lairClearUiLatched = true
-		elseif lairPhase ~= "cleared" then
-			lairClearUiLatched = false
-		end
-		return false
-	end
-	local chargedArrows = countLairChargedArrows()
-	if lairArrowBaseline ~= nil and chargedArrows > lairArrowBaseline then return true end
-	if not clearVisible then
-		lairClearUiLatched = false
-		return false
-	end
-	if not lairClearUiLatched then
-		lairClearUiLatched = true
-		return true
-	end
-	return false
-end
-
-local function holdLairPosition(hrp, safeCFrame)
-	if not hrp or not safeCFrame then return end
-	updateLairSafeFloor(safeCFrame)
-	hrp.CFrame = safeCFrame
-	hrp.AssemblyLinearVelocity = Vector3.zero
-	hrp.AssemblyAngularVelocity = Vector3.zero
-end
-
-local function isLairBossFalling(bossRoot)
-	if not bossRoot or not lairBossStartY then return false end
-	return bossRoot.Position.Y < lairBossStartY - 10
-		or bossRoot.AssemblyLinearVelocity.Y < -90
 end
 
 local function loopAutoLair()
@@ -2453,57 +4275,29 @@ local function loopAutoLair()
 
 		local hrp = char:FindFirstChild("HumanoidRootPart")
 		if not hrp then return end
-		local now = os.clock()
-		if lairArrowBaseline == nil then
-			lairArrowBaseline = countLairChargedArrows()
-		end
 
-		if hasLairCompletionSignal() then
-			markLairCleared()
-		end
-
-		if lairPhase == "cleared" then
-			holdLairPosition(hrp, lairLastSafeCFrame)
-			if now >= lairNextTransitionAt then tryEnterLair() end
-			return
-		end
-
-		local candidates = refreshLairBossCandidates(hrp.Position)
-		local previousBoss = currentBoss
-		local boss, bossHumanoid, bossRoot = getTargetBoss(candidates)
+		local boss = getTargetBoss()
 		currentBoss = boss
 
-		if boss and bossHumanoid and bossRoot then
-			if boss ~= previousBoss or lairPhase ~= "fighting" then
-				lairPhase = "fighting"
-				lairEnterPendingUntil = 0
-				lairBossSeenAt = now
-				lairBossStartY = bossRoot.Position.Y
-				lairLastSafeCFrame = getLairFarmCFrame(bossRoot)
-				lairM1LastAt = 0
-			end
+		if boss then
+			local bossRoot = boss:FindFirstChild("HumanoidRootPart")
+			if bossRoot then
+				updateLairSafeFloor(bossRoot.CFrame)
+				
+				hrp.CFrame = bossRoot.CFrame * CFrame.new(0, -10, 0)
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
 
-			local bossFalling = isLairBossFalling(bossRoot)
-			if not bossFalling then
-				lairLastSafeCFrame = getLairFarmCFrame(bossRoot)
-			end
-			holdLairPosition(hrp, lairLastSafeCFrame)
-			pulseBossKillAura(candidates)
-			if not bossFalling and now - lairBossSeenAt >= 0.2 then
-				fireLairM1Fallback()
+				bossRoot.AssemblyLinearVelocity = Vector3.zero
+				bossRoot.AssemblyAngularVelocity = Vector3.zero
 			end
 		else
-			if lairPhase == "fighting" then
-				markLairCleared()
-				holdLairPosition(hrp, lairLastSafeCFrame)
-			else
-				tryEnterLair()
-			end
+			tryEnterLair()
 		end
 	end)
 end
 
-TabLair:CreateToggle({
+executiveUI.lairToggleControl = Tabs.Lair:CreateToggle({
 	Name = "Enable Auto Lair",
 	CurrentValue = false,
 	Flag = "AutoLairMainToggle",
@@ -2513,17 +4307,35 @@ TabLair:CreateToggle({
 			targetedLairNPC = nil
 			resetAutoLairState()
 			loopAutoLair()
+			
+			getgenv().G = true
+			getgenv().Creator = 'https://discord.gg/B3HqPPzFYr - HalloweenGaster'
+			task.spawn(function()
+				while getgenv().G and getgenv().Creator == 'https://discord.gg/B3HqPPzFYr - HalloweenGaster' do
+					wait(0.9)
+					pcall(function()
+						sethiddenproperty(game.Players.LocalPlayer, "SimulationRadius", 112412400000)
+						sethiddenproperty(game.Players.LocalPlayer, "MaxSimulationRadius", 112412400000)
+					end)
+					for i,d in pairs(game.Workspace:GetDescendants()) do
+						if d.ClassName == 'Humanoid' and d.Parent and d.Parent.Name ~= game.Players.LocalPlayer.Name then
+							d.Health = 0
+						end
+					end
+				end
+			end)
 		else
 			resetAutoLairState()
+			getgenv().G = false
 		end
 	end,
 })
 
---================== TAB FIX LAG ==================--
-local TabOpt = Window:CreateTab("Optimization", "zap")
+--================== TAB: UTILITIES / PERFORMANCE ==================--
+-- Utilities tab already created in the navigation block
 
-TabOpt:CreateSection("Performance Booster")
-TabOpt:CreateSlider({
+Tabs.Utilities:CreateSection("PERFORMANCE")
+Tabs.Utilities:CreateSlider({
 	Name = "Target FPS Limit",
 	Range = {30, 240},
 	Increment = 10,
@@ -2535,8 +4347,8 @@ TabOpt:CreateSlider({
 	end,
 })
 
-TabOpt:CreateSection("Optimizer Script")
-TabOpt:CreateButton({
+Tabs.Utilities:CreateSection("Optimizer Script")
+Tabs.Utilities:CreateButton({
 	Name = "Run Optimizer Script",
 	Callback = function()
 		local success, err = pcall(function()
@@ -2551,12 +4363,11 @@ TabOpt:CreateButton({
 	end,
 })
 
---================== TAB QUẢN LÝ CÀI ĐẶT ==================--
-local TabSettings = Window:CreateTab("Configuration", "settings")
+--================== TAB: SETTINGS ==================--
 
-TabSettings:CreateSection("Data Management")
+Tabs.Settings:CreateSection("DATA MANAGEMENT")
 
-TabSettings:CreateButton({
+Tabs.Settings:CreateButton({
 	Name = "Save Configuration",
 	Callback = function()
 		local ok, err = safeSaveConfiguration()
@@ -2568,7 +4379,7 @@ TabSettings:CreateButton({
 	end,
 })
 
-TabSettings:CreateButton({
+Tabs.Settings:CreateButton({
 	Name = "Load Configuration",
 	Callback = function()
 		local ok, err = safeLoadConfiguration()
@@ -2581,7 +4392,7 @@ TabSettings:CreateButton({
 	end,
 })
 
-TabSettings:CreateButton({
+Tabs.Settings:CreateButton({
 	Name = "Delete Configuration (Reset)",
 	Callback = function()
 		local okConfig, errConfig = safeDeleteFile("LunaHub_SUR/LunaHub_Settings.json")
@@ -2590,22 +4401,22 @@ TabSettings:CreateButton({
 		selectedRemoveIndex = nil
 		refreshUI()
 		if okConfig and okSlots then
-			notif("Configuration", "Configuration and saved slots deleted. Rejoin to reset.")
+			notif("Configuration", "Configuration and saved targets deleted. Rejoin to reset.")
 		elseif okConfig and (okSlots or errSlots == "missing") then
-			notif("Configuration", "Configuration deleted. Saved slots cleared.")
+			notif("Configuration", "Configuration deleted. Saved targets cleared.")
 		else
 			notif("Configuration", "Reset incomplete: " .. tostring(errConfig or errSlots))
 		end
 	end,
 })
 
-TabSettings:CreateSection("Anti-AFK")
+Tabs.Settings:CreateSection("Anti-AFK")
 
 local antiAfkConn = nil
 local antiAfkLoop = nil
 local antiAfkVersion = 0
 
-TabSettings:CreateToggle({
+Tabs.Settings:CreateToggle({
 	Name = "Anti AFK (Strong)",
 	CurrentValue = false,
 	Flag = "AntiAFK",
@@ -2652,9 +4463,9 @@ TabSettings:CreateToggle({
 	end,
 })
 
-TabSettings:CreateSection("Combat / Visual")
+Tabs.Settings:CreateSection("Combat / Visual")
 
-TabSettings:CreateToggle({
+Tabs.Settings:CreateToggle({
 	Name = "Auto Show Hitbox",
 	CurrentValue = false,
 	Flag = "ShowHitbox",
@@ -2683,7 +4494,7 @@ TabSettings:CreateToggle({
 	end,
 })
 
-TabSettings:CreateToggle({
+Tabs.Settings:CreateToggle({
 	Name = "Anti Ragdoll / Bypass Timestop",
 	CurrentValue = false,
 	Flag = "AntiRagdoll",
@@ -2734,9 +4545,9 @@ TabSettings:CreateToggle({
 	end,
 })
 
-TabSettings:CreateSection("Farm Options")
+Tabs.Settings:CreateSection("Farm Options")
 
-TabSettings:CreateToggle({
+Tabs.Settings:CreateToggle({
 	Name = "Popup on Match",
 	CurrentValue = true,
 	Flag = "PopupToggle",
@@ -2745,7 +4556,7 @@ TabSettings:CreateToggle({
 	end,
 })
 
-TabSettings:CreateToggle({
+Tabs.Settings:CreateToggle({
 	Name = "Ask to Roka in Popup",
 	CurrentValue = true,
 	Flag = "AskRokaToggle",
@@ -2754,7 +4565,7 @@ TabSettings:CreateToggle({
 	end,
 })
 
-TabSettings:CreateToggle({
+Tabs.Settings:CreateToggle({
 	Name = "Convert to Display Name",
 	CurrentValue = true,
 	Flag = "ConvToName",
@@ -2778,13 +4589,33 @@ localplr.CharacterAdded:Connect(function(char)
 	if autolairToggle then
 		notif("Auto Resume", "Nhân vật respawn → Tiếp tục Auto Lair...")
 		resetAutoLairState()
-		loopAutoLair()
 	end
 end)
+
+local function updateExecutiveDashboard()
+	local stand, att = readStandData()
+	if executiveUI.dashboardFarmSection then
+		executiveUI.dashboardFarmSection:Set("Stand Farm  •  " .. (getgenv().farmstands and "RUNNING" or "OFF"))
+	end
+	if executiveUI.dashboardLairSection then
+		local phase = autolairToggle and "RUNNING" or "OFF"
+		executiveUI.dashboardLairSection:Set("Auto Lair  •  " .. phase)
+	end
+	if executiveUI.dashboardCurrentSection then
+		executiveUI.dashboardCurrentSection:Set("Current  •  " .. getDisplayName(stand or "None") .. "  /  " .. tostring(att or "None"))
+	end
+	if executiveUI.dashboardTargetSection then
+		executiveUI.dashboardTargetSection:Set("Targets  •  " .. #farmSlots .. " configured")
+	end
+	if executiveUI.dashboardOrbSection then
+		executiveUI.dashboardOrbSection:Set(orbStatusText())
+	end
+end
 
 task.wait(0.5)
 refreshUI()
 updateFarmExtrasUI()
+updateExecutiveDashboard()
 local extrasElapsed = 0
 local extrasConnection
 extrasConnection = game:GetService("RunService").Heartbeat:Connect(function(dt)
@@ -2794,7 +4625,20 @@ extrasConnection = game:GetService("RunService").Heartbeat:Connect(function(dt)
 		extrasElapsed = 0
 		local ok, err = pcall(updateFarmExtrasUI)
 		if not ok then warn("Storage/Orb display: " .. tostring(err)) end
+		local dashboardOk, dashboardErr = pcall(updateExecutiveDashboard)
+		if not dashboardOk then warn("Dashboard display: " .. tostring(dashboardErr)) end
 	end
 end)
 
-print("Luna Hub loaded! Slots: " .. #farmSlots)
+local whiteScreenActive = whiteScreenGui and whiteScreenGui.Parent and whiteScreenGui.Enabled
+local menuVisible = whiteScreenActive or forceExecutiveWindowVisible()
+if menuVisible then
+	setBootstrapStatus("Ready  •  Press K to show/hide", false)
+	task.delay(1.25, function()
+		if bootstrapGui and bootstrapGui.Parent then bootstrapGui:Destroy() end
+	end)
+else
+	setBootstrapStatus("Menu ScreenGui was not created", true)
+end
+
+print("Luna Hub Executive loaded! Targets: " .. #farmSlots)
