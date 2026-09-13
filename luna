@@ -1193,6 +1193,7 @@ local function doStandFarm()
 	farmStats = { arrows = 0, rokas = 0, errors = 0, stored = 0, orbs = 0 }
 	local errors, lastFire = 0, 0
 	local pendingArrowNotice = false
+	local waitingForItem = nil
 	local activeItem
 	local function running()
 		return getgenv().farmstands and farmRun == run and getgenv().SURFarmSession == hubSession
@@ -1374,8 +1375,16 @@ local function doStandFarm()
 			local itemName = usingArrow and selectedArrowType or "Rokakaka"
 			local item = findFarmItem(itemName)
 			if not item then
-				notif("Farm Stopped", "No " .. itemName .. " found in Backpack/Character.")
-				break
+				if waitingForItem ~= itemName then
+					waitingForItem = itemName
+					notif("Stand Farm", "Waiting for " .. itemName .. "; farming will resume automatically.")
+				end
+				task.wait(1)
+				continue
+			end
+			if waitingForItem then
+				notif("Stand Farm", itemName .. " found; resuming farming.")
+				waitingForItem = nil
 			end
 			local fired, fireError = fireItem(item, stand, att, fastReject)
 			if not fired then
@@ -1985,6 +1994,18 @@ local lastLairBossScan = 0
 local lairKillStates = setmetatable({}, {__mode = "k"})
 local lastKillAuraPulse = 0
 local lastSimulationBoost = 0
+local lairPhase = "idle"
+local lairEnterPendingUntil = 0
+local lairNextTransitionAt = 0
+local lairBossSeenAt = 0
+local lairBossStartY = nil
+local lairLastSafeCFrame = nil
+local lairArrowBaseline = nil
+local lastLairClearScan = 0
+local lastLairClearVisible = false
+local lairClearUiLatched = false
+local lairM1LastAt = 0
+local lairM1Busy = false
 
 TabLair:CreateSection("Target Settings")
 
@@ -1999,7 +2020,7 @@ TabLair:CreateInput({
 	end,
 })
 
-TabLair:CreateSection("Kill Aura: one-hit + auto retry, no attack animation")
+TabLair:CreateSection("0.2s reaction | one-hit first | M1 fallback")
 
 
 local function resetAutoLairState()
@@ -2017,6 +2038,18 @@ local function resetAutoLairState()
 	lastLairBossScan = 0
 	lastKillAuraPulse = 0
 	lastSimulationBoost = 0
+	lairPhase = "idle"
+	lairEnterPendingUntil = 0
+	lairNextTransitionAt = 0
+	lairBossSeenAt = 0
+	lairBossStartY = nil
+	lairLastSafeCFrame = nil
+	lairArrowBaseline = nil
+	lastLairClearScan = 0
+	lastLairClearVisible = false
+	lairClearUiLatched = false
+	lairM1LastAt = 0
+	lairM1Busy = false
 end
 
 local function updateLairSafeFloor(safeCFrame)
@@ -2091,13 +2124,73 @@ local function findTargetedLairNPC()
 	return npc
 end
 
+local function getLairItemAmount(item)
+	if not item then return 0 end
+	local ok, amount = pcall(function() return item:GetAttribute("ItemAmount") end)
+	if ok and type(amount) == "number" then return math.max(0, math.floor(amount)) end
+	return 1
+end
+
+local function countLairChargedArrows()
+	local total = 0
+	local function scan(parent)
+		if not parent then return end
+		for _, item in ipairs(parent:GetChildren()) do
+			if item.Name == "Charged Arrow" then
+				total = total + getLairItemAmount(item)
+			end
+		end
+	end
+	scan(localplr:FindFirstChild("Backpack"))
+	scan(localplr.Character)
+	return total
+end
+
+local function isGuiActuallyVisible(guiObject, playerGui)
+	local current = guiObject
+	while current and current ~= playerGui do
+		if current:IsA("GuiObject") and not current.Visible then return false end
+		if current:IsA("LayerCollector") and not current.Enabled then return false end
+		current = current.Parent
+	end
+	return current == playerGui
+end
+
+local function isLairClearVisible()
+	local now = os.clock()
+	if now - lastLairClearScan < 0.1 then return lastLairClearVisible end
+	lastLairClearScan = now
+	local playerGui = localplr:FindFirstChild("PlayerGui")
+	if not playerGui then
+		lastLairClearVisible = false
+		return false
+	end
+	for _, object in ipairs(playerGui:GetDescendants()) do
+		if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+			local text = string.lower(tostring(object.Text or ""))
+			if string.find(text, "lair clear", 1, true) and isGuiActuallyVisible(object, playerGui) then
+				lastLairClearVisible = true
+				return true
+			end
+		end
+	end
+	lastLairClearVisible = false
+	return false
+end
+
 local function tryEnterLair()
-	if os.clock() - lastLairAttempt < 1 then return end
+	local now = os.clock()
+	if now < lairEnterPendingUntil or now < lairNextTransitionAt
+		or now - lastLairAttempt < 0.2 then return end
 	local npc = findTargetedLairNPC()
 	if not npc then return end
 	local doneRemote = npc:FindFirstChild("Done")
 	if not doneRemote or not doneRemote:IsA("RemoteEvent") then return end
-	lastLairAttempt = os.clock()
+
+	lastLairAttempt = now
+	lairArrowBaseline = countLairChargedArrows()
+	lairPhase = "entering"
+	lairEnterPendingUntil = now + 1.5
 	doneRemote:FireServer(localplr.Character)
 end
 
@@ -2175,7 +2268,7 @@ local function getTargetBoss(candidates)
 end
 
 local function getLairFarmCFrame(bossRoot)
-	local position = bossRoot.Position + Vector3.new(0, 8, 3)
+	local position = bossRoot.Position + Vector3.new(0, 1.5, 3)
 	local lookAt = Vector3.new(bossRoot.Position.X, position.Y, bossRoot.Position.Z)
 	return CFrame.new(position, lookAt)
 end
@@ -2200,14 +2293,61 @@ local function getBossNetworkOwnership(root)
 	return owned == true
 end
 
+local function getLairM1Remotes()
+	local character = localplr.Character
+	if not character or not character.Parent then return nil end
+	local combatModel = character
+	local standEvents = combatModel:FindFirstChild("StandEvents")
+	if not standEvents then
+		local living = workspace:FindFirstChild("Living")
+		combatModel = living and living:FindFirstChild(localplr.Name) or combatModel
+		standEvents = combatModel and combatModel:FindFirstChild("StandEvents")
+	end
+	local m1Remote = standEvents and standEvents:FindFirstChild("M1")
+	local events = ReplicatedStorage:FindFirstChild("Events")
+	local abilityInput = events and events:FindFirstChild("AbilityInput")
+	if m1Remote and m1Remote:IsA("RemoteEvent")
+		and abilityInput and abilityInput:IsA("RemoteEvent") then
+		return abilityInput, m1Remote
+	end
+	return nil
+end
+
+local function fireLairM1Fallback()
+	local now = os.clock()
+	if lairM1Busy or now - lairM1LastAt < 0.18 then return false end
+	local abilityInput, m1Remote = getLairM1Remotes()
+	if not abilityInput or not m1Remote then return false end
+
+	lairM1Busy = true
+	lairM1LastAt = now
+	local began = false
+	local ok = pcall(function()
+		abilityInput:FireServer("MouseButton1", "Begin", nil)
+		began = true
+		m1Remote:FireServer()
+	end)
+	task.delay(0.1, function()
+		if began then
+			pcall(function()
+				if abilityInput.Parent then
+					abilityInput:FireServer("MouseButton1", "End", nil)
+				end
+			end)
+		end
+		lairM1Busy = false
+	end)
+	return ok
+end
+
 local function pulseBossKillAura(candidates)
 	local now = os.clock()
 	if now - lastKillAuraPulse < 0.03 then return end
 	lastKillAuraPulse = now
 	boostLairSimulationRadius()
 
-	-- No M1/Heavy/Barrage remote. Never force the Dead state because that can
-	-- break accessories locally while the server still considers the boss alive.
+	-- The one-hit phase itself sends no combat remote. Never force the Dead state;
+	-- that can break accessories locally while the server still considers the boss alive.
 	for _, candidate in ipairs(candidates) do
 		local model, humanoid, root = candidate.model, candidate.humanoid, candidate.root
 		if model.Parent and humanoid.Parent and root.Parent then
@@ -2243,6 +2383,59 @@ local function pulseBossKillAura(candidates)
 	end
 end
 
+local function markLairCleared()
+	lairPhase = "cleared"
+	lairNextTransitionAt = os.clock() + 0.2
+	lairEnterPendingUntil = 0
+	currentBoss = nil
+	table.clear(lairBossCandidates)
+	table.clear(lairKillStates)
+	lastLairBossScan = 0
+	lairBossSeenAt = 0
+	lairBossStartY = nil
+	lairArrowBaseline = countLairChargedArrows()
+	lairClearUiLatched = true
+	lairM1LastAt = 0
+end
+
+local function hasLairCompletionSignal()
+	local clearVisible = isLairClearVisible()
+	if lairPhase ~= "fighting" then
+		lairArrowBaseline = countLairChargedArrows()
+		if clearVisible then
+			lairClearUiLatched = true
+		elseif lairPhase ~= "cleared" then
+			lairClearUiLatched = false
+		end
+		return false
+	end
+	local chargedArrows = countLairChargedArrows()
+	if lairArrowBaseline ~= nil and chargedArrows > lairArrowBaseline then return true end
+	if not clearVisible then
+		lairClearUiLatched = false
+		return false
+	end
+	if not lairClearUiLatched then
+		lairClearUiLatched = true
+		return true
+	end
+	return false
+end
+
+local function holdLairPosition(hrp, safeCFrame)
+	if not hrp or not safeCFrame then return end
+	updateLairSafeFloor(safeCFrame)
+	hrp.CFrame = safeCFrame
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+end
+
+local function isLairBossFalling(bossRoot)
+	if not bossRoot or not lairBossStartY then return false end
+	return bossRoot.Position.Y < lairBossStartY - 10
+		or bossRoot.AssemblyLinearVelocity.Y < -90
+end
+
 local function loopAutoLair()
 	if lairLoopConn then
 		lairLoopConn:Disconnect()
@@ -2260,20 +2453,52 @@ local function loopAutoLair()
 
 		local hrp = char:FindFirstChild("HumanoidRootPart")
 		if not hrp then return end
+		local now = os.clock()
+		if lairArrowBaseline == nil then
+			lairArrowBaseline = countLairChargedArrows()
+		end
+
+		if hasLairCompletionSignal() then
+			markLairCleared()
+		end
+
+		if lairPhase == "cleared" then
+			holdLairPosition(hrp, lairLastSafeCFrame)
+			if now >= lairNextTransitionAt then tryEnterLair() end
+			return
+		end
 
 		local candidates = refreshLairBossCandidates(hrp.Position)
+		local previousBoss = currentBoss
 		local boss, bossHumanoid, bossRoot = getTargetBoss(candidates)
 		currentBoss = boss
 
 		if boss and bossHumanoid and bossRoot then
-			local farmCFrame = getLairFarmCFrame(bossRoot)
-			updateLairSafeFloor(farmCFrame)
-			hrp.CFrame = farmCFrame
-			hrp.AssemblyLinearVelocity = Vector3.zero
-			hrp.AssemblyAngularVelocity = Vector3.zero
+			if boss ~= previousBoss or lairPhase ~= "fighting" then
+				lairPhase = "fighting"
+				lairEnterPendingUntil = 0
+				lairBossSeenAt = now
+				lairBossStartY = bossRoot.Position.Y
+				lairLastSafeCFrame = getLairFarmCFrame(bossRoot)
+				lairM1LastAt = 0
+			end
+
+			local bossFalling = isLairBossFalling(bossRoot)
+			if not bossFalling then
+				lairLastSafeCFrame = getLairFarmCFrame(bossRoot)
+			end
+			holdLairPosition(hrp, lairLastSafeCFrame)
 			pulseBossKillAura(candidates)
+			if not bossFalling and now - lairBossSeenAt >= 0.2 then
+				fireLairM1Fallback()
+			end
 		else
-			tryEnterLair()
+			if lairPhase == "fighting" then
+				markLairCleared()
+				holdLairPosition(hrp, lairLastSafeCFrame)
+			else
+				tryEnterLair()
+			end
 		end
 	end)
 end
