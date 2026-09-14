@@ -4366,10 +4366,9 @@ local function getTargetBoss()
 end
 
 local function getLairAttackCFrame(bossRoot)
-	-- Stay behind and slightly above the boss: outside its closest melee zone,
-	-- but still near enough for Luna's M1 hitbox to connect.
-	local position = (bossRoot.CFrame * CFrame.new(0, 2.5, 4.25)).Position
-	local target = bossRoot.Position + Vector3.new(0, 1.5, 0)
+	-- Stay almost touching the boss from behind so Luna's M1 hitbox connects.
+	local position = (bossRoot.CFrame * CFrame.new(0, 0, 1.35)).Position
+	local target = bossRoot.Position
 	return CFrame.lookAt(position, target)
 end
 
