@@ -4162,19 +4162,18 @@ local useLairBoss = "Boss"
 autolairToggle = false
 local currentBoss = nil
 local lairLoopConn = nil
-local lairSafeFloor = nil
 local lastLairM1 = 0
 local lairM1Busy = false
 local lastLairAttempt = 0
 local lastLairClearScan = 0
 local lastLairClearVisible = false
 local lairClearWasVisible = false
-local lairBossStartY = nil
-local lairLastSafeCFrame = nil
 local lastSimulationBoost = 0
 local allowNearbyZeroBoss = true
 local retiredLairBosses = setmetatable({}, {__mode = "k"})
 local lairKillStates = setmetatable({}, {__mode = "k"})
+local lairFastTransitionBoss = nil
+local lairFastTransitionPositiveSince = nil
 
 Tabs.Lair:CreateSection("Target Settings")
 
@@ -4198,10 +4197,6 @@ local function resetAutoLairState()
 		end
 		lairLoopConn = nil
 	end
-	if lairSafeFloor then
-		lairSafeFloor:Destroy()
-		lairSafeFloor = nil
-	end
 	currentBoss = nil
 	lairCombatBusy = false
 	lastLairM1 = 0
@@ -4210,28 +4205,12 @@ local function resetAutoLairState()
 	lastLairClearScan = 0
 	lastLairClearVisible = false
 	lairClearWasVisible = false
-	lairBossStartY = nil
-	lairLastSafeCFrame = nil
 	lastSimulationBoost = 0
 	allowNearbyZeroBoss = true
+	lairFastTransitionBoss = nil
+	lairFastTransitionPositiveSince = nil
 	table.clear(retiredLairBosses)
 	table.clear(lairKillStates)
-end
-
-local function updateLairSafeFloor(farmCFrame)
-	if not lairSafeFloor or not lairSafeFloor.Parent then
-		lairSafeFloor = Instance.new("Part")
-		lairSafeFloor.Name = "LairAutoFloor"
-		lairSafeFloor.Anchored = true
-		lairSafeFloor.CanCollide = true
-		lairSafeFloor.CanTouch = false
-		lairSafeFloor.CanQuery = false
-		lairSafeFloor.CastShadow = false
-		lairSafeFloor.Transparency = 1
-		lairSafeFloor.Size = Vector3.new(36, 2, 36)
-		lairSafeFloor.Parent = workspace
-	end
-	lairSafeFloor.CFrame = CFrame.new(farmCFrame.Position - Vector3.new(0, 4, 0))
 end
 
 local function getInstanceRootPart(instance)
@@ -4305,7 +4284,8 @@ end
 local function getTargetBoss()
 	-- Once selected, keep the same model even when its client Health reaches 0.
 	-- The server can reject that local zero while the boss keeps attacking.
-	if currentBoss and currentBoss.Parent and not retiredLairBosses[currentBoss] then
+	if currentBoss and currentBoss ~= lairFastTransitionBoss
+		and currentBoss.Parent and not retiredLairBosses[currentBoss] then
 		local humanoid = currentBoss:FindFirstChildOfClass("Humanoid")
 		local root = getInstanceRootPart(currentBoss)
 		if humanoid and humanoid.Parent and root and root.Parent then
@@ -4328,6 +4308,23 @@ local function getTargetBoss()
 		local humanoid = candidate:FindFirstChildOfClass("Humanoid")
 		local root = getInstanceRootPart(candidate)
 		if not humanoid or not humanoid.Parent or not root or not root:IsA("BasePart") then return end
+		if candidate == lairFastTransitionBoss then
+			-- Ignore the finished boss while its local Health remains zero. A
+			-- positive value must remain stable long enough to outlive the 0.06s
+			-- Kill Aura re-arm pulse before the same model can be selected again.
+			if humanoid.Health > 1 then
+				lairFastTransitionPositiveSince = lairFastTransitionPositiveSince or os.clock()
+				if os.clock() - lairFastTransitionPositiveSince >= 0.25 then
+					lairFastTransitionBoss = nil
+					lairFastTransitionPositiveSince = nil
+				else
+					return
+				end
+			else
+				lairFastTransitionPositiveSince = nil
+				return
+			end
+		end
 		if retiredLairBosses[candidate] then
 			-- A reused model becomes eligible only after the server gives it a
 			-- genuinely fresh positive health value.
@@ -4369,10 +4366,10 @@ local function getTargetBoss()
 end
 
 local function getLairAttackCFrame(bossRoot)
-	-- Local +Z is behind a Roblox character. Stay close enough for M1 and
-	-- rotate toward the boss so the hitbox points into it.
-	local position = (bossRoot.CFrame * CFrame.new(0, 0, 2.5)).Position
-	local target = Vector3.new(bossRoot.Position.X, position.Y, bossRoot.Position.Z)
+	-- Stay behind and slightly above the boss: outside its closest melee zone,
+	-- but still near enough for Luna's M1 hitbox to connect.
+	local position = (bossRoot.CFrame * CFrame.new(0, 2.5, 4.25)).Position
+	local target = bossRoot.Position + Vector3.new(0, 1.5, 0)
 	return CFrame.lookAt(position, target)
 end
 
@@ -4505,20 +4502,37 @@ local function pulseCurrentBossKillAura(boss, humanoid, root)
 end
 
 local function retireClearedBoss()
-	if currentBoss then retiredLairBosses[currentBoss] = true end
+	local finishedBoss = currentBoss or lairFastTransitionBoss
+	if finishedBoss then retiredLairBosses[finishedBoss] = true end
 	-- Ignore every other zero-health duplicate left by this cleared Lair. A new
 	-- server boss arrives with positive health and is still selected immediately.
 	allowNearbyZeroBoss = false
 	currentBoss = nil
 	lairCombatBusy = false
-	lairBossStartY = nil
+	lairFastTransitionBoss = nil
+	lairFastTransitionPositiveSince = nil
 	lastLairM1 = 0
 end
 
-local function isLairBossFalling(root)
-	if not root or not lairBossStartY then return false end
-	return root.Position.Y < lairBossStartY - 10
-		or root.AssemblyLinearVelocity.Y < -90
+local function pulseFinishingLairBoss()
+	local boss = lairFastTransitionBoss
+	if not boss then return end
+	if not boss.Parent then
+		lairFastTransitionBoss = nil
+		lairFastTransitionPositiveSince = nil
+		return
+	end
+	local humanoid = boss:FindFirstChildOfClass("Humanoid")
+	local root = getInstanceRootPart(boss)
+	if humanoid and humanoid.Parent and root and root.Parent then
+		if humanoid.Health > 1 and lairFastTransitionPositiveSince then
+			-- Pause the zero pulse during the 0.25s stability check. If the
+			-- server restored this boss, normal TP + M1 combat will resume.
+			return
+		end
+		-- Keep retrying the client/network kill without pulling the player back.
+		pulseCurrentBossKillAura(boss, humanoid, root)
+	end
 end
 
 local function loopAutoLair()
@@ -4553,33 +4567,33 @@ local function loopAutoLair()
 			if boss ~= previousBoss then
 				currentBoss = boss
 				allowNearbyZeroBoss = true
-				lairBossStartY = bossRoot.Position.Y
-				lairLastSafeCFrame = getLairAttackCFrame(bossRoot)
+				lairFastTransitionBoss = nil
+				lairFastTransitionPositiveSince = nil
 				lastLairM1 = 0
 			end
 			lairCombatBusy = true
 
-			local bossFalling = isLairBossFalling(bossRoot)
-			if not bossFalling then
-				lairLastSafeCFrame = getLairAttackCFrame(bossRoot)
-				bossRoot.AssemblyLinearVelocity = Vector3.zero
-				bossRoot.AssemblyAngularVelocity = Vector3.zero
-			end
-			if lairLastSafeCFrame then
-				updateLairSafeFloor(lairLastSafeCFrame)
-				hrp.CFrame = lairLastSafeCFrame
-				hrp.AssemblyLinearVelocity = Vector3.zero
-				hrp.AssemblyAngularVelocity = Vector3.zero
-			end
+			hrp.CFrame = getLairAttackCFrame(bossRoot)
 
+			pressLairM1()
 			pulseCurrentBossKillAura(boss, bossHumanoid, bossRoot)
-			if not bossFalling then
-				pressLairM1()
+			if bossHumanoid.Health <= 0 then
+				-- Enter FINISHING: stop following the old boss immediately. The
+				-- background kill retry and next-Lair requests continue without TP.
+				if lairFastTransitionBoss ~= boss then
+					lairFastTransitionBoss = boss
+					lairFastTransitionPositiveSince = nil
+					lastLairAttempt = 0
+				end
+				currentBoss = nil
+				lairCombatBusy = false
+				tryEnterLair()
+				return
 			end
 		else
 			currentBoss = nil
 			lairCombatBusy = false
-			lairBossStartY = nil
+			pulseFinishingLairBoss()
 			tryEnterLair()
 		end
 	end)
