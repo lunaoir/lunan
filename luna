@@ -9,11 +9,15 @@
 
 --================== SETTINGS ==================--
 local popup = true
-local askroka = true
+local askroka = false
 local convtoname = true
 local webhookurl = ""
+-- Mentions are opt-in. A webhook is a credential and should never default to
+-- pinging an entire server for every farm event.
+local webhookMentionEnabled = false
 local tagperson = "@everyone"
 local webhookTagAtts = {}
+local webhookNextRequestAt = 0
 --================== SETTINGS ==================--
 
 print("script starting..")
@@ -86,6 +90,11 @@ if typeof(previousLairConnection) == "RBXScriptConnection" then
 	pcall(function() previousLairConnection:Disconnect() end)
 end
 getgenv().SURLairLoopConnection = nil
+local previousAntiAfkConnection = getgenv().SURAntiAfkConnection
+if typeof(previousAntiAfkConnection) == "RBXScriptConnection" then
+	pcall(function() previousAntiAfkConnection:Disconnect() end)
+end
+getgenv().SURAntiAfkConnection = nil
 local httpservice = game:GetService("HttpService")
 local jsonservice = httpservice
 local selectedArrowType = "Stand Arrow"
@@ -113,7 +122,7 @@ local farmToggle = nil
 local syncingFarmToggle = false
 local loadingConfiguration = false
 local startStandFarm, stopStandFarm
-local farmStats = { arrows = 0, rokas = 0, errors = 0, stored = 0, orbs = 0 }
+local farmStats = { arrows = 0, rokas = 0, matches = 0, errors = 0, stored = 0, orbs = 0 }
 local autoStoreMatches = true
 local autoUseOrb = true
 local storageStatusSection, orbStatusSection = nil, nil
@@ -154,6 +163,12 @@ end
 
 local function nameKey(value)
 	return cleanText(value):lower()
+end
+
+local function isDiscordWebhookUrl(value)
+	value = cleanText(value)
+	return value:match("^https://discord%.com/api/webhooks/%d+/[%w_-]+$") ~= nil
+		or value:match("^https://discordapp%.com/api/webhooks/%d+/[%w_-]+$") ~= nil
 end
 
 local function firstOption(options, default)
@@ -303,6 +318,379 @@ local function readStandData()
 	return s, a
 end
 
+-- Stand Upright exposes the rank as "Stand Tier" in its M stats panel.  Some
+-- builds also replicate the same value into Player.Data, so prefer that stable
+-- source and fall back to reading the visible stats row when needed.
+local validStandTiers = {
+	F = true, E = true, D = true, C = true, B = true, A = true,
+	S = true, SS = true, SSS = true, Q = true,
+	["Ø"] = true, ["Ω"] = true, ["∞"] = true,
+}
+local cachedStandTierSource = nil
+
+local function isValidStandTier(tier)
+	if validStandTiers[tier] then return true end
+	if type(tier) ~= "string" or #tier < 2 then return false end
+	local suffix = tier:sub(-1)
+	return (suffix == "+" or suffix == "-") and validStandTiers[tier:sub(1, -2)] == true
+end
+
+local function standTierKey(value)
+	return cleanText(value):lower():gsub("[^%w]", "")
+end
+
+local function normalizeStandTier(value)
+	if value == nil then return nil end
+	local text = tostring(value):gsub("<.->", "")
+	text = text:match("^%s*(.-)%s*$") or ""
+	local inline = text:match("[Ss][Tt][Aa][Nn][Dd]%s*[Tt][Ii][Ee][Rr]%s*[:%-]?%s*(.+)")
+	if inline then text = inline end
+	text = string.upper(text):gsub("%s+", "")
+	if text == "INFINITY" or text == "INFINITE" or text == "INF" then return "∞" end
+	if isValidStandTier(text) then return text end
+	return nil
+end
+
+local function tierFromSource(source)
+	if not source or not source.Parent then return nil end
+	local ok, value = pcall(function()
+		if source:IsA("TextLabel") or source:IsA("TextButton") or source:IsA("TextBox") then
+			return source.Text
+		end
+		if source:IsA("ValueBase") then return source.Value end
+		return nil
+	end)
+	return ok and normalizeStandTier(value) or nil
+end
+
+local function readStandTier()
+	local data = localplr:FindFirstChild("Data")
+	local standValue = data and data:FindFirstChild("Stand")
+	local attributeOwners = {standValue, data, localplr}
+	for _, owner in ipairs(attributeOwners) do
+		if owner then
+			local names = owner == localplr and {"StandTier", "StandRank"}
+				or {"StandTier", "StandRank", "Tier", "Rank"}
+			for _, attributeName in ipairs(names) do
+				local ok, value = pcall(function() return owner:GetAttribute(attributeName) end)
+				local tier = ok and normalizeStandTier(value) or nil
+				if tier then return tier end
+			end
+		end
+	end
+
+	if data then
+		for _, item in ipairs(data:GetDescendants()) do
+			local key = standTierKey(item.Name)
+			if key == "standtier" or key == "standrank" then
+				local tier = tierFromSource(item)
+				if tier then
+					cachedStandTierSource = item
+					return tier
+				end
+			end
+		end
+	end
+
+	local cached = tierFromSource(cachedStandTierSource)
+	if cached then return cached end
+	cachedStandTierSource = nil
+
+	local playerGui = localplr:FindFirstChildOfClass("PlayerGui")
+	if not playerGui then return nil end
+	for _, label in ipairs(playerGui:GetDescendants()) do
+		if label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox") then
+			local ok, rawText = pcall(function() return label.Text end)
+			if ok and type(rawText) == "string" then
+				local inlineTier = normalizeStandTier(rawText)
+				if inlineTier and standTierKey(rawText):find("standtier", 1, true) then
+					cachedStandTierSource = label
+					return inlineTier
+				end
+				if standTierKey(rawText) == "standtier" then
+					local container = label.Parent
+					for _ = 1, 2 do
+						if not container or container == playerGui then break end
+						for _, candidate in ipairs(container:GetDescendants()) do
+							if candidate ~= label and (candidate:IsA("TextLabel") or candidate:IsA("TextButton") or candidate:IsA("TextBox")) then
+								local tier = tierFromSource(candidate)
+								if tier then
+									cachedStandTierSource = candidate
+									return tier
+								end
+							end
+						end
+						container = container.Parent
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+getgenv().SURStandTierCache = type(getgenv().SURStandTierCache) == "table"
+	and getgenv().SURStandTierCache or {}
+local standTierCache = getgenv().SURStandTierCache
+
+-- These are only used until the live game catalog is discovered. Values
+-- learned from replicated data/getgc always win and are kept in the cache.
+local builtinStandTiers = {
+	[standTierKey("The Hand")] = "B",
+	[standTierKey("The World")] = "A+",
+	[standTierKey("Star Platinum")] = "B-",
+	[standTierKey("Star Platinum: Stone Ocean")] = "B+",
+	[standTierKey("Star Platinum OVA")] = "S",
+	[standTierKey("Jotaro's Star Platinum")] = "S",
+	[standTierKey("Putrid Whine")] = "B",
+	[standTierKey("Crazy Diamond")] = "D",
+	[standTierKey("Golden Experience")] = "A-",
+	[standTierKey("Gold Experience")] = "A-",
+	[standTierKey("D4C")] = "S",
+	[standTierKey("Dirty Deeds Done Dirt Cheap")] = "S",
+	[standTierKey("C-Moon")] = "B+",
+	[standTierKey("Sol Spirit")] = "Ø",
+	[standTierKey("Crazy Diamond Over Heaven")] = "Ø",
+	[standTierKey("Star Platinum Over Heaven")] = "Ø",
+	[standTierKey("Star Platinum OVA Over Heaven")] = "Ø",
+}
+
+local function standTierBadgeText(tier, standName)
+	if nameKey(standName) == "any" then return "ANY" end
+	return tier or "?"
+end
+
+local function standTierBadgeColor(tier, fallback)
+	local colors = {
+		F = Color3.fromRGB(74, 76, 94),
+		E = Color3.fromRGB(91, 82, 108),
+		D = Color3.fromRGB(151, 85, 67),
+		C = Color3.fromRGB(67, 139, 99),
+		B = Color3.fromRGB(117, 184, 52),
+		A = Color3.fromRGB(46, 158, 188),
+		S = Color3.fromRGB(116, 72, 203),
+		SS = Color3.fromRGB(177, 67, 210),
+		SSS = Color3.fromRGB(219, 155, 42),
+		Q = Color3.fromRGB(218, 73, 123),
+		["Ø"] = Color3.fromRGB(120, 86, 224),
+		["Ω"] = Color3.fromRGB(223, 92, 211),
+		["∞"] = Color3.fromRGB(241, 113, 187),
+	}
+	local baseTier = tier
+	if type(baseTier) == "string" and (baseTier:sub(-1) == "+" or baseTier:sub(-1) == "-") then
+		baseTier = baseTier:sub(1, -2)
+	end
+	return colors[baseTier] or fallback or Color3.fromRGB(72, 55, 123)
+end
+
+local function getKnownStandTier(standName)
+	local key = nameKey(standName)
+	if key == "" or key == "any" then return nil end
+	local displayName = getDisplayName(standName)
+	return standTierCache[key]
+		or standTierCache[standTierKey(standName)]
+		or standTierCache[nameKey(displayName)]
+		or standTierCache[standTierKey(displayName)]
+		or builtinStandTiers[standTierKey(standName)]
+		or builtinStandTiers[standTierKey(displayName)]
+end
+
+local function rememberStandTier(standName, tier, silent)
+	if not tier or not isValidStandTier(tier) then return false end
+	local key = nameKey(standName)
+	if key == "" or key == "none" or key == "any" then return false end
+	local displayKey = nameKey(getDisplayName(standName))
+	local compactKey = standTierKey(standName)
+	local compactDisplayKey = standTierKey(getDisplayName(standName))
+	local changed = standTierCache[key] ~= tier
+		or standTierCache[displayKey] ~= tier
+		or standTierCache[compactKey] ~= tier
+		or standTierCache[compactDisplayKey] ~= tier
+	standTierCache[key] = tier
+	standTierCache[displayKey] = tier
+	standTierCache[compactKey] = tier
+	standTierCache[compactDisplayKey] = tier
+	if changed and not silent then
+		if executiveUI.refreshTargetsWorkspace then pcall(executiveUI.refreshTargetsWorkspace) end
+		if executiveUI.refreshStandPicker then pcall(executiveUI.refreshStandPicker) end
+	end
+	return changed
+end
+
+local tierObservation = {standKey = nil, tier = nil, count = 0}
+local function observeStandTier(standName, tier)
+	local key = nameKey(standName)
+	if key == "" or key == "none" or not tier or not isValidStandTier(tier) then
+		tierObservation = {standKey = nil, tier = nil, count = 0}
+		return
+	end
+	if tierObservation.standKey == key and tierObservation.tier == tier then
+		tierObservation.count = tierObservation.count + 1
+	else
+		tierObservation = {standKey = key, tier = tier, count = 1}
+	end
+	-- Confirm on two dashboard reads so a GUI row still updating after a roll
+	-- cannot assign the previous Stand's tier to the new Stand.
+	if tierObservation.count >= 2 then rememberStandTier(standName, tier) end
+end
+
+local standTierCatalogBusy = false
+local lastStandTierCatalogScan = 0
+local function scanStandTierCatalog(force)
+	if standTierCatalogBusy then return false, "Tier scan is already running." end
+	if not force and os.clock() - lastStandTierCatalogScan < 12 then return true, "Tier cache is fresh." end
+	standTierCatalogBusy = true
+	lastStandTierCatalogScan = os.clock()
+
+	local changedCount = 0
+	local knownStands = {}
+	local function registerKnown(name)
+		name = cleanText(name)
+		local key = standTierKey(name)
+		if key ~= "" and key ~= "any" and key ~= "none" then knownStands[key] = name end
+	end
+	for _, name in ipairs(standOptions) do registerKnown(name) end
+	for internal, display in pairs(displayById) do
+		registerKnown(internal)
+		registerKnown(display)
+	end
+	for _, slot in ipairs(farmSlots) do registerKnown(slot.stand) end
+
+	local function accept(name, rawTier)
+		local canonical = knownStands[standTierKey(name)]
+		local tier = normalizeStandTier(rawTier)
+		if canonical and tier and rememberStandTier(canonical, tier, true) then
+			changedCount = changedCount + 1
+		end
+	end
+
+	pcall(function()
+		for _, item in ipairs(ReplicatedStorage:GetDescendants()) do
+			for _, attributeName in ipairs({"StandTier", "StandRank", "Tier", "Rank"}) do
+				local tier = normalizeStandTier(item:GetAttribute(attributeName))
+				if tier then
+					accept(item.Name, tier)
+					if item.Parent then accept(item.Parent.Name, tier) end
+				end
+			end
+			if item:IsA("ValueBase") then
+				local field = standTierKey(item.Name)
+				if field == "standtier" or field == "standrank" or field == "tier" or field == "rank" then
+					local tier = tierFromSource(item)
+					if tier and item.Parent then
+						accept(item.Parent.Name, tier)
+						if item.Parent.Parent then accept(item.Parent.Parent.Name, tier) end
+					end
+				end
+			end
+		end
+	end)
+
+	-- The current client keeps Stand stats in a loaded ModuleScript or an
+	-- upvalue, depending on the game build. Read both forms without changing
+	-- any game state. This also understands tier-indexed tables such as
+	-- { ["SSS"] = {"Stand A", "Stand B"} }.
+	local seen, tableBudget = {}, 0
+	local tierFields = {tier = true, standtier = true, rank = true, standrank = true}
+	local nameFields = {stand = true, standname = true, name = true, displayname = true}
+	local scanTable
+	scanTable = function(tbl, parentKey, depth)
+		if depth > 4 or seen[tbl] or tableBudget >= 30000 then return end
+		seen[tbl] = true
+		tableBudget = tableBudget + 1
+		if tableBudget % 500 == 0 then task.wait() end
+
+		local tier, standName
+		for key, value in next, tbl do
+			if type(key) == "string" then
+				local field = standTierKey(key)
+				if not tier and tierFields[field] then tier = normalizeStandTier(value) end
+				if not standName and nameFields[field] and type(value) == "string"
+					and knownStands[standTierKey(value)] then
+					standName = value
+				end
+			end
+		end
+		if tier then accept(standName or parentKey, tier) end
+
+		local parentTier = normalizeStandTier(parentKey)
+		for key, value in next, tbl do
+			if type(key) == "string" then
+				local directTier = type(value) ~= "table" and normalizeStandTier(value) or nil
+				if directTier and knownStands[standTierKey(key)] then accept(key, directTier) end
+				if parentTier and knownStands[standTierKey(key)]
+					and (value == true or type(value) == "number") then
+					accept(key, parentTier)
+				end
+			end
+			if parentTier and type(value) == "string" and knownStands[standTierKey(value)] then
+				accept(value, parentTier)
+			end
+			if type(value) == "table" then
+				scanTable(value, type(key) == "string" and key or parentKey, depth + 1)
+			end
+		end
+	end
+
+	if type(getgc) == "function" then
+		local ok, objects = pcall(getgc, true)
+		if ok and type(objects) == "table" then
+			local upvalueReader = type(getupvalues) == "function" and getupvalues
+				or (debug and type(debug.getupvalues) == "function" and debug.getupvalues)
+			local functionBudget = 0
+			for _, object in pairs(objects) do
+				if type(object) == "table" then
+					pcall(scanTable, object, nil, 0)
+				elseif type(object) == "function" and upvalueReader and functionBudget < 8000 then
+					functionBudget = functionBudget + 1
+					local readOk, upvalues = pcall(upvalueReader, object)
+					if readOk and type(upvalues) == "table" then
+						for _, value in pairs(upvalues) do
+							if type(value) == "table" then pcall(scanTable, value, nil, 0) end
+						end
+					end
+				end
+				if tableBudget >= 30000 then break end
+			end
+		end
+	end
+
+	if tableBudget < 30000 and type(getloadedmodules) == "function" then
+		local ok, modules = pcall(getloadedmodules)
+		if ok and type(modules) == "table" then
+			for _, module in ipairs(modules) do
+				local moduleKey = standTierKey(module.Name)
+				if moduleKey:find("stand", 1, true) or moduleKey:find("stat", 1, true)
+					or moduleKey:find("data", 1, true) or moduleKey:find("config", 1, true)
+					or moduleKey:find("info", 1, true) then
+					local required, result = pcall(require, module)
+					if required and type(result) == "table" then
+						pcall(scanTable, result, module.Name, 0)
+					end
+				end
+				if tableBudget >= 30000 then break end
+			end
+		end
+	end
+
+	standTierCatalogBusy = false
+	if changedCount > 0 then
+		if executiveUI.refreshTargetsWorkspace then pcall(executiveUI.refreshTargetsWorkspace) end
+		if executiveUI.refreshStandPicker then pcall(executiveUI.refreshStandPicker) end
+	end
+	return true, changedCount
+end
+
+local function safeScanStandTierCatalog(force)
+	local ok, result, detail = pcall(scanStandTierCatalog, force)
+	if not ok then
+		standTierCatalogBusy = false
+		warn("Stand tier catalog scan: " .. tostring(result))
+		return false, tostring(result)
+	end
+	return result, detail
+end
+
 local function replacePlain(text, search, replacement)
 	if search == "" then return text end
 	local escaped = search:gsub("(%W)", "%%%1")
@@ -377,16 +765,16 @@ end
 local function createEmbeddedLunaUI()
 --================== EMBEDDED LUNA UI LIBRARY ==================--
 local UI_CONFIG = {
-    Theme = "BananaCat", -- Các sự lựa chọn: "Dendro", "Kawaii", "Midnight", "BananaCat"
-    LogoID = "75597990690752",
-    HubName = "Selina Hub",
-    HubSubtitle = "Banana Cat Theme"
+    Theme = "LunaViolet",
+    LogoID = "",
+    HubName = "LUNA HUB",
+    HubSubtitle = "Stand Upright Rebooted"
 }
 
 local Library = {}
 
-UI_CONFIG.Theme = "BananaCat"
-UI_CONFIG.HubSubtitle = "Glass Banana Theme"
+UI_CONFIG.Theme = "LunaViolet"
+UI_CONFIG.HubSubtitle = "Stand Upright Rebooted"
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -395,6 +783,23 @@ local ContentProvider = game:GetService("ContentProvider")
 local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("StarterGui")
 local Mouse = Players.LocalPlayer:GetMouse()
+
+-- ScreenGui destruction does not disconnect listeners attached to services.
+-- Keep those connections in a session-wide registry so re-executing the hub
+-- cannot leave duplicate hotkey, camera, or dropdown listeners behind.
+local oldUIConnections = getgenv().LunaHubUIConnections
+if type(oldUIConnections) == "table" then
+    for _, connection in ipairs(oldUIConnections) do
+        pcall(function() connection:Disconnect() end)
+    end
+end
+local uiConnections = {}
+getgenv().LunaHubUIConnections = uiConnections
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(uiConnections, connection)
+    return connection
+end
 
 Library._compat = {
     flags = {},
@@ -498,6 +903,20 @@ Library.THEMES["ForgePanel"] = {
     muted = Color3.fromRGB(98, 122, 171),
     navHover = Color3.fromRGB(23, 35, 61),
     glow = Color3.fromRGB(255, 132, 48)
+}
+
+-- Reference design: deep navy surfaces, restrained violet highlights, and
+-- strong text contrast for a compact desktop/mobile farming dashboard.
+Library.THEMES["LunaViolet"] = {
+    bg = Color3.fromRGB(8, 10, 24),
+    panel = Color3.fromRGB(16, 19, 38),
+    accent1 = Color3.fromRGB(139, 92, 246),
+    accent2 = Color3.fromRGB(196, 142, 255),
+    text = Color3.fromRGB(245, 243, 255),
+    textSub = Color3.fromRGB(174, 169, 202),
+    muted = Color3.fromRGB(119, 116, 151),
+    navHover = Color3.fromRGB(42, 30, 82),
+    glow = Color3.fromRGB(157, 104, 255)
 }
 
 Library.COLORS = Library.THEMES[UI_CONFIG.Theme] or Library.THEMES["BananaGlass"]
@@ -639,6 +1058,45 @@ local function padding(px)
 	return p
 end
 
+-- Lucide icon atlas entries used by the Luna navigation.  Keeping the atlas
+-- data in the script avoids unsupported font glyphs rendering as square boxes.
+local LUNA_ICON_ATLAS = {
+	crown = {16898613044, 404, 918},
+	home = {16898613509, 820, 147},
+	crosshair = {16898613044, 453, 869},
+	box = {16898612819, 771, 196},
+	flame = {16898613353, 967, 306},
+	wrench = {16898613869, 820, 906},
+	settings = {16898613777, 771, 257},
+	["moon-star"] = {16898613613, 355, 869},
+	info = {16898613509, 612, 869},
+	clock = {16898613044, 771, 661},
+	zap = {16898613869, 918, 906},
+	["circle-check"] = {16898612819, 869, 955},
+	["refresh-cw"] = {16898613699, 404, 869},
+	package = {16898613613, 918, 196},
+	link = {16898613509, 918, 453},
+	database = {16898613044, 710, 869},
+	download = {16898613044, 820, 906},
+	upload = {16898613869, 612, 869},
+	["trash-2"] = {16898613869, 257, 918},
+	shield = {16898613777, 869, 0},
+	scan = {16898613699, 967, 196},
+	sprout = {16898613777, 918, 306},
+}
+
+local function applyLunaIcon(imageLabel, iconName, color)
+	local icon = LUNA_ICON_ATLAS[iconName]
+	if not icon then return false end
+	imageLabel.Image = "rbxassetid://" .. tostring(icon[1])
+	imageLabel.ImageRectSize = Vector2.new(48, 48)
+	imageLabel.ImageRectOffset = Vector2.new(icon[2], icon[3])
+	imageLabel.ImageColor3 = color or Color3.fromRGB(180, 126, 255)
+	imageLabel.ImageTransparency = 0
+	imageLabel.ScaleType = Enum.ScaleType.Stretch
+	return true
+end
+
 local function parseLogoAssetId(raw)
 	if type(raw) ~= "string" then return nil end
 	local s = raw:gsub("%s+", "")
@@ -775,23 +1233,23 @@ function Library:MakeWindow(Config)
 
     local function buildLayout()
         local viewport = getViewport()
-        local isMobile = viewport.X <= 900
-        local width = math.clamp(math.floor(viewport.X * (isMobile and 0.94 or 0.54)), isMobile and 500 or 560, isMobile and 620 or 640)
-        local height = math.clamp(math.floor(viewport.Y * (isMobile and 0.74 or 0.6)), isMobile and 400 or 420, isMobile and 620 or 500)
-        local headerPadTop = isMobile and 10 or 12
-        local headerHeight = isMobile and 40 or 42
-        local sidePad = isMobile and 8 or 14
-        local bottomPad = isMobile and 18 or 24
-        local contentGap = isMobile and 10 or 16
+        local isMobile = viewport.X <= 820
+        local width = math.clamp(math.floor(viewport.X * (isMobile and 0.96 or 0.70)), isMobile and 500 or 740, isMobile and 680 or 840)
+        local height = math.clamp(math.floor(viewport.Y * (isMobile and 0.78 or 0.68)), isMobile and 420 or 470, isMobile and 560 or 520)
+        local headerPadTop = 6
+        local headerHeight = 36
+        local sidePad = 6
+        local bottomPad = 6
+        local contentGap = 6
         local topContentY = headerPadTop + headerHeight + contentGap
-        local navWidth = math.clamp(math.floor(width * (isMobile and 0.17 or 0.16)), isMobile and 82 or 90, isMobile and 96 or 104)
+        local navWidth = math.clamp(math.floor(width * (isMobile and 0.19 or 0.17)), isMobile and 98 or 122, isMobile and 124 or 136)
         local headerWidth = width - (sidePad * 2)
         local panelHeight = height - (topContentY + bottomPad)
-        local navInset = isMobile and 6 or 8
-        local contentInset = isMobile and 6 or 12
-        local searchHeight = isMobile and 28 or 30
-        local navBodyTop = navInset + searchHeight + 8
-        local contentBodyTop = contentInset + searchHeight + 8
+        local navInset = 6
+        local contentInset = isMobile and 7 or 9
+        local searchHeight = 0
+        local navBodyTop = navInset
+        local contentBodyTop = contentInset
         local navBodyHeight = panelHeight - navBodyTop - navInset
         local contentWidth = headerWidth - navWidth - contentGap
         local contentBodyHeight = panelHeight - contentBodyTop - contentInset
@@ -817,10 +1275,10 @@ function Library:MakeWindow(Config)
             contentBodyTop = contentBodyTop,
             contentBodyHeight = contentBodyHeight,
             headerButtonInset = isMobile and 34 or 40,
-            dockSize = isMobile and 52 or 60,
-            dockInset = isMobile and 18 or 26,
-            titleTextSize = isMobile and 16 or 18,
-            subtitleTextSize = isMobile and 8 or 9,
+            dockSize = isMobile and 46 or 50,
+            dockInset = isMobile and 12 or 16,
+            titleTextSize = isMobile and 12 or 13,
+            subtitleTextSize = 7,
         }
     end
 
@@ -836,18 +1294,18 @@ function Library:MakeWindow(Config)
     root.Size = UDim2.fromOffset(layout.width, layout.height)
     root.Position = centeredRootPosition()
     root.BackgroundColor3 = Library.COLORS.bg
-    root.BackgroundTransparency = 1
+    root.BackgroundTransparency = 0.04
     root.BorderSizePixel = 0
     root.ZIndex = 5
     root.Visible = not StartHidden
     root.ClipsDescendants = false
     root.Parent = screenGui
-    corner(16).Parent = root
+    corner(9).Parent = root
 
     local stroke = Instance.new("UIStroke")
     stroke.Color = Library.COLORS.glow
-    stroke.Thickness = 2
-    stroke.Transparency = 1
+    stroke.Thickness = 1
+    stroke.Transparency = 0.28
     stroke.Parent = root
 
     local HEADER_PAD_TOP, HEADER_H, HEADER_W = layout.headerPadTop, layout.headerHeight, layout.headerWidth
@@ -867,24 +1325,24 @@ function Library:MakeWindow(Config)
     header.Text = ""
     header.AutoButtonColor = false
     header.BackgroundColor3 = Library.COLORS.panel
-    header.BackgroundTransparency = 0.36
+    header.BackgroundTransparency = 0.35
     header.BorderSizePixel = 0
     header.Size = UDim2.fromOffset(HEADER_W, HEADER_H)
     header.Position = UDim2.fromOffset(SIDE_PAD, HEADER_PAD_TOP)
     header.ZIndex = 6
     header.Parent = root
-    corner(12).Parent = header
+    corner(7).Parent = header
     local headerStroke = Instance.new("UIStroke", header)
     headerStroke.Color = Library.COLORS.accent1
-    headerStroke.Transparency = 0.94
+    headerStroke.Transparency = 0.84
     makeDragMoveTarget(header, root)
 
     local headerLine = Instance.new("Frame")
-    headerLine.Size = UDim2.new(1, 40, 0, 2)
-    headerLine.Position = UDim2.new(0, -5, 1, 0)
+    headerLine.Size = UDim2.new(1, 0, 0, 1)
+    headerLine.Position = UDim2.new(0, 0, 1, 0)
     headerLine.BackgroundColor3 = Color3.new(1,1,1)
     headerLine.BorderSizePixel = 0
-    headerLine.Visible = false
+    headerLine.Visible = true
     headerLine.Parent = header
     applyGradient(headerLine, Library.COLORS.accent1, Library.COLORS.accent2).Rotation = 0
 
@@ -893,9 +1351,30 @@ function Library:MakeWindow(Config)
     titleHost.Size = UDim2.new(1, -8, 1, 0)
     titleHost.Parent = header
 
+    local brandMark = Instance.new("Frame")
+    brandMark.Size = UDim2.fromOffset(22, 22)
+    brandMark.Position = UDim2.fromOffset(7, 7)
+    brandMark.BackgroundColor3 = Library.COLORS.navHover
+    brandMark.BackgroundTransparency = 0.08
+    brandMark.BorderSizePixel = 0
+    brandMark.ZIndex = 7
+    brandMark.Parent = header
+    corner(4).Parent = brandMark
+    local brandStroke = Instance.new("UIStroke", brandMark)
+    brandStroke.Color = Library.COLORS.accent1
+    brandStroke.Transparency = 0.35
+    local brandGlyph = Instance.new("ImageLabel")
+    brandGlyph.Size = UDim2.fromOffset(14, 14)
+    brandGlyph.Position = UDim2.new(0.5, -7, 0.5, -7)
+    brandGlyph.BackgroundTransparency = 1
+    brandGlyph.BorderSizePixel = 0
+    brandGlyph.ZIndex = 8
+    brandGlyph.Parent = brandMark
+    applyLunaIcon(brandGlyph, "moon-star", Library.COLORS.accent2)
+
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -76, 0, 22)
-    title.Position = UDim2.new(0.5, 0, 0, 1)
+    title.Size = UDim2.new(1, -120, 0, 16)
+    title.Position = UDim2.new(0.5, 0, 0, 3)
     title.AnchorPoint = Vector2.new(0.5, 0)
     title.BackgroundTransparency = 1
     title.Font = Enum.Font.GothamBlack
@@ -907,8 +1386,8 @@ function Library:MakeWindow(Config)
     applyGradient(title, Library.COLORS.accent1, Library.COLORS.accent2)
 
     local subtitle = Instance.new("TextLabel")
-    subtitle.Size = UDim2.new(1, -76, 0, 12)
-    subtitle.Position = UDim2.new(0.5, 0, 0, 22)
+    subtitle.Size = UDim2.new(1, -120, 0, 10)
+    subtitle.Position = UDim2.new(0.5, 0, 0, 19)
     subtitle.AnchorPoint = Vector2.new(0.5, 0)
     subtitle.BackgroundTransparency = 1
     subtitle.Font = Enum.Font.GothamSemibold
@@ -922,13 +1401,13 @@ function Library:MakeWindow(Config)
     nav.Size = UDim2.fromOffset(NAV_W, PANEL_H)
     nav.Position = UDim2.fromOffset(SIDE_PAD, TOP_CONTENT_Y)
     nav.BackgroundColor3 = Library.COLORS.panel
-    nav.BackgroundTransparency = 0.24
+    nav.BackgroundTransparency = 0.62
     nav.ClipsDescendants = true
     nav.Parent = root
-    corner(12).Parent = nav
+    corner(7).Parent = nav
     local navPanelStroke = Instance.new("UIStroke", nav)
     navPanelStroke.Color = Library.COLORS.accent1
-    navPanelStroke.Transparency = 0.97
+    navPanelStroke.Transparency = 0.9
 
     local navSearchShell = Instance.new("Frame")
     navSearchShell.Size = UDim2.new(1, -(NAV_INSET * 2), 0, SEARCH_H)
@@ -937,6 +1416,7 @@ function Library:MakeWindow(Config)
     navSearchShell.BackgroundTransparency = 0.64
     navSearchShell.BorderSizePixel = 0
     navSearchShell.Parent = nav
+    navSearchShell.Visible = false
     corner(8).Parent = navSearchShell
     local navSearchStroke = Instance.new("UIStroke", navSearchShell)
     navSearchStroke.Color = Library.COLORS.navHover
@@ -962,22 +1442,60 @@ function Library:MakeWindow(Config)
     navBody.Position = UDim2.fromOffset(NAV_INSET, NAV_BODY_TOP)
     navBody.Parent = nav
 
+    local sidebarStory = Instance.new("Frame")
+    sidebarStory.Name = "SidebarStory"
+    sidebarStory.Size = UDim2.new(1, -16, 0, 105)
+    sidebarStory.Position = UDim2.new(0, 8, 1, -111)
+    sidebarStory.BackgroundTransparency = 1
+    sidebarStory.BorderSizePixel = 0
+    sidebarStory.Parent = nav
+    local moon = Instance.new("ImageLabel")
+    moon.Size = UDim2.fromOffset(36, 36)
+    moon.Position = UDim2.fromOffset(7, 1)
+    moon.BackgroundTransparency = 1
+    moon.BorderSizePixel = 0
+    moon.Parent = sidebarStory
+    applyLunaIcon(moon, "moon-star", Library.COLORS.accent2)
+    moon.ImageTransparency = 0.25
+    local storyText = Instance.new("TextLabel")
+    storyText.Size = UDim2.new(1, -8, 0, 42)
+    storyText.Position = UDim2.new(0, 4, 0, 42)
+    storyText.BackgroundTransparency = 1
+    storyText.Text = "A Better\nTomorrow..."
+    storyText.Font = Enum.Font.GothamMedium
+    storyText.TextSize = 11
+    storyText.TextColor3 = Color3.fromRGB(188, 151, 255)
+    storyText.TextTransparency = 0.24
+    storyText.TextXAlignment = Enum.TextXAlignment.Center
+    storyText.TextYAlignment = Enum.TextYAlignment.Center
+    storyText.Parent = sidebarStory
+    local versionText = Instance.new("TextLabel")
+    versionText.Size = UDim2.new(1, 0, 0, 12)
+    versionText.Position = UDim2.new(0, 0, 1, -12)
+    versionText.BackgroundTransparency = 1
+    versionText.Text = "LUNA HUB v2.0"
+    versionText.Font = Enum.Font.GothamSemibold
+    versionText.TextSize = 7
+    versionText.TextColor3 = Library.COLORS.muted
+    versionText.TextXAlignment = Enum.TextXAlignment.Center
+    versionText.Parent = sidebarStory
+
     local navLayout = Instance.new("UIListLayout")
     navLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    navLayout.Padding = UDim.new(0, 8)
+    navLayout.Padding = UDim.new(0, 6)
     navLayout.Parent = navBody
 
     local content = Instance.new("Frame")
     content.Size = UDim2.fromOffset(CONTENT_W, PANEL_H)
     content.Position = UDim2.fromOffset(SIDE_PAD + NAV_W + layout.contentGap, TOP_CONTENT_Y)
     content.BackgroundColor3 = Library.COLORS.panel
-    content.BackgroundTransparency = 0.24
+    content.BackgroundTransparency = 0.52
     content.ClipsDescendants = false
     content.Parent = root
-    corner(12).Parent = content
+    corner(7).Parent = content
     local contentPanelStroke = Instance.new("UIStroke", content)
     contentPanelStroke.Color = Library.COLORS.accent1
-    contentPanelStroke.Transparency = 0.97
+    contentPanelStroke.Transparency = 0.9
 
     local contentSearchShell = Instance.new("Frame")
     contentSearchShell.Size = UDim2.new(1, -(CONTENT_INSET * 2), 0, SEARCH_H)
@@ -986,6 +1504,7 @@ function Library:MakeWindow(Config)
     contentSearchShell.BackgroundTransparency = 0.64
     contentSearchShell.BorderSizePixel = 0
     contentSearchShell.Parent = content
+    contentSearchShell.Visible = false
     corner(8).Parent = contentSearchShell
     local contentSearchStroke = Instance.new("UIStroke", contentSearchShell)
     contentSearchStroke.Color = Library.COLORS.navHover
@@ -1060,31 +1579,36 @@ function Library:MakeWindow(Config)
     end
 
     local themeBtn = Instance.new("TextButton")
-    themeBtn.Size = UDim2.fromOffset(26, 26)
-    themeBtn.Position = UDim2.new(0, 150, 0, 2) -- nằm cạnh title (cánh thẻ Selina)
+    themeBtn.Size = UDim2.fromOffset(20, 20)
     themeBtn.BackgroundColor3 = Library.COLORS.panel
-    themeBtn.BackgroundTransparency = 0.42
-    themeBtn.Text = ""
+    themeBtn.BackgroundTransparency = 1
+    themeBtn.Text = "−"
+    themeBtn.Font = Enum.Font.GothamBold
+    themeBtn.TextSize = 13
+    themeBtn.TextColor3 = Library.COLORS.textSub
     themeBtn.AutoButtonColor = false
     themeBtn.ZIndex = 7
     themeBtn.Parent = titleHost
     themeBtn.AnchorPoint = Vector2.new(1, 0)
-    themeBtn.Position = UDim2.new(1, -2, 0, 2)
-    corner(8).Parent = themeBtn
+    themeBtn.Position = UDim2.new(1, -27, 0, 7)
+    corner(5).Parent = themeBtn
 
-    local hmLayout = Instance.new("UIListLayout", themeBtn)
-    hmLayout.Padding = UDim.new(0, 3)
-    hmLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    hmLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-    for i = 1, 3 do
-        local line = Instance.new("Frame")
-        line.Size = UDim2.fromOffset(12, 2)
-        line.BackgroundColor3 = Library.COLORS.text
-        line.BorderSizePixel = 0
-        line.ZIndex = 8
-        line.Parent = themeBtn
-        corner(2).Parent = line
-    end
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.fromOffset(20, 20)
+    closeBtn.AnchorPoint = Vector2.new(1, 0)
+    closeBtn.Position = UDim2.new(1, -4, 0, 7)
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.Text = "×"
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 13
+    closeBtn.TextColor3 = Library.COLORS.textSub
+    closeBtn.AutoButtonColor = false
+    closeBtn.ZIndex = 7
+    closeBtn.Parent = titleHost
+    corner(5).Parent = closeBtn
+    closeBtn.MouseButton1Click:Connect(toggleMenuPanel)
+    closeBtn.MouseEnter:Connect(function() tween(closeBtn, {TextColor3 = Color3.fromRGB(255, 105, 145)}, 0.15) end)
+    closeBtn.MouseLeave:Connect(function() tween(closeBtn, {TextColor3 = Library.COLORS.textSub}, 0.15) end)
 
     local dropList = Instance.new("ScrollingFrame")
     dropList.Size = UDim2.fromOffset(130, 0) 
@@ -1129,7 +1653,7 @@ function Library:MakeWindow(Config)
     end
 
     themeBtn.MouseButton1Click:Connect(function()
-        toggleDrop(not isThemeDropOpen)
+        toggleMenuPanel()
     end)
 
     themeBtn.MouseEnter:Connect(function()
@@ -1245,31 +1769,24 @@ function Library:MakeWindow(Config)
         end
         currentCamera = workspace.CurrentCamera or currentCamera
         if currentCamera then
-            viewportConnection = currentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsiveLayout)
+            viewportConnection = connect(currentCamera:GetPropertyChangedSignal("ViewportSize"), applyResponsiveLayout)
         end
     end
 
     bindViewportListener()
-    workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    connect(workspace:GetPropertyChangedSignal("CurrentCamera"), function()
         bindViewportListener()
         applyResponsiveLayout()
     end)
     applyResponsiveLayout()
 
     if not applyLogoToImage(dockLogo, LogoId) then
-        local dockPh = Instance.new("TextLabel", dockLogo)
-        dockPh.Size = UDim2.new(1, 0, 1, 0)
-        dockPh.BackgroundTransparency = 1
-        dockPh.Text = "Menu"
-        dockPh.TextColor3 = Library.COLORS.accent1
-        dockPh.Font = Enum.Font.GothamBold
-        dockPh.TextSize = 14
-        dockPh.ZIndex = 21
+        applyLunaIcon(dockLogo, "moon-star", Library.COLORS.accent1)
     end
 
     makeDockImageDragAndTap(dockLogo, toggleMenuPanel)
 
-    UserInputService.InputBegan:Connect(function(input, gp)
+    connect(UserInputService.InputBegan, function(input, gp)
         if gp then return end
         if input.KeyCode == Enum.KeyCode[toggleKey] or (Enum.KeyCode[toggleKey] == nil and input.KeyCode == Enum.KeyCode.RightShift) then
             toggleMenuPanel()
@@ -1318,15 +1835,21 @@ function Library:MakeWindow(Config)
             local isActive = name == tabName and dat.Btn.Visible ~= false
             dat.Page.Visible = isActive
             if isActive then
-                tween(dat.Btn, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+                tween(dat.Btn, {BackgroundColor3 = Library.COLORS.navHover, BackgroundTransparency = 0.04}, 0.2)
                 tween(dat.Label, {TextColor3 = Library.COLORS.text}, 0.2)
+                tween(dat.Icon, {ImageColor3 = Color3.fromRGB(245, 226, 255)}, 0.2)
+                tween(dat.IconTile, {BackgroundColor3 = Color3.fromRGB(91, 45, 163), BackgroundTransparency = 0.08}, 0.2)
+                tween(dat.IconStroke, {Color = Library.COLORS.accent2, Transparency = 0.12}, 0.2)
                 tween(dat.Marker, {BackgroundTransparency = 0}, 0.2)
-                tween(dat.Label, {Position = UDim2.new(0, 18, 0, 0)}, 0.2)
+                tween(dat.Label, {Position = UDim2.new(0, 36, 0, 0)}, 0.2)
             else
-                tween(dat.Btn, {BackgroundColor3 = Library.COLORS.panel}, 0.2)
+                tween(dat.Btn, {BackgroundColor3 = Library.COLORS.panel, BackgroundTransparency = 1}, 0.2)
                 tween(dat.Label, {TextColor3 = Library.COLORS.muted}, 0.2)
+                tween(dat.Icon, {ImageColor3 = Color3.fromRGB(164, 120, 230)}, 0.2)
+                tween(dat.IconTile, {BackgroundColor3 = Color3.fromRGB(37, 27, 70), BackgroundTransparency = 0.34}, 0.2)
+                tween(dat.IconStroke, {Color = Color3.fromRGB(104, 64, 168), Transparency = 0.38}, 0.2)
                 tween(dat.Marker, {BackgroundTransparency = 1}, 0.2)
-                tween(dat.Label, {Position = UDim2.new(0, 14, 0, 0)}, 0.2)
+                tween(dat.Label, {Position = UDim2.new(0, 34, 0, 0)}, 0.2)
             end
         end
     end
@@ -1335,6 +1858,8 @@ function Library:MakeWindow(Config)
         if not pageData then
             return
         end
+        -- The search UI is intentionally hidden in the compact Luna layout.
+        -- A stale hidden TextBox value must never make an entire tab appear empty.
         local query = string.lower(contentSearchBox.Text or "")
         for _, entry in ipairs(pageData.SearchEntries or {}) do
             if entry.Instance and entry.Instance.Parent then
@@ -1388,31 +1913,59 @@ function Library:MakeWindow(Config)
 
     function WindowObject:MakeTab(TabConfig)
         local TabName = TabConfig.Name or "Tab"
+        local tabIcons = {
+            ["Home"] = "home", ["Stand Farm"] = "crown", ["Targets"] = "crosshair",
+            ["Storage & Orb"] = "box", ["Auto Lair"] = "flame", ["Utilities"] = "wrench",
+            ["Settings"] = "settings",
+        }
+        local tabIconName = TabConfig.Icon or tabIcons[TabName] or "settings"
 
         local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1, 0, 0, 32)
+        btn.Size = UDim2.new(1, 0, 0, 38)
         btn.BackgroundColor3 = Library.COLORS.navHover
-        btn.BackgroundTransparency = 0.18
+        btn.BackgroundTransparency = 0.52
         btn.Text = ""
         btn.AutoButtonColor = false
         btn.Parent = navBody
-        corner(8).Parent = btn
+        corner(7).Parent = btn
+
+        local tabIconTile = Instance.new("Frame")
+        tabIconTile.Size = UDim2.fromOffset(24, 24)
+        tabIconTile.Position = UDim2.new(0, 7, 0.5, -12)
+        tabIconTile.BackgroundColor3 = Color3.fromRGB(37, 27, 70)
+        tabIconTile.BackgroundTransparency = 0.34
+        tabIconTile.BorderSizePixel = 0
+        tabIconTile.Parent = btn
+        corner(6).Parent = tabIconTile
+        local tabIconStroke = Instance.new("UIStroke")
+        tabIconStroke.Color = Color3.fromRGB(104, 64, 168)
+        tabIconStroke.Transparency = 0.38
+        tabIconStroke.Thickness = 1
+        tabIconStroke.Parent = tabIconTile
+
+        local tabIcon = Instance.new("ImageLabel")
+        tabIcon.Size = UDim2.fromOffset(14, 14)
+        tabIcon.Position = UDim2.new(0.5, -7, 0.5, -7)
+        tabIcon.BackgroundTransparency = 1
+        tabIcon.BorderSizePixel = 0
+        tabIcon.Parent = tabIconTile
+        applyLunaIcon(tabIcon, tabIconName, Color3.fromRGB(164, 120, 230))
 
         local tabLabel = Instance.new("TextLabel")
-        tabLabel.Size = UDim2.new(1, -22, 1, 0)
-        tabLabel.Position = UDim2.new(0, 14, 0, 0)
+        tabLabel.Size = UDim2.new(1, -38, 1, 0)
+        tabLabel.Position = UDim2.new(0, 34, 0, 0)
         tabLabel.BackgroundTransparency = 1
         tabLabel.Text = TabName
         tabLabel.Font = Enum.Font.GothamBold
-        tabLabel.TextSize = 11
+        tabLabel.TextSize = 12
         tabLabel.TextColor3 = Library.COLORS.muted
         tabLabel.TextXAlignment = Enum.TextXAlignment.Left
         tabLabel.TextTruncate = Enum.TextTruncate.AtEnd
         tabLabel.Parent = btn
 
         local marker = Instance.new("Frame")
-        marker.Size = UDim2.new(0, 2, 0, 16)
-        marker.Position = UDim2.new(0, 7, 0.5, -8)
+        marker.Size = UDim2.new(0, 3, 0, 22)
+        marker.Position = UDim2.new(0, 3, 0.5, -11)
         marker.BackgroundColor3 = Library.COLORS.accent1
         marker.BorderSizePixel = 0
         marker.BackgroundTransparency = 1
@@ -1432,8 +1985,103 @@ function Library:MakeWindow(Config)
 
         local list = Instance.new("UIListLayout")
         list.SortOrder = Enum.SortOrder.LayoutOrder
-        list.Padding = UDim.new(0, 8)
+        list.Padding = UDim.new(0, 6)
         list.Parent = page
+
+        local pageSubtitles = {
+            ["Stand Farm"] = "Automate your farming with precision.",
+            ["Home"] = "Overview of your current session.",
+            ["Targets"] = "Configure what stands to keep.",
+            ["Storage & Orb"] = "Manage your storage and orb settings.",
+            ["Auto Lair"] = "Automatically farm boss lairs.",
+            ["Utilities"] = "Helpful tools and performance options.",
+            ["Settings"] = "Webhook notifications and data.",
+        }
+        local hero = Instance.new("Frame")
+        hero.Name = "PageHero"
+        hero.LayoutOrder = -100
+        hero.Size = UDim2.new(1, 0, 0, 50)
+        hero.BackgroundTransparency = 1
+        hero.Parent = page
+
+        local heroArt = Instance.new("Frame")
+        heroArt.Size = UDim2.new(1, 0, 1, 0)
+        heroArt.BackgroundColor3 = Color3.fromRGB(25, 22, 62)
+        heroArt.BackgroundTransparency = 0.34
+        heroArt.BorderSizePixel = 0
+        heroArt.ZIndex = 1
+        heroArt.Parent = hero
+        corner(7).Parent = heroArt
+        local heroGradient = Instance.new("UIGradient")
+        heroGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(29, 24, 71)),
+            ColorSequenceKeypoint.new(0.55, Color3.fromRGB(31, 29, 78)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(12, 16, 40)),
+        })
+        heroGradient.Parent = heroArt
+
+        local heroGlow = Instance.new("Frame")
+        heroGlow.Size = UDim2.new(0.48, 0, 0, 2)
+        heroGlow.Position = UDim2.new(0.43, 0, 0.82, 0)
+        heroGlow.BackgroundColor3 = Library.COLORS.accent1
+        heroGlow.BackgroundTransparency = 0.6
+        heroGlow.BorderSizePixel = 0
+        heroGlow.ZIndex = 1
+        heroGlow.Parent = heroArt
+        local heroQuote = Instance.new("TextLabel")
+        heroQuote.Size = UDim2.new(0.3, -4, 0, 26)
+        heroQuote.Position = UDim2.new(0.69, 0, 0, 10)
+        heroQuote.BackgroundTransparency = 1
+        heroQuote.Text = "Good stands come\nto those who persist."
+        heroQuote.Font = Enum.Font.GothamMedium
+        heroQuote.TextSize = 7
+        heroQuote.TextColor3 = Color3.fromRGB(180, 160, 230)
+        heroQuote.TextTransparency = 0.18
+        heroQuote.TextXAlignment = Enum.TextXAlignment.Center
+        heroQuote.TextYAlignment = Enum.TextYAlignment.Center
+        heroQuote.ZIndex = 1
+        heroQuote.Parent = heroArt
+
+        local heroIcon = Instance.new("Frame")
+        heroIcon.Size = UDim2.fromOffset(34, 34)
+        heroIcon.Position = UDim2.fromOffset(4, 8)
+        heroIcon.BackgroundColor3 = Library.COLORS.navHover
+        heroIcon.BackgroundTransparency = 0.05
+        heroIcon.BorderSizePixel = 0
+        heroIcon.Parent = hero
+        corner(7).Parent = heroIcon
+        local heroStroke = Instance.new("UIStroke", heroIcon)
+        heroStroke.Color = Library.COLORS.accent1
+        heroStroke.Transparency = 0.62
+        local heroGlyph = Instance.new("ImageLabel")
+        heroGlyph.Size = UDim2.fromOffset(20, 20)
+        heroGlyph.Position = UDim2.new(0.5, -10, 0.5, -10)
+        heroGlyph.BackgroundTransparency = 1
+        heroGlyph.BorderSizePixel = 0
+        heroGlyph.Parent = heroIcon
+        applyLunaIcon(heroGlyph, tabIconName, Library.COLORS.accent2)
+
+        local heroTitle = Instance.new("TextLabel")
+        heroTitle.Size = UDim2.new(1, -50, 0, 21)
+        heroTitle.Position = UDim2.fromOffset(47, 5)
+        heroTitle.BackgroundTransparency = 1
+        heroTitle.Text = TabName
+        heroTitle.Font = Enum.Font.GothamBold
+        heroTitle.TextSize = 15
+        heroTitle.TextColor3 = Library.COLORS.text
+        heroTitle.TextXAlignment = Enum.TextXAlignment.Left
+        heroTitle.Parent = hero
+
+        local heroSubtitle = Instance.new("TextLabel")
+        heroSubtitle.Size = UDim2.new(1, -50, 0, 15)
+        heroSubtitle.Position = UDim2.fromOffset(47, 26)
+        heroSubtitle.BackgroundTransparency = 1
+        heroSubtitle.Text = pageSubtitles[TabName] or "Luna Executive control panel."
+        heroSubtitle.Font = Enum.Font.Gotham
+        heroSubtitle.TextSize = 9
+        heroSubtitle.TextColor3 = Library.COLORS.textSub
+        heroSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+        heroSubtitle.Parent = hero
 
         local pageSearchEntries = {}
 
@@ -1456,6 +2104,9 @@ function Library:MakeWindow(Config)
             Page = page,
             Btn = btn,
             Label = tabLabel,
+            Icon = tabIcon,
+            IconTile = tabIconTile,
+            IconStroke = tabIconStroke,
             Marker = marker,
             SearchEntries = pageSearchEntries
         }
@@ -1468,14 +2119,14 @@ function Library:MakeWindow(Config)
 
         btn.MouseEnter:Connect(function() 
             if marker.BackgroundTransparency ~= 0 then
-                tween(btn, {BackgroundColor3 = Library.COLORS.navHover}, 0.2) 
-                tween(tabLabel, {Position = UDim2.new(0, 18, 0, 0)}, 0.2)
+                tween(btn, {BackgroundColor3 = Library.COLORS.navHover, BackgroundTransparency = 0.42}, 0.2) 
+                tween(tabLabel, {Position = UDim2.new(0, 36, 0, 0)}, 0.2)
             end
         end)
         btn.MouseLeave:Connect(function() 
             if marker.BackgroundTransparency ~= 0 then
-                tween(btn, {BackgroundColor3 = Library.COLORS.panel}, 0.2) 
-                tween(tabLabel, {Position = UDim2.new(0, 14, 0, 0)}, 0.2)
+                tween(btn, {BackgroundColor3 = Library.COLORS.panel, BackgroundTransparency = 1}, 0.2) 
+                tween(tabLabel, {Position = UDim2.new(0, 34, 0, 0)}, 0.2)
             end
         end)
 
@@ -1598,11 +2249,15 @@ function Library:MakeWindow(Config)
         function TabObject:AddButton(BtnConfig)
             local btnText = BtnConfig.Name or "Button"
             local callback = BtnConfig.Callback or function() end
+            local lowerButtonText = string.lower(btnText)
+            local isPrimary = string.find(lowerButtonText, "start", 1, true) ~= nil
+                or string.find(lowerButtonText, "add target", 1, true) ~= nil
+                or string.find(lowerButtonText, "manage targets", 1, true) ~= nil
 
             local btnUI = Instance.new("TextButton")
             btnUI.Size = UDim2.new(1, 0, 0, 34)
-            btnUI.BackgroundColor3 = Library.COLORS.navHover
-            btnUI.BackgroundTransparency = 0.14
+            btnUI.BackgroundColor3 = isPrimary and Library.COLORS.accent1 or Library.COLORS.navHover
+            btnUI.BackgroundTransparency = isPrimary and 0.02 or 0.14
             btnUI.Text = "  " .. btnText
             btnUI.Font = Enum.Font.GothamBold
             btnUI.TextSize = 12
@@ -1619,16 +2274,16 @@ function Library:MakeWindow(Config)
             pad.PaddingLeft = UDim.new(0, 12)
 
             local bStroke = Instance.new("UIStroke", btnUI)
-            bStroke.Color = Library.COLORS.navHover
-            bStroke.Transparency = 0.88
+            bStroke.Color = isPrimary and Library.COLORS.accent2 or Library.COLORS.navHover
+            bStroke.Transparency = isPrimary and 0.58 or 0.88
 
             btnUI.MouseEnter:Connect(function() 
-                tween(btnUI, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+                tween(btnUI, {BackgroundColor3 = isPrimary and Library.COLORS.accent2 or Library.COLORS.navHover}, 0.2)
                 tween(bStroke, {Color = Library.COLORS.accent1}, 0.2)
                 tween(pad, {PaddingLeft = UDim.new(0, 16)}, 0.2) 
             end)
             btnUI.MouseLeave:Connect(function() 
-                tween(btnUI, {BackgroundColor3 = Library.COLORS.navHover}, 0.2)
+                tween(btnUI, {BackgroundColor3 = isPrimary and Library.COLORS.accent1 or Library.COLORS.navHover}, 0.2)
                 tween(bStroke, {Color = Library.COLORS.navHover}, 0.2)
                 tween(pad, {PaddingLeft = UDim.new(0, 12)}, 0.2)
             end)
@@ -1744,13 +2399,13 @@ function Library:MakeWindow(Config)
                 end
             end)
             
-            UserInputService.InputChanged:Connect(function(input)
+            connect(UserInputService.InputChanged, function(input)
                 if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
                     updateSlider(input)
                 end
             end)
             
-            UserInputService.InputEnded:Connect(function(input)
+            connect(UserInputService.InputEnded, function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
                     dragging = false
                 end
@@ -1775,6 +2430,13 @@ function Library:MakeWindow(Config)
         end
 
         function TabObject:CreateSection(text)
+            local initialText = tostring(text or "")
+            local statusColor
+            if string.find(initialText, "Stand Farm  •", 1, true) then statusColor = Color3.fromRGB(69, 225, 142)
+            elseif string.find(initialText, "Auto Lair  •", 1, true) then statusColor = Color3.fromRGB(255, 101, 132)
+            elseif string.find(initialText, "Current  •", 1, true) then statusColor = Color3.fromRGB(170, 112, 255)
+            elseif string.find(initialText, "Targets  •", 1, true) then statusColor = Color3.fromRGB(105, 143, 255)
+            elseif string.find(initialText, "2x Orb  •", 1, true) then statusColor = Color3.fromRGB(101, 142, 255) end
             local row = Instance.new("Frame")
             row.Size = UDim2.new(1, 0, 0, 28)
             row.BackgroundColor3 = Library.COLORS.navHover
@@ -1786,14 +2448,24 @@ function Library:MakeWindow(Config)
             line.Transparency = 0.84
             local searchEntry = registerSearchTarget(row, text)
 
+            if statusColor then
+                local dot = Instance.new("Frame")
+                dot.Size = UDim2.fromOffset(7, 7)
+                dot.Position = UDim2.new(0, 10, 0.5, -3)
+                dot.BackgroundColor3 = statusColor
+                dot.BorderSizePixel = 0
+                dot.Parent = row
+                corner(4).Parent = dot
+            end
+
             local label = Instance.new("TextLabel")
-            label.Size = UDim2.new(1, -20, 1, 0)
-            label.Position = UDim2.new(0, 10, 0, 0)
+            label.Size = UDim2.new(1, statusColor and -34 or -20, 1, 0)
+            label.Position = UDim2.new(0, statusColor and 24 or 10, 0, 0)
             label.BackgroundTransparency = 1
-            label.Text = tostring(text or "")
+            label.Text = initialText
             label.Font = Enum.Font.GothamBold
             label.TextSize = 12
-            label.TextColor3 = Library.COLORS.accent2
+            label.TextColor3 = statusColor and Library.COLORS.text or Library.COLORS.accent2
             label.TextXAlignment = Enum.TextXAlignment.Left
             label.Parent = row
 
@@ -2137,7 +2809,7 @@ function Library:MakeWindow(Config)
                 end
             end)
 
-            UserInputService.InputBegan:Connect(function(input, gp)
+            connect(UserInputService.InputBegan, function(input, gp)
                 if gp or not open then
                     return
                 end
@@ -2217,11 +2889,18 @@ function Library:MakeWindow(Config)
         applyNavSearch()
         applyPageSearch(Pages[TabName])
 
+        -- Expose only the small surface needed by the Luna dashboard shell.
+        -- Existing controls continue to use the same page and callbacks.
+        TabObject._page = page
+        TabObject.Select = function()
+            setActiveTab(TabName)
+            applyPageSearch(Pages[TabName])
+        end
         return TabObject
     end
 
-    function WindowObject:CreateTab(TabName, _Icon)
-        return self:MakeTab({Name = TabName})
+    function WindowObject:CreateTab(TabName, Icon)
+        return self:MakeTab({Name = TabName, Icon = Icon})
     end
 
     return WindowObject
@@ -2264,9 +2943,17 @@ function Library:SaveConfiguration()
             pcall(makefolder, cfg.FolderName)
         end
     end
+    -- Discord webhook URLs are credentials. Keep them out of the plain-text
+    -- configuration file, including any value left over from older versions.
+    local flagsToSave = {}
+    for flag, value in pairs(self._compat.flags) do
+        if flag ~= "WebhookURL" then
+            flagsToSave[flag] = value
+        end
+    end
     local okEncode, encoded = pcall(function()
         return game:GetService("HttpService"):JSONEncode({
-            flags = self._compat.flags
+            flags = flagsToSave
         })
     end)
     if not okEncode then
@@ -2311,11 +2998,15 @@ function Library:LoadConfiguration()
         return true
     end
     for flag, value in pairs(data.flags) do
-        self:_setFlag(flag, value, true)
+        -- Do not restore credentials persisted by older versions.
+        if flag ~= "WebhookURL" then
+            self:_setFlag(flag, value, true)
+        end
     end
     return true
 end
 
+Library.ApplyLunaIcon = applyLunaIcon
 return Library
 --================ END EMBEDDED LUNA UI LIBRARY ================--
 end
@@ -2413,7 +3104,7 @@ function executiveUI.getFilteredStandList(query)
 	local result, seen = {}, {}
 	local function add(value)
 		local key = nameKey(value)
-		if value and value ~= "" and not seen[key] and #result < 8 then
+		if value and value ~= "" and not seen[key] then
 			seen[key] = true
 			table.insert(result, value)
 		end
@@ -2500,6 +3191,11 @@ local function refreshUI()
 			slotDisplaySection:Set(buildSlotsDisplayText())
 		end
 	end)
+	pcall(function()
+		if executiveUI.refreshTargetsWorkspace then
+			executiveUI.refreshTargetsWorkspace()
+		end
+	end)
 end
 
 local function setHitboxVisible(part, enabled)
@@ -2564,6 +3260,7 @@ local function showMessageBox(text, title, style)
 end
 
 local function shouldTagEveryone(attValue, isSlotMatch)
+	if not webhookMentionEnabled then return false end
 	if isSlotMatch then return true end
 	if #webhookTagAtts == 0 then return true end
 	for _, a in ipairs(webhookTagAtts) do
@@ -2574,6 +3271,9 @@ end
 
 local function webhook(text, stand, color, attValue, isSlotMatch)
 	if webhookurl == "" then return false, "Webhook URL is empty." end
+	if not isDiscordWebhookUrl(webhookurl) then
+		return false, "Webhook URL must be an official Discord webhook URL."
+	end
 	if not requestFunction then
 		warn("Webhook disabled: no supported HTTP request function was found.")
 		return false, "HTTP request function unavailable."
@@ -2661,6 +3361,13 @@ local function webhook(text, stand, color, attValue, isSlotMatch)
 		})
 	end
 
+	local now = os.clock()
+	if now < webhookNextRequestAt then
+		return false, "Webhook rate limited locally."
+	end
+	-- Serialized farm events can otherwise create unbounded request tasks and
+	-- notification spam. Keep a conservative local minimum interval.
+	webhookNextRequestAt = now + 0.75
 	local ok, response = pcall(function()
 		local content = ""
 		if shouldTagEveryone(attValue, isSlotMatch) then
@@ -3248,7 +3955,7 @@ local function doStandFarm()
 	isFarmingActive = true
 	farmRun = farmRun + 1
 	local run = farmRun
-	farmStats = { arrows = 0, rokas = 0, errors = 0, stored = 0, orbs = 0 }
+	farmStats = { arrows = 0, rokas = 0, matches = 0, errors = 0, stored = 0, orbs = 0 }
 	local errors, lastFire = 0, 0
 	local pendingArrowNotice = false
 	local waitingForItem = nil
@@ -3388,6 +4095,7 @@ local function doStandFarm()
 			if not usingArrow then
 				local matched, slotNum = checkSlotMatch(stand, att)
 				if matched then
+					farmStats.matches = (farmStats.matches or 0) + 1
 					-- A kept Stand must never leave an Arrow/Roka equipped while the
 					-- hub stores it, stops, or displays the match popup.
 					returnFarmItem(activeItem)
@@ -3519,6 +4227,7 @@ local slotsLoaded, slotsLoadError = loadSlots()
 if not slotsLoaded and slotsLoadError then
 	warn("Failed to load saved targets: " .. tostring(slotsLoadError))
 end
+task.spawn(safeScanStandTierCatalog, true)
 
 --================== RAYFIELD UI ==================--
 
@@ -3530,21 +4239,21 @@ if not Rayfield then
 	return
 end
 
--- Built-in and already exercised by the downloaded interface library.
-if type(Rayfield.THEMES) == "table" and Rayfield.THEMES.Midnight then
-	Rayfield.COLORS = Rayfield.THEMES.Midnight
+-- Apply the violet dashboard token set used by the redesigned Luna interface.
+if type(Rayfield.THEMES) == "table" and Rayfield.THEMES.LunaViolet then
+	Rayfield.COLORS = Rayfield.THEMES.LunaViolet
 end
 
 setBootstrapStatus("Creating window...", false)
 local windowOk, Window = pcall(function()
 	return Rayfield:CreateWindow({
-		Name = "Luna Hub",
+		Name = "LUNA HUB",
 		Icon = 0,
 		LogoID = "",
 		LoadingTitle = "Stand Upright Rebooted",
 		LoadingSubtitle = "Luna Executive",
 		ShowText = "Luna Hub",
-		Theme = "Midnight",
+		Theme = "LunaViolet",
 		ToggleUIKeybind = "K",
 		DisableRayfieldPrompts = false,
 		DisableBuildWarnings = true,
@@ -3578,13 +4287,998 @@ setBootstrapStatus("Building navigation...", false)
 -- Create navigation once in its final order. Features below keep their original
 -- callbacks and are only assigned to clearer destinations.
 local Tabs = {}
-Tabs.Dashboard = Window:CreateTab("Dashboard", "layout-dashboard")
-Tabs.Farm = Window:CreateTab("Stand Farm", "shopping-cart")
+Tabs.Farm = Window:CreateTab("Stand Farm", "crown")
+Tabs.Dashboard = Window:CreateTab("Home", "home")
 Tabs.Targets = Window:CreateTab("Targets", "crosshair")
-Tabs.Storage = Window:CreateTab("Storage & Orb", "archive")
-Tabs.Lair = Window:CreateTab("Auto Lair", "swords")
+Tabs.Storage = Window:CreateTab("Storage & Orb", "box")
+Tabs.Lair = Window:CreateTab("Auto Lair", "flame")
 Tabs.Utilities = Window:CreateTab("Utilities", "wrench")
 Tabs.Settings = Window:CreateTab("Settings", "settings")
+
+-- Compact Farm dashboard: mirrors the reference's card hierarchy while the
+-- detailed controls remain available in their focused tabs below.
+local function buildFarmDashboard()
+	local page = Tabs.Farm._page
+	if not page then return end
+	local shell = Instance.new("Frame")
+	shell.Name = "FarmDashboard"
+	shell.LayoutOrder = -10
+	shell.Size = UDim2.new(1, 0, 0, 390)
+	shell.BackgroundTransparency = 1
+	shell.Parent = page
+
+	local function card(title, icon, position, size)
+		local frame = Instance.new("Frame")
+		frame.Size = size
+		frame.Position = position
+		frame.BackgroundColor3 = Color3.fromRGB(15, 18, 36)
+		frame.BorderSizePixel = 0
+		frame.ClipsDescendants = true
+		frame.Parent = shell
+		local round = Instance.new("UICorner", frame)
+		round.CornerRadius = UDim.new(0, 8)
+		local outline = Instance.new("UIStroke", frame)
+		outline.Color = Color3.fromRGB(58, 45, 104)
+		outline.Transparency = 0.35
+		local iconLabel = Instance.new("TextLabel")
+		iconLabel.Size = UDim2.fromOffset(22, 22)
+		iconLabel.Position = UDim2.fromOffset(12, 10)
+		iconLabel.BackgroundTransparency = 1
+		iconLabel.Text = icon
+		iconLabel.Font = Enum.Font.GothamBold
+		iconLabel.TextSize = 15
+		iconLabel.TextColor3 = Color3.fromRGB(175, 120, 255)
+		iconLabel.Parent = frame
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, -48, 0, 24)
+		label.Position = UDim2.fromOffset(40, 9)
+		label.BackgroundTransparency = 1
+		label.Text = title
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 13
+		label.TextColor3 = Color3.fromRGB(242, 239, 255)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.Parent = frame
+		local divider = Instance.new("Frame")
+		divider.Size = UDim2.new(1, -24, 0, 1)
+		divider.Position = UDim2.fromOffset(12, 37)
+		divider.BackgroundColor3 = Color3.fromRGB(53, 43, 93)
+		divider.BorderSizePixel = 0
+		divider.Parent = frame
+		return frame
+	end
+
+	local function caption(parent, text, x, y, width, color, size)
+		local label = Instance.new("TextLabel")
+		local multiline = string.find(tostring(text), "\n", 1, true) ~= nil
+		label.Size = UDim2.new(0, width, 0, multiline and 34 or 18)
+		label.Position = UDim2.fromOffset(x, y)
+		label.BackgroundTransparency = 1
+		label.Text = text
+		label.Font = Enum.Font.GothamSemibold
+		label.TextSize = size or 11
+		label.TextColor3 = color or Color3.fromRGB(174, 169, 202)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextYAlignment = Enum.TextYAlignment.Top
+		label.TextWrapped = multiline
+		label.TextTruncate = multiline and Enum.TextTruncate.None or Enum.TextTruncate.AtEnd
+		label.Parent = parent
+		return label
+	end
+
+	local function violetButton(parent, text, y, onClick)
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(1, -24, 0, 30)
+		button.Position = UDim2.fromOffset(12, y)
+		button.BackgroundColor3 = Color3.fromRGB(121, 72, 229)
+		button.BorderSizePixel = 0
+		button.Text = text
+		button.Font = Enum.Font.GothamBold
+		button.TextSize = 11
+		button.TextColor3 = Color3.fromRGB(255, 255, 255)
+		button.Parent = parent
+		local round = Instance.new("UICorner", button)
+		round.CornerRadius = UDim.new(0, 6)
+		button.MouseButton1Click:Connect(onClick)
+		return button
+	end
+
+	local function fieldButton(parent, text, y, onClick)
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(1, -24, 0, 25)
+		button.Position = UDim2.fromOffset(12, y)
+		button.BackgroundColor3 = Color3.fromRGB(26, 27, 55)
+		button.BorderSizePixel = 0
+		button.Text = "  " .. text
+		button.Font = Enum.Font.GothamSemibold
+		button.TextSize = 9
+		button.TextColor3 = Color3.fromRGB(225, 220, 245)
+		button.TextXAlignment = Enum.TextXAlignment.Left
+		button.TextTruncate = Enum.TextTruncate.AtEnd
+		button.Parent = parent
+		local arrowLabel = Instance.new("TextLabel")
+		arrowLabel.Size = UDim2.fromOffset(16, 20)
+		arrowLabel.Position = UDim2.new(1, -20, 0.5, -10)
+		arrowLabel.BackgroundTransparency = 1
+		arrowLabel.Text = "▾"
+		arrowLabel.Font = Enum.Font.GothamBold
+		arrowLabel.TextSize = 9
+		arrowLabel.TextColor3 = Color3.fromRGB(155, 145, 192)
+		arrowLabel.Parent = button
+		local round = Instance.new("UICorner", button)
+		round.CornerRadius = UDim.new(0, 5)
+		local outline = Instance.new("UIStroke", button)
+		outline.Color = Color3.fromRGB(65, 49, 118)
+		outline.Transparency = 0.55
+		button.MouseButton1Click:Connect(onClick)
+		return button
+	end
+
+	local function dashboardToggle(parent, title, subtitle, y, initial, onChange)
+		caption(parent, title, 12, y, 150, Color3.fromRGB(236, 233, 249), 11)
+		caption(parent, subtitle, 12, y + 15, 160, Color3.fromRGB(137, 132, 166), 9)
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.fromOffset(34, 18)
+		button.Position = UDim2.new(1, -46, 0, y + 5)
+		button.BorderSizePixel = 0
+		button.Text = ""
+		button.Parent = parent
+		local round = Instance.new("UICorner", button)
+		round.CornerRadius = UDim.new(1, 0)
+		local knob = Instance.new("Frame")
+		knob.Size = UDim2.fromOffset(12, 12)
+		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.BorderSizePixel = 0
+		knob.Parent = button
+		local knobRound = Instance.new("UICorner", knob)
+		knobRound.CornerRadius = UDim.new(1, 0)
+		local state = initial == true
+		local control = {}
+		function control:Set(value, skipCallback)
+			state = value == true
+			button.BackgroundColor3 = state and Color3.fromRGB(139, 92, 246) or Color3.fromRGB(76, 75, 105)
+			knob.Position = UDim2.new(0, state and 18 or 4, 0.5, -6)
+			if not skipCallback then onChange(state) end
+		end
+		button.MouseButton1Click:Connect(function() control:Set(not state) end)
+		control:Set(state, true)
+		return control
+	end
+
+	local settings = card("Farm Settings", "⚙", UDim2.new(0, 0, 0, 0), UDim2.new(0.33, -4, 0, 182))
+	caption(settings, "Arrow Type", 12, 48, 120)
+	local arrow
+	arrow = fieldButton(settings, "Stand Arrow", 67, function()
+		selectedArrowType = selectedArrowType == "Stand Arrow" and "Charged Arrow" or "Stand Arrow"
+		arrow.Text = "  " .. selectedArrowType
+	end)
+	executiveUI.dashboardArrowField = arrow
+	executiveUI.dashboardFarmToggle = dashboardToggle(settings, "Auto Farm", "Automatically roll stands", 101, false, function(on)
+		if farmToggle then farmToggle:Set(on) elseif on and startStandFarm then startStandFarm() elseif stopStandFarm then stopStandFarm() end
+	end)
+	executiveUI.dashboardStoreToggle = dashboardToggle(settings, "Auto Store", "Store matched stands", 134, true, function(on)
+		autoStoreMatches = on
+	end)
+
+	local target = card("Target Builder", "⊕", UDim2.new(0.335, 0, 0, 0), UDim2.new(0.33, -4, 0, 182))
+	caption(target, "Select Stand", 12, 44, 120, nil, 9)
+	executiveUI.dashboardStandField = fieldButton(target, selectedStandForSlot, 59, function() Tabs.Targets:Select() end)
+	caption(target, "Select Attributes", 12, 87, 120, nil, 9)
+	executiveUI.dashboardAttrField = fieldButton(target, table.concat(selectedAttsForSlot, ", "), 102, function() Tabs.Targets:Select() end)
+	violetButton(target, "+  Add Target", 140, function()
+		local targetStand = selectedStandForSlot or "Any"
+		local targetAttributes = normalizeAttributes(selectedAttsForSlot)
+		if executiveUI.selectedTargetMode == "Stand Only" then
+			targetAttributes = {"Any"}
+		elseif executiveUI.selectedTargetMode == "Attribute Only" then
+			targetStand = "Any"
+		end
+		local newSlot = {
+			stand = targetStand,
+			standId = targetStand ~= "Any" and uniqueStandId(targetStand) or nil,
+			att = targetAttributes,
+		}
+		for i, existing in ipairs(farmSlots) do
+			if executiveUI.targetKey(existing) == executiveUI.targetKey(newSlot) then
+				notif("Target Exists", "Same as Target " .. i .. ".")
+				return
+			end
+		end
+		table.insert(farmSlots, newSlot)
+		autoSaveSlots()
+		refreshUI()
+		notif("Target Added", getSlotDisplayText(newSlot))
+	end)
+
+	local list = card("Target List", "☷", UDim2.new(0.67, 0, 0, 0), UDim2.new(0.33, 0, 0, 182))
+	executiveUI.dashboardTargetRows = {}
+	for i = 1, 3 do
+		local targetRow = Instance.new("Frame")
+		targetRow.Size = UDim2.new(1, -24, 0, 25)
+		targetRow.Position = UDim2.fromOffset(12, 43 + ((i - 1) * 30))
+		targetRow.BackgroundColor3 = Color3.fromRGB(22, 24, 48)
+		targetRow.BorderSizePixel = 0
+		targetRow.ClipsDescendants = true
+		targetRow.Parent = list
+		local targetRound = Instance.new("UICorner", targetRow)
+		targetRound.CornerRadius = UDim.new(0, 5)
+		executiveUI.dashboardTargetRows[i] = caption(targetRow, i .. ".  No target configured", 7, 4, 160, Color3.fromRGB(211, 205, 235), 9)
+	end
+	violetButton(list, "Manage Targets", 142, function() Tabs.Targets:Select() end)
+
+	local status = card("Roll Status", "◌", UDim2.new(0, 0, 0, 194), UDim2.new(0.5, -3, 0, 176))
+	local currentBox = Instance.new("Frame")
+	currentBox.Size = UDim2.new(1, -24, 0, 53)
+	currentBox.Position = UDim2.fromOffset(12, 45)
+	currentBox.BackgroundColor3 = Color3.fromRGB(22, 24, 48)
+	currentBox.BorderSizePixel = 0
+	currentBox.ClipsDescendants = true
+	currentBox.Parent = status
+	local currentRound = Instance.new("UICorner", currentBox)
+	currentRound.CornerRadius = UDim.new(0, 5)
+	executiveUI.dashboardCurrentStand = caption(currentBox, "Current Stand  •  Loading...", 8, 7, 260, Color3.fromRGB(245, 243, 255), 10)
+	executiveUI.dashboardCurrentAttribute = caption(currentBox, "Attribute  •  —", 8, 28, 260, nil, 9)
+	executiveUI.dashboardRollStatus = caption(status, "Status  •  Waiting", 12, 108, 260, Color3.fromRGB(190, 142, 255), 11)
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -24, 0, 7)
+	track.Position = UDim2.fromOffset(12, 146)
+	track.BackgroundColor3 = Color3.fromRGB(45, 42, 69)
+	track.BorderSizePixel = 0
+	track.Parent = status
+	local trackRound = Instance.new("UICorner", track)
+	trackRound.CornerRadius = UDim.new(1, 0)
+	executiveUI.dashboardRollFill = Instance.new("Frame")
+	executiveUI.dashboardRollFill.Size = UDim2.new(0.08, 0, 1, 0)
+	executiveUI.dashboardRollFill.BackgroundColor3 = Color3.fromRGB(151, 94, 255)
+	executiveUI.dashboardRollFill.BorderSizePixel = 0
+	executiveUI.dashboardRollFill.Parent = track
+	local fillRound = Instance.new("UICorner", executiveUI.dashboardRollFill)
+	fillRound.CornerRadius = UDim.new(1, 0)
+
+	local stats = card("Farm Statistics", "▥", UDim2.new(0.5, 3, 0, 194), UDim2.new(0.5, -3, 0, 176))
+	local function statBox(text, xScale, xOffset, y)
+		local box = Instance.new("Frame")
+		box.Size = UDim2.new(0.5, -18, 0, 45)
+		box.Position = UDim2.new(xScale, xOffset, 0, y)
+		box.BackgroundColor3 = Color3.fromRGB(22, 24, 48)
+		box.BorderSizePixel = 0
+		box.ClipsDescendants = true
+		box.Parent = stats
+		local boxRound = Instance.new("UICorner", box)
+		boxRound.CornerRadius = UDim.new(0, 5)
+		local label = caption(box, text, 8, 5, 100, Color3.fromRGB(218, 207, 250), 9)
+		return label
+	end
+	executiveUI.dashboardStats = {
+		statBox("Arrows Used\n0", 0, 12, 47),
+		statBox("Rokas Used\n0", 0.5, 6, 47),
+		statBox("Matches Found\n0", 0, 12, 101),
+		statBox("Stands Stored\n0", 0.5, 6, 101),
+	}
+end
+
+buildFarmDashboard()
+
+-- Dedicated Targets workspace.  It intentionally keeps the creation flow and
+-- target management in one compact two-column view, matching the Luna mockup.
+local function buildTargetsWorkspace()
+	local page = Tabs.Targets._page
+	if not page then return end
+
+	local shell = Instance.new("Frame")
+	shell.Name = "TargetsWorkspace"
+	shell.LayoutOrder = -10
+	shell.Size = UDim2.new(1, 0, 0, 356)
+	shell.BackgroundTransparency = 1
+	shell.Parent = page
+
+	local function rounded(instance, radius)
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0, radius or 7)
+		round.Parent = instance
+		return instance
+	end
+
+	local function makeText(parent, text, size, position, font, color)
+		local label = Instance.new("TextLabel")
+		label.Size = size
+		label.Position = position
+		label.BackgroundTransparency = 1
+		label.Text = text
+		label.Font = font or Enum.Font.GothamSemibold
+		label.TextSize = 10
+		label.TextColor3 = color or Color3.fromRGB(181, 175, 211)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Parent = parent
+		return label
+	end
+
+	local function panel(title, icon, position, size)
+		local frame = Instance.new("Frame")
+		frame.Size = size
+		frame.Position = position
+		frame.BackgroundColor3 = Color3.fromRGB(14, 17, 34)
+		frame.BorderSizePixel = 0
+		frame.Parent = shell
+		rounded(frame, 7)
+		local outline = Instance.new("UIStroke")
+		outline.Color = Color3.fromRGB(68, 51, 123)
+		outline.Transparency = 0.28
+		outline.Parent = frame
+
+		makeText(frame, icon, UDim2.fromOffset(23, 23), UDim2.fromOffset(12, 9), Enum.Font.GothamBold, Color3.fromRGB(181, 117, 255)).TextSize = 17
+		makeText(frame, title, UDim2.new(1, -76, 0, 19), UDim2.fromOffset(39, 9), Enum.Font.GothamBold, Color3.fromRGB(244, 241, 255)).TextSize = 12
+		local separator = Instance.new("Frame")
+		separator.Size = UDim2.new(1, -22, 0, 1)
+		separator.Position = UDim2.fromOffset(11, 39)
+		separator.BackgroundColor3 = Color3.fromRGB(56, 44, 98)
+		separator.BorderSizePixel = 0
+		separator.Parent = frame
+		return frame
+	end
+
+	local form = panel("Create Target", "✚", UDim2.new(0, 0, 0, 0), UDim2.new(0.42, -4, 0, 356))
+	makeText(form, "Set a stand and its desired attributes.", UDim2.new(1, -24, 0, 13), UDim2.fromOffset(12, 29), Enum.Font.Gotham, Color3.fromRGB(132, 127, 162)).TextSize = 8
+
+	local function fieldLabel(text, y)
+		local label = makeText(form, text, UDim2.new(1, -24, 0, 13), UDim2.fromOffset(12, y), Enum.Font.GothamSemibold, Color3.fromRGB(187, 181, 214))
+		label.TextSize = 8
+		return label
+	end
+
+	local function selectField(y, value)
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(1, -24, 0, 25)
+		button.Position = UDim2.fromOffset(12, y)
+		button.BackgroundColor3 = Color3.fromRGB(25, 27, 55)
+		button.BorderSizePixel = 0
+		button.AutoButtonColor = false
+		button.Text = "  " .. tostring(value)
+		button.TextXAlignment = Enum.TextXAlignment.Left
+		button.TextTruncate = Enum.TextTruncate.AtEnd
+		button.Font = Enum.Font.GothamSemibold
+		button.TextSize = 9
+		button.TextColor3 = Color3.fromRGB(229, 224, 247)
+		button.Parent = form
+		rounded(button, 5)
+		local edge = Instance.new("UIStroke")
+		edge.Color = Color3.fromRGB(72, 55, 130)
+		edge.Transparency = 0.52
+		edge.Parent = button
+		makeText(button, "⌄", UDim2.fromOffset(18, 18), UDim2.new(1, -21, 0.5, -9), Enum.Font.GothamBold, Color3.fromRGB(158, 147, 202)).TextSize = 11
+		return button
+	end
+
+	fieldLabel("Match Mode", 52)
+	local matchModes = {"Stand + Attribute", "Stand Only", "Attribute Only"}
+	local modeButtons = {}
+	local modePositions = {
+		UDim2.fromOffset(12, 65),
+		UDim2.new(1 / 3, 4, 0, 65),
+		UDim2.new(2 / 3, -4, 0, 65),
+	}
+	for index, mode in ipairs(matchModes) do
+		local modeButton = Instance.new("TextButton")
+		modeButton.Size = UDim2.new(1 / 3, -12, 0, 22)
+		modeButton.Position = modePositions[index]
+		modeButton.BorderSizePixel = 0
+		modeButton.AutoButtonColor = false
+		modeButton.Text = mode
+		modeButton.Font = Enum.Font.GothamSemibold
+		modeButton.TextSize = 7
+		modeButton.Parent = form
+		rounded(modeButton, 5)
+		modeButtons[mode] = modeButton
+	end
+	local function refreshModeButtons()
+		for mode, button in pairs(modeButtons) do
+			local active = mode == executiveUI.selectedTargetMode
+			button.BackgroundColor3 = active and Color3.fromRGB(100, 62, 186) or Color3.fromRGB(28, 29, 57)
+			button.TextColor3 = active and Color3.fromRGB(246, 239, 255) or Color3.fromRGB(162, 154, 195)
+		end
+	end
+	for mode, button in pairs(modeButtons) do
+		button.MouseButton1Click:Connect(function()
+			executiveUI.selectedTargetMode = mode
+			refreshModeButtons()
+		end)
+	end
+	refreshModeButtons()
+	fieldLabel("Search & Select Stand", 96)
+	local standSearch = Instance.new("TextBox")
+	standSearch.Size = UDim2.new(1, -24, 0, 25)
+	standSearch.Position = UDim2.fromOffset(12, 109)
+	standSearch.BackgroundColor3 = Color3.fromRGB(25, 27, 55)
+	standSearch.BorderSizePixel = 0
+	standSearch.ClearTextOnFocus = false
+	standSearch.PlaceholderText = "  Search for a stand..."
+	standSearch.PlaceholderColor3 = Color3.fromRGB(111, 106, 145)
+	standSearch.Text = ""
+	standSearch.TextXAlignment = Enum.TextXAlignment.Left
+	standSearch.Font = Enum.Font.Gotham
+	standSearch.TextSize = 8
+	standSearch.TextColor3 = Color3.fromRGB(226, 221, 246)
+	standSearch.Parent = form
+	rounded(standSearch, 5)
+	local standSearchStroke = Instance.new("UIStroke")
+	standSearchStroke.Color = Color3.fromRGB(72, 55, 130)
+	standSearchStroke.Transparency = 0.6
+	standSearchStroke.Parent = standSearch
+
+	-- A real, searchable stand picker sits above the lower form fields only
+	-- while the user is choosing a stand, like the expanded mockup menu.
+	local standPicker = Instance.new("Frame")
+	standPicker.Name = "StandPicker"
+	standPicker.Size = UDim2.new(1, -24, 0, 180)
+	standPicker.Position = UDim2.fromOffset(12, 137)
+	standPicker.BackgroundColor3 = Color3.fromRGB(13, 16, 35)
+	standPicker.BorderSizePixel = 0
+	standPicker.Visible = false
+	standPicker.ZIndex = 30
+	standPicker.Parent = form
+	rounded(standPicker, 5)
+	local pickerEdge = Instance.new("UIStroke")
+	pickerEdge.Color = Color3.fromRGB(129, 77, 230)
+	pickerEdge.Transparency = 0.15
+	pickerEdge.Parent = standPicker
+	local pickerSearch = Instance.new("TextBox")
+	pickerSearch.Size = UDim2.new(1, -52, 0, 24)
+	pickerSearch.Position = UDim2.fromOffset(6, 6)
+	pickerSearch.BackgroundColor3 = Color3.fromRGB(23, 26, 54)
+	pickerSearch.BorderSizePixel = 0
+	pickerSearch.ClearTextOnFocus = false
+	pickerSearch.PlaceholderText = "  ◉  Search for a stand..."
+	pickerSearch.PlaceholderColor3 = Color3.fromRGB(116, 109, 151)
+	pickerSearch.Text = ""
+	pickerSearch.TextXAlignment = Enum.TextXAlignment.Left
+	pickerSearch.Font = Enum.Font.Gotham
+	pickerSearch.TextSize = 8
+	pickerSearch.TextColor3 = Color3.fromRGB(230, 224, 247)
+	pickerSearch.ZIndex = 31
+	pickerSearch.Parent = standPicker
+	rounded(pickerSearch, 4)
+	local pickerClose = Instance.new("TextButton")
+	pickerClose.Size = UDim2.fromOffset(34, 24)
+	pickerClose.AnchorPoint = Vector2.new(1, 0)
+	pickerClose.Position = UDim2.new(1, -6, 0, 6)
+	pickerClose.BackgroundColor3 = Color3.fromRGB(48, 36, 82)
+	pickerClose.BorderSizePixel = 0
+	pickerClose.AutoButtonColor = false
+	pickerClose.Text = "Done"
+	pickerClose.Font = Enum.Font.GothamSemibold
+	pickerClose.TextSize = 7
+	pickerClose.TextColor3 = Color3.fromRGB(224, 211, 250)
+	pickerClose.ZIndex = 32
+	pickerClose.Parent = standPicker
+	rounded(pickerClose, 4)
+	local pickerList = Instance.new("ScrollingFrame")
+	pickerList.Size = UDim2.new(1, -12, 0, 138)
+	pickerList.Position = UDim2.fromOffset(6, 35)
+	pickerList.BackgroundTransparency = 1
+	pickerList.BorderSizePixel = 0
+	pickerList.ScrollBarThickness = 3
+	pickerList.ScrollBarImageColor3 = Color3.fromRGB(132, 76, 244)
+	pickerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+	pickerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	pickerList.ZIndex = 31
+	pickerList.Parent = standPicker
+	local pickerLayout = Instance.new("UIListLayout")
+	pickerLayout.Padding = UDim.new(0, 3)
+	pickerLayout.Parent = pickerList
+
+	fieldLabel("Stand", 144)
+	local standField = selectField(157, selectedStandForSlot)
+	fieldLabel("Attributes (select multiple)", 190)
+	local attributeField = selectField(203, table.concat(normalizeAttributes(selectedAttsForSlot), ", "))
+
+	-- Attribute selector is a real multi-select list.  It is layered over the
+	-- lower form while open so the compact Target layout keeps its original size.
+	local attributePicker = Instance.new("Frame")
+	attributePicker.Name = "AttributePicker"
+	attributePicker.Size = UDim2.new(1, -24, 0, 180)
+	attributePicker.Position = UDim2.fromOffset(12, 137)
+	attributePicker.BackgroundColor3 = Color3.fromRGB(13, 16, 35)
+	attributePicker.BorderSizePixel = 0
+	attributePicker.Visible = false
+	attributePicker.ZIndex = 40
+	attributePicker.Parent = form
+	rounded(attributePicker, 5)
+	local attributeEdge = Instance.new("UIStroke")
+	attributeEdge.Color = Color3.fromRGB(129, 77, 230)
+	attributeEdge.Transparency = 0.15
+	attributeEdge.Parent = attributePicker
+	local attributeTitle = makeText(attributePicker, "Select attributes", UDim2.new(1, -76, 0, 24), UDim2.fromOffset(8, 6), Enum.Font.GothamBold, Color3.fromRGB(235, 228, 252))
+	attributeTitle.TextSize = 9
+	attributeTitle.ZIndex = 41
+	local attributeDone = Instance.new("TextButton")
+	attributeDone.Size = UDim2.fromOffset(48, 24)
+	attributeDone.AnchorPoint = Vector2.new(1, 0)
+	attributeDone.Position = UDim2.new(1, -6, 0, 6)
+	attributeDone.BackgroundColor3 = Color3.fromRGB(103, 59, 189)
+	attributeDone.BorderSizePixel = 0
+	attributeDone.AutoButtonColor = false
+	attributeDone.Text = "Done"
+	attributeDone.Font = Enum.Font.GothamBold
+	attributeDone.TextSize = 8
+	attributeDone.TextColor3 = Color3.fromRGB(249, 244, 255)
+	attributeDone.ZIndex = 42
+	attributeDone.Parent = attributePicker
+	rounded(attributeDone, 4)
+	local attributeList = Instance.new("ScrollingFrame")
+	attributeList.Size = UDim2.new(1, -12, 0, 138)
+	attributeList.Position = UDim2.fromOffset(6, 36)
+	attributeList.BackgroundTransparency = 1
+	attributeList.BorderSizePixel = 0
+	attributeList.ScrollBarThickness = 3
+	attributeList.ScrollBarImageColor3 = Color3.fromRGB(132, 76, 244)
+	attributeList.CanvasSize = UDim2.new(0, 0, 0, 0)
+	attributeList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	attributeList.ZIndex = 41
+	attributeList.Parent = attributePicker
+	local attributeLayout = Instance.new("UIListLayout")
+	attributeLayout.Padding = UDim.new(0, 3)
+	attributeLayout.Parent = attributeList
+
+	local addButton = Instance.new("TextButton")
+	addButton.Size = UDim2.new(1, -24, 0, 29)
+	addButton.Position = UDim2.fromOffset(12, 241)
+	addButton.BackgroundColor3 = Color3.fromRGB(124, 70, 235)
+	addButton.BorderSizePixel = 0
+	addButton.AutoButtonColor = false
+	addButton.Text = "+  Add Target"
+	addButton.Font = Enum.Font.GothamBold
+	addButton.TextSize = 10
+	addButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	addButton.Parent = form
+	rounded(addButton, 5)
+	local addGradient = Instance.new("UIGradient")
+	addGradient.Color = ColorSequence.new(Color3.fromRGB(116, 73, 225), Color3.fromRGB(158, 74, 255))
+	addGradient.Parent = addButton
+
+	local lowerDivider = Instance.new("Frame")
+	lowerDivider.Size = UDim2.new(1, -24, 0, 1)
+	lowerDivider.Position = UDim2.fromOffset(12, 284)
+	lowerDivider.BackgroundColor3 = Color3.fromRGB(52, 42, 89)
+	lowerDivider.BorderSizePixel = 0
+	lowerDivider.Parent = form
+	local recentLabel = makeText(form, "Recent: none yet", UDim2.new(1, -24, 0, 14), UDim2.fromOffset(12, 296), Enum.Font.GothamSemibold, Color3.fromRGB(130, 125, 161))
+	recentLabel.TextSize = 8
+
+	local refreshButton = Instance.new("TextButton")
+	refreshButton.Size = UDim2.new(1, -24, 0, 26)
+	refreshButton.Position = UDim2.fromOffset(12, 320)
+	refreshButton.BackgroundColor3 = Color3.fromRGB(19, 19, 43)
+	refreshButton.BorderSizePixel = 0
+	refreshButton.AutoButtonColor = false
+	refreshButton.Text = "⟳  Refresh Stand Catalog"
+	refreshButton.Font = Enum.Font.GothamSemibold
+	refreshButton.TextSize = 9
+	refreshButton.TextColor3 = Color3.fromRGB(205, 179, 255)
+	refreshButton.Parent = form
+	rounded(refreshButton, 5)
+	local refreshEdge = Instance.new("UIStroke")
+	refreshEdge.Color = Color3.fromRGB(145, 80, 246)
+	refreshEdge.Transparency = 0.2
+	refreshEdge.Parent = refreshButton
+
+	local listPanel = panel("Target List", "☷", UDim2.new(0.42, 2, 0, 0), UDim2.new(0.58, -2, 0, 356))
+	local listSubtitle = makeText(listPanel, "Manage your farming targets.", UDim2.new(1, -135, 0, 12), UDim2.fromOffset(39, 28), Enum.Font.Gotham, Color3.fromRGB(130, 125, 161))
+	listSubtitle.TextSize = 8
+	local listCount = makeText(listPanel, "0 / ∞", UDim2.fromOffset(86, 16), UDim2.new(1, -96, 0, 13), Enum.Font.GothamBold, Color3.fromRGB(174, 109, 255))
+	listCount.TextSize = 9
+	listCount.TextXAlignment = Enum.TextXAlignment.Right
+
+	local listSearch = Instance.new("TextBox")
+	listSearch.Size = UDim2.new(1, -24, 0, 27)
+	listSearch.Position = UDim2.fromOffset(12, 48)
+	listSearch.BackgroundColor3 = Color3.fromRGB(25, 27, 55)
+	listSearch.BorderSizePixel = 0
+	listSearch.ClearTextOnFocus = false
+	listSearch.PlaceholderText = "  ◉  Search targets..."
+	listSearch.PlaceholderColor3 = Color3.fromRGB(111, 106, 145)
+	listSearch.Text = ""
+	listSearch.TextXAlignment = Enum.TextXAlignment.Left
+	listSearch.Font = Enum.Font.Gotham
+	listSearch.TextSize = 9
+	listSearch.TextColor3 = Color3.fromRGB(226, 221, 246)
+	listSearch.Parent = listPanel
+	rounded(listSearch, 5)
+	local listSearchStroke = Instance.new("UIStroke")
+	listSearchStroke.Color = Color3.fromRGB(72, 55, 130)
+	listSearchStroke.Transparency = 0.6
+	listSearchStroke.Parent = listSearch
+
+	local targetScroll = Instance.new("ScrollingFrame")
+	targetScroll.Size = UDim2.new(1, -24, 0, 216)
+	targetScroll.Position = UDim2.fromOffset(12, 84)
+	targetScroll.BackgroundColor3 = Color3.fromRGB(12, 15, 30)
+	targetScroll.BackgroundTransparency = 0.18
+	targetScroll.BorderSizePixel = 0
+	targetScroll.ScrollBarThickness = 3
+	targetScroll.ScrollBarImageColor3 = Color3.fromRGB(115, 65, 223)
+	targetScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	targetScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	targetScroll.Parent = listPanel
+	rounded(targetScroll, 5)
+	local targetListLayout = Instance.new("UIListLayout")
+	targetListLayout.Padding = UDim.new(0, 3)
+	targetListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	targetListLayout.Parent = targetScroll
+	local targetListPadding = Instance.new("UIPadding")
+	targetListPadding.PaddingTop = UDim.new(0, 4)
+	targetListPadding.PaddingBottom = UDim.new(0, 4)
+	targetListPadding.PaddingLeft = UDim.new(0, 4)
+	targetListPadding.PaddingRight = UDim.new(0, 4)
+	targetListPadding.Parent = targetScroll
+
+	local footerLine = Instance.new("Frame")
+	footerLine.Size = UDim2.new(1, -24, 0, 1)
+	footerLine.Position = UDim2.fromOffset(12, 310)
+	footerLine.BackgroundColor3 = Color3.fromRGB(52, 42, 89)
+	footerLine.BorderSizePixel = 0
+	footerLine.Parent = listPanel
+	local footerCount = makeText(listPanel, "0 Targets  •  Unlimited", UDim2.fromOffset(170, 18), UDim2.fromOffset(12, 321), Enum.Font.GothamSemibold, Color3.fromRGB(191, 184, 218))
+	footerCount.TextSize = 9
+	local clearButton = Instance.new("TextButton")
+	clearButton.Size = UDim2.fromOffset(82, 26)
+	clearButton.AnchorPoint = Vector2.new(1, 0)
+	clearButton.Position = UDim2.new(1, -12, 0, 318)
+	clearButton.BackgroundColor3 = Color3.fromRGB(28, 24, 53)
+	clearButton.BorderSizePixel = 0
+	clearButton.AutoButtonColor = false
+	clearButton.Text = "♜  Clear All"
+	clearButton.Font = Enum.Font.GothamSemibold
+	clearButton.TextSize = 9
+	clearButton.TextColor3 = Color3.fromRGB(207, 184, 249)
+	clearButton.Parent = listPanel
+	rounded(clearButton, 5)
+	local clearEdge = Instance.new("UIStroke")
+	clearEdge.Color = Color3.fromRGB(100, 70, 171)
+	clearEdge.Transparency = 0.36
+	clearEdge.Parent = clearButton
+
+	local function setFieldText(button, value)
+		button.Text = "  " .. tostring(value)
+	end
+
+	local function updateAttributeField()
+		selectedAttsForSlot = normalizeAttributes(selectedAttsForSlot)
+		local display = table.concat(selectedAttsForSlot, ", ")
+		setFieldText(attributeField, display)
+		if executiveUI.dashboardAttrField then
+			executiveUI.dashboardAttrField.Text = "  " .. display
+		end
+	end
+
+	local function renderAttributePicker()
+		for _, child in ipairs(attributeList:GetChildren()) do
+			if child:IsA("GuiObject") then child:Destroy() end
+		end
+		local selected = {}
+		for _, value in ipairs(normalizeAttributes(selectedAttsForSlot)) do
+			selected[value] = true
+		end
+		for index, attributeName in ipairs(allAttributes) do
+			local active = selected[attributeName] == true
+			local option = Instance.new("TextButton")
+			option.Size = UDim2.new(1, 0, 0, 27)
+			option.LayoutOrder = index
+			option.BackgroundColor3 = active and Color3.fromRGB(51, 37, 91) or Color3.fromRGB(20, 23, 45)
+			option.BorderSizePixel = 0
+			option.AutoButtonColor = false
+			option.Text = ""
+			option.ZIndex = 42
+			option.Parent = attributeList
+			rounded(option, 4)
+
+			local marker = Instance.new("Frame")
+			marker.Size = UDim2.fromOffset(13, 13)
+			marker.Position = UDim2.fromOffset(7, 7)
+			marker.BackgroundColor3 = active and Color3.fromRGB(151, 83, 249) or Color3.fromRGB(31, 34, 64)
+			marker.BorderSizePixel = 0
+			marker.ZIndex = 43
+			marker.Parent = option
+			rounded(marker, 3)
+			local markerEdge = Instance.new("UIStroke")
+			markerEdge.Color = active and Color3.fromRGB(210, 173, 255) or Color3.fromRGB(91, 76, 137)
+			markerEdge.Transparency = active and 0.1 or 0.35
+			markerEdge.Parent = marker
+
+			local optionName = makeText(option, attributeName, UDim2.new(1, -86, 0, 18), UDim2.fromOffset(27, 5), Enum.Font.GothamSemibold, active and Color3.fromRGB(244, 237, 255) or Color3.fromRGB(197, 191, 221))
+			optionName.TextSize = 8
+			optionName.ZIndex = 43
+			local state = makeText(option, active and "Selected" or "Select", UDim2.fromOffset(52, 18), UDim2.new(1, -58, 0, 5), Enum.Font.GothamSemibold, active and Color3.fromRGB(190, 139, 255) or Color3.fromRGB(123, 116, 154))
+			state.TextSize = 7
+			state.TextXAlignment = Enum.TextXAlignment.Right
+			state.ZIndex = 43
+
+			option.MouseButton1Click:Connect(function()
+				if attributeName == "Any" then
+					selectedAttsForSlot = {"Any"}
+				else
+					local nextValues, alreadySelected = {}, false
+					for _, value in ipairs(normalizeAttributes(selectedAttsForSlot)) do
+						if value ~= "Any" then
+							if value == attributeName then
+								alreadySelected = true
+							else
+								table.insert(nextValues, value)
+							end
+						end
+					end
+					if not alreadySelected then table.insert(nextValues, attributeName) end
+					selectedAttsForSlot = #nextValues > 0 and nextValues or {"Any"}
+				end
+				updateAttributeField()
+				renderAttributePicker()
+			end)
+		end
+	end
+
+	local pickerPalette = {
+		Color3.fromRGB(125, 70, 185), Color3.fromRGB(211, 156, 41), Color3.fromRGB(120, 87, 191),
+		Color3.fromRGB(192, 79, 91), Color3.fromRGB(139, 102, 190),
+	}
+	local function renderStandPicker()
+		for _, child in ipairs(pickerList:GetChildren()) do
+			if child:IsA("GuiObject") then child:Destroy() end
+		end
+		local options = executiveUI.getFilteredStandList(pickerSearch.Text ~= "" and pickerSearch.Text or standSearch.Text)
+		for index, standName in ipairs(options) do
+			local knownTier = getKnownStandTier(standName)
+			local fallbackColor = pickerPalette[((index - 1) % #pickerPalette) + 1]
+			local option = Instance.new("TextButton")
+			option.Size = UDim2.new(1, 0, 0, 27)
+			option.LayoutOrder = index
+			option.BackgroundColor3 = Color3.fromRGB(20, 23, 45)
+			option.BorderSizePixel = 0
+			option.AutoButtonColor = false
+			option.Text = ""
+			option.ZIndex = 32
+			option.Parent = pickerList
+			rounded(option, 4)
+			local icon = Instance.new("TextLabel")
+			icon.Size = UDim2.fromOffset(21, 21)
+			icon.Position = UDim2.fromOffset(4, 3)
+			icon.BackgroundColor3 = standTierBadgeColor(knownTier, fallbackColor)
+			icon.BorderSizePixel = 0
+			icon.Text = standTierBadgeText(knownTier, standName)
+			icon.Font = Enum.Font.GothamBold
+			icon.TextSize = #icon.Text >= 3 and 6 or 9
+			icon.TextColor3 = Color3.fromRGB(245, 238, 255)
+			icon.ZIndex = 33
+			icon.Parent = option
+			rounded(icon, 3)
+			local optionName = makeText(option, standName, UDim2.new(1, -92, 0, 12), UDim2.fromOffset(30, 3), Enum.Font.GothamSemibold, Color3.fromRGB(238, 234, 250))
+			optionName.TextSize = 8
+			optionName.ZIndex = 33
+			local exampleBadge = Instance.new("TextLabel")
+			exampleBadge.Size = UDim2.fromOffset(44, 12)
+			exampleBadge.AnchorPoint = Vector2.new(1, 0)
+			exampleBadge.Position = UDim2.new(1, -5, 0, 8)
+			exampleBadge.BackgroundColor3 = Color3.fromRGB(55, 45, 101)
+			exampleBadge.BorderSizePixel = 0
+			exampleBadge.Text = standName == "Any" and "Any" or "Select"
+			exampleBadge.Font = Enum.Font.GothamSemibold
+			exampleBadge.TextSize = 7
+			exampleBadge.TextColor3 = Color3.fromRGB(211, 197, 244)
+			exampleBadge.ZIndex = 33
+			exampleBadge.Parent = option
+			rounded(exampleBadge, 4)
+			option.MouseButton1Click:Connect(function()
+				if standName == "-- No matches --" then return end
+				selectedStandForSlot = standName
+				executiveUI.rememberStandSelection(standName)
+				setFieldText(standField, standName)
+				standSearch.Text = standName == "Any" and "" or standName
+				pickerSearch.Text = ""
+				standPicker.Visible = false
+			end)
+		end
+	end
+	standField.MouseButton1Click:Connect(function()
+		attributePicker.Visible = false
+		standSearch.Text = ""
+		pickerSearch.Text = ""
+		standPicker.Visible = true
+		renderStandPicker()
+		if os.clock() - lastStandTierCatalogScan >= 12 then task.spawn(safeScanStandTierCatalog) end
+	end)
+	attributeField.MouseButton1Click:Connect(function()
+		standPicker.Visible = false
+		attributePicker.Visible = true
+		renderAttributePicker()
+	end)
+	pickerClose.MouseButton1Click:Connect(function()
+		standPicker.Visible = false
+		pcall(function() pickerSearch:ReleaseFocus() end)
+		pcall(function() standSearch:ReleaseFocus() end)
+	end)
+	attributeDone.MouseButton1Click:Connect(function()
+		attributePicker.Visible = false
+	end)
+
+	local function makeBadge(parent, text, x, color)
+		local width = math.clamp(#tostring(text) * 5 + 12, 35, 76)
+		local badge = Instance.new("TextLabel")
+		badge.Size = UDim2.fromOffset(width, 14)
+		badge.Position = UDim2.fromOffset(x, 24)
+		badge.BackgroundColor3 = color or Color3.fromRGB(52, 42, 97)
+		badge.BackgroundTransparency = 0.08
+		badge.BorderSizePixel = 0
+		badge.Text = tostring(text)
+		badge.Font = Enum.Font.GothamSemibold
+		badge.TextSize = 7
+		badge.TextColor3 = Color3.fromRGB(225, 216, 249)
+		badge.Parent = parent
+		rounded(badge, 4)
+		return width + 4
+	end
+
+	local thumbnailPalette = {
+		Color3.fromRGB(128, 69, 190), Color3.fromRGB(204, 151, 39), Color3.fromRGB(149, 83, 190),
+		Color3.fromRGB(187, 136, 42), Color3.fromRGB(82, 65, 132),
+	}
+
+	local function renderTargetRows()
+		for _, child in ipairs(targetScroll:GetChildren()) do
+			if child:IsA("GuiObject") then child:Destroy() end
+		end
+		local query = nameKey(listSearch.Text)
+		local shown = 0
+		for index, slot in ipairs(farmSlots) do
+			local searchable = nameKey((slot.stand or "Any") .. " " .. getSlotDisplayText(slot))
+			if query == "" or searchable:find(query, 1, true) then
+				local standName = slot.stand or "Any"
+				local knownTier = getKnownStandTier(standName)
+				shown = shown + 1
+				local row = Instance.new("Frame")
+				row.Name = "TargetRow"
+				row.Size = UDim2.new(1, 0, 0, 42)
+				row.LayoutOrder = index
+				row.BackgroundColor3 = Color3.fromRGB(20, 23, 45)
+				row.BorderSizePixel = 0
+				row.Parent = targetScroll
+				rounded(row, 5)
+				makeText(row, string.format("#%02d", index), UDim2.fromOffset(24, 14), UDim2.fromOffset(4, 4), Enum.Font.GothamSemibold, Color3.fromRGB(154, 144, 194)).TextSize = 7
+				local thumb = Instance.new("TextLabel")
+				thumb.Size = UDim2.fromOffset(29, 29)
+				thumb.Position = UDim2.fromOffset(29, 6)
+				thumb.BackgroundColor3 = standTierBadgeColor(knownTier, thumbnailPalette[((index - 1) % #thumbnailPalette) + 1])
+				thumb.BorderSizePixel = 0
+				thumb.Text = standTierBadgeText(knownTier, standName)
+				thumb.Font = Enum.Font.GothamBlack
+				thumb.TextSize = #thumb.Text >= 3 and 7 or 11
+				thumb.TextColor3 = Color3.fromRGB(245, 235, 255)
+				thumb.Parent = row
+				rounded(thumb, 4)
+				local thumbStroke = Instance.new("UIStroke")
+				thumbStroke.Color = Color3.fromRGB(221, 188, 255)
+				thumbStroke.Transparency = 0.45
+				thumbStroke.Parent = thumb
+				makeText(row, getDisplayName(slot.stand or "Any"), UDim2.new(1, -119, 0, 14), UDim2.fromOffset(64, 4), Enum.Font.GothamBold, Color3.fromRGB(240, 237, 251)).TextSize = 9
+				local x = 64
+				local attributes = normalizeAttributes(slot.att)
+				if #attributes == 1 and attributes[1] == "Any" then
+					x = x + makeBadge(row, "Any", x, Color3.fromRGB(73, 48, 125))
+				else
+					for a = 1, math.min(3, #attributes) do
+						x = x + makeBadge(row, attributes[a], x, Color3.fromRGB(72, 53, 130))
+					end
+					if #attributes > 3 then makeBadge(row, "+" .. (#attributes - 3), x, Color3.fromRGB(58, 51, 92)) end
+				end
+				local remove = Instance.new("TextButton")
+				remove.Size = UDim2.fromOffset(26, 28)
+				remove.AnchorPoint = Vector2.new(1, 0.5)
+				remove.Position = UDim2.new(1, -7, 0.5, 0)
+				remove.BackgroundColor3 = Color3.fromRGB(47, 25, 49)
+				remove.BorderSizePixel = 0
+				remove.AutoButtonColor = false
+				remove.Text = "♜"
+				remove.Font = Enum.Font.GothamBold
+				remove.TextSize = 12
+				remove.TextColor3 = Color3.fromRGB(255, 101, 142)
+				remove.Parent = row
+				rounded(remove, 5)
+				remove.MouseButton1Click:Connect(function()
+					local removed = farmSlots[index]
+					if removed then
+						table.remove(farmSlots, index)
+						selectedRemoveIndex = nil
+						autoSaveSlots()
+						notif("Removed", getSlotDisplayText(removed))
+						refreshUI()
+					end
+				end)
+			end
+		end
+		if shown == 0 then
+			makeText(targetScroll, query == "" and "No targets yet" or "No matching targets", UDim2.new(1, -8, 0, 36), UDim2.fromOffset(4, 4), Enum.Font.GothamSemibold, Color3.fromRGB(130, 124, 161)).TextXAlignment = Enum.TextXAlignment.Center
+		end
+		local suffix = #farmSlots == 1 and " Target" or " Targets"
+		listCount.Text = tostring(#farmSlots) .. " / ∞"
+		footerCount.Text = tostring(#farmSlots) .. suffix .. "  •  Unlimited"
+	end
+
+	standSearch.Focused:Connect(function()
+		attributePicker.Visible = false
+		standPicker.Visible = true
+		pickerSearch.Text = standSearch.Text
+		renderStandPicker()
+	end)
+	standSearch:GetPropertyChangedSignal("Text"):Connect(function()
+		if pickerSearch.Text ~= standSearch.Text then pickerSearch.Text = standSearch.Text end
+		if standSearch:IsFocused() then standPicker.Visible = true end
+		renderStandPicker()
+	end)
+	pickerSearch:GetPropertyChangedSignal("Text"):Connect(function()
+		if standSearch.Text ~= pickerSearch.Text then standSearch.Text = pickerSearch.Text end
+		renderStandPicker()
+	end)
+	listSearch:GetPropertyChangedSignal("Text"):Connect(renderTargetRows)
+	addButton.MouseButton1Click:Connect(function()
+		standPicker.Visible = false
+		attributePicker.Visible = false
+		local targetStand = selectedStandForSlot or "Any"
+		local targetAttributes = normalizeAttributes(selectedAttsForSlot)
+		if executiveUI.selectedTargetMode == "Stand Only" then
+			targetAttributes = {"Any"}
+		elseif executiveUI.selectedTargetMode == "Attribute Only" then
+			targetStand = "Any"
+		end
+		local newSlot = {
+			stand = targetStand,
+			standId = targetStand ~= "Any" and uniqueStandId(targetStand) or nil,
+			att = targetAttributes,
+		}
+		for i, existing in ipairs(farmSlots) do
+			if executiveUI.targetKey(existing) == executiveUI.targetKey(newSlot) then
+				notif("Target Exists", "Same as Target " .. i .. ".")
+				return
+			end
+		end
+		table.insert(farmSlots, newSlot)
+		autoSaveSlots()
+		notif("Target Added", "Target " .. #farmSlots .. ": " .. getSlotDisplayText(newSlot))
+		refreshUI()
+	end)
+	refreshButton.MouseButton1Click:Connect(function()
+		local ok, message = scanStandCatalog(5)
+		task.spawn(safeScanStandTierCatalog, true)
+		if ok then
+			local options = executiveUI.getFilteredStandList(standSearch.Text)
+			if selectedStandForSlot ~= "Any" then
+				for _, value in ipairs(options) do
+					if value == selectedStandForSlot then break end
+				end
+			end
+		end
+		notif("Stand Catalog", ok and message or (tostring(message) .. " Current list kept."))
+	end)
+	clearButton.MouseButton1Click:Connect(function()
+		if #farmSlots == 0 then
+			notif("Targets", "There are no targets to clear.")
+			return
+		end
+		table.clear(farmSlots)
+		selectedRemoveIndex = nil
+		local ok, err = saveSlots()
+		refreshUI()
+		notif("Cleared", ok and "All targets removed and saved." or ("All targets removed, but save failed: " .. tostring(err)))
+	end)
+
+	-- Keep compatibility with the rest of the script while rendering through the
+	-- compact workspace instead of a long stack of generic controls.
+	executiveUI.recentStandSection = {Set = function(_, value) recentLabel.Text = tostring(value) end}
+	executiveUI.refreshTargetsWorkspace = renderTargetRows
+	executiveUI.refreshStandPicker = function()
+		if standPicker.Visible then renderStandPicker() end
+	end
+	standDropdown, removeDropdown, slotDisplaySection = nil, nil, nil
+	catalogSection = {Set = function() end}
+	renderTargetRows()
+end
 
 Tabs.Dashboard:CreateSection("LUNA EXECUTIVE  •  CONTROL CENTER")
 executiveUI.dashboardFarmSection = Tabs.Dashboard:CreateSection("Stand Farm  •  OFF")
@@ -3611,8 +5305,8 @@ Tabs.Dashboard:CreateButton({
 Tabs.Dashboard:CreateSection("Configure each feature in its dedicated tab")
 
 --================== TAB: STAND FARM ==================--
-Tabs.Farm:CreateSection("STAND FARM  •  EXECUTION")
-Tabs.Farm:CreateSection("Choose the Arrow, then start or stop the farming engine")
+Tabs.Farm:CreateSection("✦  FARM SETTINGS")
+Tabs.Farm:CreateSection("Roll, match, and automatically store your desired stands")
 
 Tabs.Farm:CreateDropdown({
 	Name = "Arrow Type",
@@ -3627,156 +5321,233 @@ Tabs.Farm:CreateDropdown({
 })
 
 --================== TAB: TARGETS ==================--
-Tabs.Targets:CreateSection("TARGET BUILDER")
-Tabs.Targets:CreateSection("Target rules are separate from in-game Storage Slots")
-catalogSection = Tabs.Targets:CreateSection("Catalog: " .. (#standOptions - 1) .. " stands  •  " .. catalogSource)
+buildTargetsWorkspace()
 
-Tabs.Targets:CreateDropdown({
-	Name = "Match Mode",
-	Options = {"Stand + Attribute", "Stand Only", "Attribute Only"},
-	CurrentOption = {"Stand + Attribute"},
-	MultipleOptions = false,
-	Flag = "TargetMatchModeV1",
-	Callback = function(Options)
-		executiveUI.selectedTargetMode = firstOption(Options, "Stand + Attribute")
-	end,
-})
+-- Dedicated Storage & Orb workspace matching the compact Luna reference.
+-- It keeps the original storage/orb callbacks and configuration flags while
+-- replacing the generic vertical control stack with a two-column dashboard.
+executiveUI.buildStorageWorkspace = function()
+	local page = Tabs.Storage._page
+	if not page then return end
 
-Tabs.Targets:CreateInput({
-	Name = "Search Stand",
-	CurrentValue = "",
-	PlaceholderText = "Name or abbreviation: GE, GER, KQ...",
-	RemoveTextAfterFocusLost = false,
-	Flag = "TargetStandSearchV1",
-	Callback = function(Text)
-		if standDropdown then
-			standDropdown:Refresh(executiveUI.getFilteredStandList(Text))
+	local shell = Instance.new("Frame")
+	shell.Name = "StorageWorkspace"
+	shell.LayoutOrder = -10
+	shell.Size = UDim2.new(1, 0, 0, 320)
+	shell.BackgroundTransparency = 1
+	shell.Parent = page
+
+	local function rounded(instance, radius)
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0, radius or 7)
+		round.Parent = instance
+		return instance
+	end
+
+	local function outline(instance, color, transparency)
+		local edge = Instance.new("UIStroke")
+		edge.Color = color or Color3.fromRGB(102, 61, 185)
+		edge.Transparency = transparency or 0.3
+		edge.Thickness = 1
+		edge.Parent = instance
+		return edge
+	end
+
+	local function icon(parent, iconName, size, position, color)
+		local image = Instance.new("ImageLabel")
+		image.Size = UDim2.fromOffset(size, size)
+		image.Position = position
+		image.BackgroundTransparency = 1
+		image.BorderSizePixel = 0
+		image.Parent = parent
+		if not Rayfield.ApplyLunaIcon(image, iconName, color or Color3.fromRGB(180, 116, 255)) then
+			image.Visible = false
 		end
-	end,
-})
+		return image
+	end
 
-executiveUI.recentStandSection = Tabs.Targets:CreateSection("Recent: none yet")
+	local function text(parent, value, size, position, font, color, textSize)
+		local label = Instance.new("TextLabel")
+		label.Size = size
+		label.Position = position
+		label.BackgroundTransparency = 1
+		label.Text = tostring(value or "")
+		label.Font = font or Enum.Font.GothamSemibold
+		label.TextSize = textSize or 9
+		label.TextColor3 = color or Color3.fromRGB(183, 176, 213)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextYAlignment = Enum.TextYAlignment.Center
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Parent = parent
+		return label
+	end
 
-Tabs.Targets:CreateButton({
-	Name = "Refresh Stand Catalog",
-	Callback = function()
-		local ok, message = scanStandCatalog(5)
-		if ok then
-			local selected = selectedStandForSlot
-			standDropdown:Refresh(executiveUI.getFilteredStandList(selected))
-			pcall(function() standDropdown:Set({selected}) end)
+	local function panel(title, iconName, position, size)
+		local frame = Instance.new("Frame")
+		frame.Size = size
+		frame.Position = position
+		frame.BackgroundColor3 = Color3.fromRGB(13, 16, 34)
+		frame.BackgroundTransparency = 0.04
+		frame.BorderSizePixel = 0
+		frame.ClipsDescendants = true
+		frame.Parent = shell
+		rounded(frame, 8)
+		outline(frame, Color3.fromRGB(118, 68, 215), 0.16)
+		icon(frame, iconName, 17, UDim2.fromOffset(12, 11), Color3.fromRGB(186, 117, 255))
+		text(frame, title, UDim2.new(1, -44, 0, 25), UDim2.fromOffset(39, 7), Enum.Font.GothamBold, Color3.fromRGB(245, 241, 255), 12)
+		local divider = Instance.new("Frame")
+		divider.Size = UDim2.new(1, -22, 0, 1)
+		divider.Position = UDim2.fromOffset(11, 38)
+		divider.BackgroundColor3 = Color3.fromRGB(65, 43, 112)
+		divider.BorderSizePixel = 0
+		divider.Parent = frame
+		return frame
+	end
+
+	local function statusRow(parent, y, iconName, value, accent)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, -22, 0, 31)
+		row.Position = UDim2.fromOffset(11, y)
+		row.BackgroundColor3 = Color3.fromRGB(25, 27, 57)
+		row.BackgroundTransparency = 0.06
+		row.BorderSizePixel = 0
+		row.Parent = parent
+		rounded(row, 6)
+		outline(row, Color3.fromRGB(64, 49, 118), 0.72)
+		icon(row, iconName, 13, UDim2.fromOffset(10, 9), accent or Color3.fromRGB(178, 116, 255))
+		local label = text(row, value, UDim2.new(1, -39, 1, 0), UDim2.fromOffset(31, 0), Enum.Font.GothamSemibold, Color3.fromRGB(190, 182, 220), 8)
+		return label
+	end
+
+	local function makeToggle(parent, y, title, iconName, initial, flag, callback)
+		local row = Instance.new("TextButton")
+		row.Size = UDim2.new(1, -22, 0, 40)
+		row.Position = UDim2.fromOffset(11, y)
+		row.BackgroundColor3 = Color3.fromRGB(20, 22, 45)
+		row.BorderSizePixel = 0
+		row.AutoButtonColor = false
+		row.Text = ""
+		row.Parent = parent
+		rounded(row, 6)
+		outline(row, Color3.fromRGB(61, 46, 110), 0.58)
+		icon(row, iconName, 14, UDim2.fromOffset(11, 13), Color3.fromRGB(180, 113, 255))
+		text(row, title, UDim2.new(1, -84, 1, 0), UDim2.fromOffset(34, 0), Enum.Font.GothamSemibold, Color3.fromRGB(218, 212, 238), 8)
+
+		local track = Instance.new("Frame")
+		track.Size = UDim2.fromOffset(36, 19)
+		track.Position = UDim2.new(1, -47, 0.5, -9)
+		track.BorderSizePixel = 0
+		track.Parent = row
+		rounded(track, 10)
+		local knob = Instance.new("Frame")
+		knob.Size = UDim2.fromOffset(13, 13)
+		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.BorderSizePixel = 0
+		knob.Parent = track
+		rounded(knob, 7)
+
+		local state = initial == true
+		local control = {}
+		function control:Set(value)
+			state = value == true
+			track.BackgroundColor3 = state and Color3.fromRGB(124, 65, 238) or Color3.fromRGB(56, 54, 80)
+			knob.Position = UDim2.new(0, state and 20 or 3, 0.5, -6)
+			if flag then Rayfield._compat.flags[flag] = state end
+			pcall(callback, state)
 		end
-		catalogSection:Set("Catalog: " .. (#standOptions - 1) .. " stands  •  " .. catalogSource)
-		notif("Stand Catalog", ok and message or (tostring(message) .. " Current list kept."))
-	end,
-})
-
-standDropdown = Tabs.Targets:CreateDropdown({
-	Name = "Stand",
-	Options = executiveUI.getFilteredStandList(""),
-	CurrentOption = {"Any"},
-	MultipleOptions = false,
-	Flag = "SlotStand",
-	Callback = function(Options)
-		local value = firstOption(Options, selectedStandForSlot)
-		if value ~= "-- No matches --" then
-			selectedStandForSlot = value
-			executiveUI.rememberStandSelection(value)
+		row.MouseButton1Click:Connect(function() control:Set(not state) end)
+		if flag then
+			Rayfield:_bindFlag(flag, state, function(value) control:Set(value) end)
 		end
-	end,
-})
+		control:Set(state)
+		return control
+	end
 
-Tabs.Targets:CreateDropdown({
-	Name = "Attributes (select multiple)",
-	Options = allAttributes,
-	CurrentOption = {"Any"},
-	MultipleOptions = true,
-	Flag = "SlotAtts",
-	Callback = function(Options)
-		selectedAttsForSlot = normalizeAttributes(Options)
-	end,
-})
+	local storagePanel = panel("Storage on Match", "box", UDim2.new(0, 0, 0, 0), UDim2.new(0.515, -4, 0, 320))
+	statusRow(storagePanel, 45, "info", "KEEP means a Stand matched one of your Target rules.")
+	statusRow(storagePanel, 80, "package", "Available Storage Slots: 1, 2 and 4")
+	local storageState = statusRow(storagePanel, 115, "circle-check", "Storage: Ready", Color3.fromRGB(188, 128, 255))
+	local storageDivider = Instance.new("Frame")
+	storageDivider.Size = UDim2.new(1, -22, 0, 1)
+	storageDivider.Position = UDim2.fromOffset(11, 153)
+	storageDivider.BackgroundColor3 = Color3.fromRGB(56, 43, 96)
+	storageDivider.BorderSizePixel = 0
+	storageDivider.Parent = storagePanel
+	text(storagePanel, "Stand Slots", UDim2.new(1, -22, 0, 15), UDim2.fromOffset(11, 157), Enum.Font.Gotham, Color3.fromRGB(121, 115, 151), 8)
 
-Tabs.Targets:CreateButton({
-	Name = "Add Target",
-	Callback = function()
-		local targetStand = selectedStandForSlot or "Any"
-		local targetAttributes = normalizeAttributes(selectedAttsForSlot)
-		if executiveUI.selectedTargetMode == "Stand Only" then
-			targetAttributes = {"Any"}
-		elseif executiveUI.selectedTargetMode == "Attribute Only" then
-			targetStand = "Any"
-		end
-		local newSlot = {
-			stand = targetStand,
-			standId = targetStand ~= "Any" and uniqueStandId(targetStand) or nil,
-			att = targetAttributes,
+	storageSlotSections = {}
+	for index, slotInfo in ipairs(storageMap) do
+		local isBottom = index == 3
+		local card = Instance.new("Frame")
+		card.Size = isBottom and UDim2.new(0.5, -16, 0, 60) or UDim2.new(0.5, -16, 0, 64)
+		card.Position = isBottom and UDim2.fromOffset(11, 247)
+			or UDim2.new((index - 1) * 0.5, index == 1 and 11 or 5, 0, 177)
+		card.BackgroundColor3 = Color3.fromRGB(20, 22, 45)
+		card.BorderSizePixel = 0
+		card.Parent = storagePanel
+		rounded(card, 6)
+		outline(card, Color3.fromRGB(61, 47, 111), 0.48)
+		local number = text(card, tostring(slotInfo.label:match("%d+") or index), UDim2.fromOffset(20, 20), UDim2.fromOffset(7, 6), Enum.Font.GothamBold, Color3.fromRGB(236, 224, 255), 9)
+		number.TextXAlignment = Enum.TextXAlignment.Center
+		number.BackgroundColor3 = Color3.fromRGB(28, 26, 56)
+		number.BackgroundTransparency = 0
+		rounded(number, 10)
+		outline(number, Color3.fromRGB(154, 87, 255), 0.15)
+		text(card, slotInfo.label, UDim2.new(1, -58, 0, 18), UDim2.fromOffset(32, 6), Enum.Font.GothamSemibold, Color3.fromRGB(218, 211, 238), 8)
+		icon(card, "package", 14, UDim2.new(1, -22, 0, 8), Color3.fromRGB(134, 79, 211))
+		local standLabel = text(card, "reading...", UDim2.new(1, -14, 0, 16), UDim2.fromOffset(7, 27), Enum.Font.GothamBold, Color3.fromRGB(188, 130, 255), 8)
+		local attributeLabel = text(card, "Attribute: reading...", UDim2.new(1, -14, 0, 14), UDim2.fromOffset(7, 43), Enum.Font.Gotham, Color3.fromRGB(177, 168, 204), 7)
+		storageSlotSections[index] = {
+			stand = {Set = function(_, value)
+				standLabel.Text = tostring(value or ""):match("^.-:%s*(.*)$") or tostring(value or "")
+			end},
+			att = {Set = function(_, value) attributeLabel.Text = tostring(value or "") end},
 		}
-		for i, existing in ipairs(farmSlots) do
-			if executiveUI.targetKey(existing) == executiveUI.targetKey(newSlot) then
-				notif("Target Exists", "Same as Target " .. i .. ".")
-				return
-			end
+	end
+	storageStatusSection = {Set = function(_, value) storageState.Text = tostring(value or "") end}
+
+	local orbPanel = panel("2X Orb", "moon-star", UDim2.new(0.515, 3, 0, 0), UDim2.new(0.485, -3, 0, 320))
+	statusRow(orbPanel, 45, "clock", "One Orb per use  •  30-minute local estimate")
+	local orbStateLabel = statusRow(orbPanel, 80, "zap", orbStatusText(), Color3.fromRGB(171, 102, 255))
+	statusRow(orbPanel, 115, "info", "No Orb: farming continues  •  Rejoin: fresh Orb required")
+	local orbDivider = Instance.new("Frame")
+	orbDivider.Size = UDim2.new(1, -22, 0, 1)
+	orbDivider.Position = UDim2.fromOffset(11, 153)
+	orbDivider.BackgroundColor3 = Color3.fromRGB(56, 43, 96)
+	orbDivider.BorderSizePixel = 0
+	orbDivider.Parent = orbPanel
+
+	executiveUI.orbToggleControl = makeToggle(orbPanel, 164, "Auto Use 2x Orb", "settings", true, "AutoUse2xOrbV1", function(value)
+		autoUseOrb = value == true
+	end)
+	local resetButton = Instance.new("TextButton")
+	resetButton.Size = UDim2.new(1, -22, 0, 34)
+	resetButton.Position = UDim2.fromOffset(11, 211)
+	resetButton.BackgroundColor3 = Color3.fromRGB(25, 23, 52)
+	resetButton.BorderSizePixel = 0
+	resetButton.AutoButtonColor = false
+	resetButton.Text = ""
+	resetButton.Parent = orbPanel
+	rounded(resetButton, 6)
+	outline(resetButton, Color3.fromRGB(93, 55, 163), 0.28)
+	icon(resetButton, "refresh-cw", 14, UDim2.fromOffset(11, 10), Color3.fromRGB(181, 110, 255))
+	text(resetButton, "Reset Pending Swap After Manual Check", UDim2.new(1, -43, 1, 0), UDim2.fromOffset(34, 0), Enum.Font.GothamSemibold, Color3.fromRGB(218, 211, 238), 8)
+	resetButton.MouseButton1Click:Connect(function()
+		if getgenv().farmstands or isFarmingActive then
+			notif("Storage", "Stop farming before resetting the pending-swap check.")
+			return
 		end
-		table.insert(farmSlots, newSlot)
-		autoSaveSlots()
-		notif("Target Added", "Target " .. #farmSlots .. ": " .. getSlotDisplayText(newSlot))
-		refreshUI()
-	end,
-})
+		setStoragePending(nil)
+		storageMessage = "Pending check cleared. Contents will be re-read on start."
+		updateFarmExtrasUI()
+	end)
+	executiveUI.storageToggleControl = makeToggle(orbPanel, 254, "Auto Store Matches (Slots 1, 2, 4)", "box", true, "AutoStoreMatchesV1", function(value)
+		autoStoreMatches = value == true
+	end)
+	orbStatusSection = {Set = function(_, value) orbStateLabel.Text = tostring(value or "") end}
+end
 
-Tabs.Targets:CreateSection("TARGET SUMMARY  •  FIRST 3")
-slotDisplaySection = Tabs.Targets:CreateSection(buildSlotsDisplayText())
-
-Tabs.Targets:CreateSection("MANAGE TARGETS")
-
-removeDropdown = Tabs.Targets:CreateDropdown({
-	Name = "Select Target",
-	Options = buildSlotListForDropdown(),
-	CurrentOption = {},
-	MultipleOptions = false,
-	Flag = "RemoveSlot",
-	Callback = function(Options)
-		local sel = firstOption(Options, nil)
-		if sel and sel ~= "-- No targets --" then
-			local num = string.match(sel, "Target (%d+)")
-			selectedRemoveIndex = tonumber(num)
-		else
-			selectedRemoveIndex = nil
-		end
-	end,
-})
-
-Tabs.Targets:CreateButton({
-	Name = "Remove Selected Target",
-	Callback = function()
-		if selectedRemoveIndex and selectedRemoveIndex >= 1 and selectedRemoveIndex <= #farmSlots then
-			local removed = farmSlots[selectedRemoveIndex]
-			table.remove(farmSlots, selectedRemoveIndex)
-			selectedRemoveIndex = nil
-			autoSaveSlots()
-			notif("Removed", getSlotDisplayText(removed))
-			refreshUI()
-		else
-			notif("Error", "Select a target first!")
-		end
-	end,
-})
-
-Tabs.Targets:CreateButton({
-	Name = "Clear All Targets",
-	Callback = function()
-		table.clear(farmSlots)
-		selectedRemoveIndex = nil
-		local ok, err = saveSlots()
-		refreshUI()
-		if ok then
-			notif("Cleared", "All targets removed and saved.")
-		else
-			notif("Cleared", "All targets removed, but save failed: " .. tostring(err))
-		end
-	end,
-})
+executiveUI.buildStorageWorkspace()
 
 Tabs.Utilities:CreateSection("QUICK TOOLS")
 
@@ -3804,31 +5575,6 @@ Tabs.Utilities:CreateButton({
 		else
 			notif("Storage Stand", "Storage NPC remote not found.")
 		end
-	end,
-})
-
-Tabs.Targets:CreateButton({
-	Name = "Save Targets",
-	Callback = function()
-		local ok, err = saveSlots()
-		if ok then
-			notif("Saved", #farmSlots .. " targets saved to file!")
-		else
-			notif("Save Failed", err or "Unable to save targets.")
-		end
-	end,
-})
-
-Tabs.Targets:CreateButton({
-	Name = "Load Saved Targets",
-	Callback = function()
-		local ok, err = loadSlots()
-		if ok then
-			notif("Loaded", #farmSlots .. " targets loaded!")
-		else
-			notif("Load Failed", err or "Unable to load targets.")
-		end
-		refreshUI()
 	end,
 })
 
@@ -3932,9 +5678,10 @@ local function updateWhiteScreen()
 	end)
 
 	local dn = getDisplayName(stand)
+	local tier = readStandTier() or "Unknown"
 	textLabel.Text = string.format(
-		"STAND\n  %s\n\nATTRIBUTE\n  %s\n\nITEMS\n  Stand Arrow      %d\n  Charged Arrow    %d\n  Rokakaka         %d\n  Kars Mask        %d",
-		dn, att, standArrow, cArrow, roka, kars
+		"STAND\n  %s\n\nSTAND TIER\n  %s\n\nATTRIBUTE\n  %s\n\nITEMS\n  Stand Arrow      %d\n  Charged Arrow    %d\n  Rokakaka         %d\n  Kars Mask        %d",
+		dn, tier, att, standArrow, cArrow, roka, kars
 	)
 end
 
@@ -4075,46 +5822,6 @@ whiteScreenToggle = Tabs.Utilities:CreateToggle({
 
 Tabs.Farm:CreateSection("EXECUTION ENGINE")
 
-Tabs.Storage:CreateSection("STORAGE ON MATCH")
-Tabs.Storage:CreateSection("KEEP means a Stand matched one of your Target rules")
-Tabs.Storage:CreateSection("Available Storage Slots: 1, 2 and 4")
-storageStatusSection = Tabs.Storage:CreateSection("Storage: Ready")
-for i, slot in ipairs(storageMap) do
-	storageSlotSections[i] = {
-		stand = Tabs.Storage:CreateSection(slot.label .. ": reading..."),
-		att = Tabs.Storage:CreateSection("Attribute: reading..."),
-	}
-end
-Tabs.Storage:CreateToggle({
-	Name = "Auto Store Matches (Slots 1, 2, 4)",
-	CurrentValue = true,
-	Flag = "AutoStoreMatchesV1",
-	Callback = function(value) autoStoreMatches = value == true end,
-})
-Tabs.Storage:CreateButton({
-	Name = "Reset Pending Swap After Manual Check",
-	Callback = function()
-		if getgenv().farmstands or isFarmingActive then
-			notif("Storage", "Stop farming before resetting the pending-swap check.")
-			return
-		end
-		setStoragePending(nil)
-		storageMessage = "Pending check cleared. Contents will be re-read on start."
-		updateFarmExtrasUI()
-	end,
-})
-
-Tabs.Storage:CreateSection("2X ORB")
-Tabs.Storage:CreateSection("One Orb per use  •  30-minute local estimate")
-orbStatusSection = Tabs.Storage:CreateSection(orbStatusText())
-Tabs.Storage:CreateToggle({
-	Name = "Auto Use 2x Orb",
-	CurrentValue = true,
-	Flag = "AutoUse2xOrbV1",
-	Callback = function(value) autoUseOrb = value == true end,
-})
-Tabs.Storage:CreateSection("No Orb: farming continues  •  Rejoin: fresh Orb required")
-
 farmToggle = Tabs.Farm:CreateToggle({
 	Name = "Enable Auto Use Arrow",
 	CurrentValue = false,
@@ -4136,9 +5843,22 @@ Tabs.Settings:CreateInput({
 	CurrentValue = "",
 	PlaceholderText = "https://discord.com/api/webhooks/...",
 	RemoveTextAfterFocusLost = false,
-	Flag = "WebhookURL",
 	Callback = function(Text)
-		webhookurl = cleanText(Text)
+		local candidate = cleanText(Text)
+		if candidate == "" or isDiscordWebhookUrl(candidate) then
+			webhookurl = candidate
+		else
+			notif("Webhook", "Use a Discord webhook URL (https://discord.com/api/webhooks/...).")
+		end
+	end,
+})
+
+Tabs.Settings:CreateToggle({
+	Name = "Allow @everyone Mentions",
+	CurrentValue = false,
+	Flag = "WebhookMentionsEnabled",
+	Callback = function(Value)
+		webhookMentionEnabled = Value == true
 	end,
 })
 
@@ -4153,7 +5873,7 @@ Tabs.Settings:CreateDropdown({
 	end,
 })
 
-Tabs.Settings:CreateSection("Empty list = tag all  •  Target match = always tag")
+Tabs.Settings:CreateSection("Mentions require opt-in  •  Target match can tag when enabled")
 
 --================== TAB: AUTO LAIR ==================--
 local useLairNPCName = "i_stabman"
@@ -4564,25 +6284,6 @@ executiveUI.lairToggleControl = Tabs.Lair:CreateToggle({
 			targetedLairNPC = nil
 			resetAutoLairState()
 			loopAutoLair()
-
-			getgenv().G = true
-			getgenv().Creator = hubSession
-			task.spawn(function()
-				while getgenv().G and getgenv().SURLairSession == hubSession
-					and getgenv().Creator == hubSession do
-					task.wait(0.9)
-					if not getgenv().G or getgenv().SURLairSession ~= hubSession
-						or getgenv().Creator ~= hubSession then break end
-					boostLairSimulationRadius()
-					for _, d in ipairs(game.Workspace:GetDescendants()) do
-						if d.ClassName == 'Humanoid' and d.Parent
-							and d.Parent.Name ~= game.Players.LocalPlayer.Name
-							and d.Parent.Name ~= useLairBoss then
-							pcall(function() d.Health = 0 end)
-						end
-					end
-				end
-			end)
 		else
 			resetAutoLairState()
 			if getgenv().SURLairSession == hubSession then getgenv().G = false end
@@ -4608,17 +6309,9 @@ Tabs.Utilities:CreateSlider({
 
 Tabs.Utilities:CreateSection("Optimizer Script")
 Tabs.Utilities:CreateButton({
-	Name = "Run Optimizer Script",
+	Name = "Optimizer Script Unavailable",
 	Callback = function()
-		local success, err = pcall(function()
-			loadstring(game:HttpGet('https://raw.githubusercontent.com/lvlulusuvs-a11y/-/main/optimizer.lua'))()
-		end)
-		if success then
-			notif("Optimization", "Optimizer script executed successfully!")
-		else
-			notif("Error", "Failed to run optimizer script.")
-			warn("Optimizer error: " .. tostring(err))
-		end
+		notif("Optimizer", "Disabled: remote code is not executed by this build.")
 	end,
 })
 
@@ -4656,15 +6349,20 @@ Tabs.Settings:CreateButton({
 	Callback = function()
 		local okConfig, errConfig = safeDeleteFile("LunaHub_SUR/LunaHub_Settings.json")
 		local okSlots, errSlots = safeDeleteFile("sur_farmslots.txt")
+		-- A reset must also clear an interrupted storage transaction; otherwise a
+		-- stale pending record can stop farming after the next reload.
+		storagePending = nil
+		getgenv().SURStorageStateV2[accountKey] = nil
+		local okStorage, errStorage = safeDeleteFile(storageFile)
 		table.clear(farmSlots)
 		selectedRemoveIndex = nil
 		refreshUI()
-		if okConfig and okSlots then
+		if okConfig and okSlots and okStorage then
 			notif("Configuration", "Configuration and saved targets deleted. Rejoin to reset.")
-		elseif okConfig and (okSlots or errSlots == "missing") then
+		elseif okConfig and (okSlots or errSlots == "missing") and (okStorage or errStorage == "missing") then
 			notif("Configuration", "Configuration deleted. Saved targets cleared.")
 		else
-			notif("Configuration", "Reset incomplete: " .. tostring(errConfig or errSlots))
+			notif("Configuration", "Reset incomplete: " .. tostring(errConfig or errSlots or errStorage))
 		end
 	end,
 })
@@ -4687,6 +6385,7 @@ Tabs.Settings:CreateToggle({
 				pcall(function() antiAfkConn:Disconnect() end)
 				antiAfkConn = nil
 			end
+			getgenv().SURAntiAfkConnection = nil
 			antiAfkLoop = false
 			pcall(function()
 				local vu = game:GetService("VirtualUser")
@@ -4695,10 +6394,12 @@ Tabs.Settings:CreateToggle({
 					task.wait(1)
 					vu:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
 				end)
+				getgenv().SURAntiAfkConnection = antiAfkConn
 			end)
 			antiAfkLoop = true
 			task.spawn(function()
-				while antiAfkLoop and workerVersion == antiAfkVersion do
+				while antiAfkLoop and workerVersion == antiAfkVersion
+					and getgenv().SURFarmSession == hubSession do
 					for _ = 1, 60 do
 						if not antiAfkLoop or workerVersion ~= antiAfkVersion then break end
 						task.wait(1)
@@ -4714,6 +6415,9 @@ Tabs.Settings:CreateToggle({
 		else
 			if antiAfkConn then
 				pcall(function() antiAfkConn:Disconnect() end)
+				if getgenv().SURAntiAfkConnection == antiAfkConn then
+					getgenv().SURAntiAfkConnection = nil
+				end
 				antiAfkConn = nil
 			end
 			antiAfkLoop = false
@@ -4816,15 +6520,6 @@ Tabs.Settings:CreateToggle({
 })
 
 Tabs.Settings:CreateToggle({
-	Name = "Ask to Roka in Popup",
-	CurrentValue = true,
-	Flag = "AskRokaToggle",
-	Callback = function(Value)
-		askroka = Value
-	end,
-})
-
-Tabs.Settings:CreateToggle({
 	Name = "Convert to Display Name",
 	CurrentValue = true,
 	Flag = "ConvToName",
@@ -4832,6 +6527,349 @@ Tabs.Settings:CreateToggle({
 		convtoname = Value
 	end,
 })
+
+-- Compact Settings workspace. The original Rayfield controls stay alive but
+-- hidden so their tested callbacks and configuration bindings remain the
+-- single source of truth for every custom control below.
+executiveUI.buildSettingsWorkspace = function()
+	local page = Tabs.Settings._page
+	if not page then return end
+	-- Search refreshes can set legacy rows back to Visible=true. Keep those
+	-- controls alive for their callbacks, but move them under an invisible host
+	-- so they can never re-enter the page layout or appear below the new cards.
+	local legacyHost = Instance.new("Frame")
+	legacyHost.Name = "LegacySettingsBindings"
+	legacyHost.Size = UDim2.fromOffset(0, 0)
+	legacyHost.BackgroundTransparency = 1
+	legacyHost.Visible = false
+	legacyHost.Parent = page
+	for _, child in ipairs(page:GetChildren()) do
+		if child:IsA("GuiObject") and child.Name ~= "PageHero" and child ~= legacyHost then
+			child.Parent = legacyHost
+		end
+	end
+	page.CanvasPosition = Vector2.new(0, 0)
+
+	local shell = Instance.new("Frame")
+	shell.Name = "SettingsWorkspace"
+	shell.LayoutOrder = -10
+	shell.Size = UDim2.new(1, 0, 0, 294)
+	shell.BackgroundTransparency = 1
+	shell.ClipsDescendants = false
+	shell.Parent = page
+
+	local function rounded(instance, radius)
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0, radius or 7)
+		round.Parent = instance
+		return instance
+	end
+
+	local function outline(instance, color, transparency)
+		local edge = Instance.new("UIStroke")
+		edge.Color = color or Color3.fromRGB(95, 57, 171)
+		edge.Transparency = transparency or 0.35
+		edge.Thickness = 1
+		edge.Parent = instance
+		return edge
+	end
+
+	local function icon(parent, iconName, size, position, color, zIndex)
+		local image = Instance.new("ImageLabel")
+		image.Size = UDim2.fromOffset(size, size)
+		image.Position = position
+		image.BackgroundTransparency = 1
+		image.BorderSizePixel = 0
+		image.ZIndex = zIndex or 2
+		image.Parent = parent
+		if not Rayfield.ApplyLunaIcon(image, iconName, color or Color3.fromRGB(183, 112, 255)) then
+			image.Visible = false
+		end
+		return image
+	end
+
+	local function text(parent, value, size, position, font, color, textSize, zIndex)
+		local label = Instance.new("TextLabel")
+		label.Size = size
+		label.Position = position
+		label.BackgroundTransparency = 1
+		label.Text = tostring(value or "")
+		label.Font = font or Enum.Font.GothamSemibold
+		label.TextSize = textSize or 8
+		label.TextColor3 = color or Color3.fromRGB(196, 188, 222)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextYAlignment = Enum.TextYAlignment.Center
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.ZIndex = zIndex or 2
+		label.Parent = parent
+		return label
+	end
+
+	local function panel(title, subtitle, iconName, position, size)
+		local frame = Instance.new("Frame")
+		frame.Size = size
+		frame.Position = position
+		frame.BackgroundColor3 = Color3.fromRGB(13, 16, 34)
+		frame.BackgroundTransparency = 0.04
+		frame.BorderSizePixel = 0
+		frame.ClipsDescendants = false
+		frame.Parent = shell
+		rounded(frame, 7)
+		outline(frame, Color3.fromRGB(101, 60, 181), 0.3)
+		local header = Instance.new("Frame")
+		header.Size = UDim2.new(1, 0, 0, 31)
+		header.BackgroundColor3 = Color3.fromRGB(32, 23, 67)
+		header.BackgroundTransparency = 0.1
+		header.BorderSizePixel = 0
+		header.Parent = frame
+		rounded(header, 7)
+		icon(header, iconName, 16, UDim2.fromOffset(10, 8), Color3.fromRGB(190, 117, 255))
+		text(header, title, UDim2.new(0.58, -32, 1, 0), UDim2.fromOffset(34, 0), Enum.Font.GothamBold, Color3.fromRGB(241, 235, 255), 10)
+		local sub = text(header, subtitle, UDim2.new(0.42, -12, 1, 0), UDim2.new(0.58, 0, 0, 0), Enum.Font.Gotham, Color3.fromRGB(155, 143, 190), 7)
+		sub.TextXAlignment = Enum.TextXAlignment.Right
+		return frame
+	end
+
+	local function bindToggle(parent, y, title, flag, iconName)
+		local row = Instance.new("TextButton")
+		row.Size = UDim2.new(1, -16, 0, 30)
+		row.Position = UDim2.fromOffset(8, y)
+		row.BackgroundColor3 = Color3.fromRGB(20, 22, 45)
+		row.BackgroundTransparency = 0.08
+		row.BorderSizePixel = 0
+		row.AutoButtonColor = false
+		row.Text = ""
+		row.Parent = parent
+		rounded(row, 5)
+		outline(row, Color3.fromRGB(59, 45, 105), 0.66)
+		local left = 10
+		if iconName then
+			icon(row, iconName, 13, UDim2.fromOffset(9, 9), Color3.fromRGB(177, 108, 247))
+			left = 29
+		end
+		text(row, title, UDim2.new(1, -77, 1, 0), UDim2.fromOffset(left, 0), Enum.Font.GothamSemibold, Color3.fromRGB(222, 216, 239), 8)
+		local track = Instance.new("Frame")
+		track.Size = UDim2.fromOffset(34, 18)
+		track.Position = UDim2.new(1, -42, 0.5, -9)
+		track.BorderSizePixel = 0
+		track.Parent = row
+		rounded(track, 9)
+		local knob = Instance.new("Frame")
+		knob.Size = UDim2.fromOffset(12, 12)
+		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.BorderSizePixel = 0
+		knob.Parent = track
+		rounded(knob, 6)
+
+		local state = Rayfield._compat.flags[flag] == true
+		local previousSetter = Rayfield._compat.bindings[flag]
+		local function setVisual(value)
+			state = value == true
+			track.BackgroundColor3 = state and Color3.fromRGB(128, 67, 239) or Color3.fromRGB(53, 51, 78)
+			knob.Position = UDim2.new(0, state and 19 or 3, 0.5, -6)
+		end
+		Rayfield:_bindFlag(flag, state, function(value)
+			if previousSetter then pcall(previousSetter, value) end
+			setVisual(value)
+		end)
+		row.MouseButton1Click:Connect(function()
+			Rayfield:_setFlag(flag, not state, false)
+		end)
+		setVisual(state)
+		return row
+	end
+
+	local function actionButton(parent, y, title, iconName, callback)
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(1, -16, 0, 32)
+		button.Position = UDim2.fromOffset(8, y)
+		button.BackgroundColor3 = Color3.fromRGB(29, 24, 59)
+		button.BorderSizePixel = 0
+		button.AutoButtonColor = false
+		button.Text = ""
+		button.Parent = parent
+		rounded(button, 5)
+		outline(button, Color3.fromRGB(81, 49, 144), 0.46)
+		icon(button, iconName, 15, UDim2.fromOffset(14, 9), Color3.fromRGB(184, 111, 255))
+		text(button, title, UDim2.new(1, -48, 1, 0), UDim2.fromOffset(40, 0), Enum.Font.GothamBold, Color3.fromRGB(228, 220, 244), 8)
+		button.MouseButton1Click:Connect(callback)
+		return button
+	end
+
+	local webhookPanel = panel("Webhook Notifications", "Get notified about important events.", "link", UDim2.new(0, 0, 0, 0), UDim2.new(0.55, -4, 0, 172))
+	text(webhookPanel, "Webhook URL", UDim2.fromOffset(120, 28), UDim2.fromOffset(10, 36), Enum.Font.GothamSemibold, Color3.fromRGB(218, 211, 237), 8)
+	local webhookInput = Instance.new("TextBox")
+	webhookInput.Size = UDim2.new(1, -152, 0, 25)
+	webhookInput.Position = UDim2.new(0, 142, 0, 38)
+	webhookInput.BackgroundColor3 = Color3.fromRGB(31, 26, 65)
+	webhookInput.BorderSizePixel = 0
+	webhookInput.ClearTextOnFocus = false
+	webhookInput.Text = ""
+	webhookInput.PlaceholderText = "https://discord.com/api/webhooks/..."
+	webhookInput.PlaceholderColor3 = Color3.fromRGB(105, 96, 138)
+	webhookInput.TextColor3 = Color3.fromRGB(218, 211, 237)
+	webhookInput.TextXAlignment = Enum.TextXAlignment.Left
+	webhookInput.Font = Enum.Font.Gotham
+	webhookInput.TextSize = 8
+	webhookInput.Parent = webhookPanel
+	rounded(webhookInput, 5)
+	outline(webhookInput, Color3.fromRGB(91, 53, 162), 0.44)
+	webhookInput.FocusLost:Connect(function()
+		local candidate = cleanText(webhookInput.Text)
+		if candidate == "" or isDiscordWebhookUrl(candidate) then
+			webhookurl = candidate
+		else
+			notif("Webhook", "Use a Discord webhook URL (https://discord.com/api/webhooks/...).")
+			webhookInput.Text = webhookurl
+		end
+	end)
+	bindToggle(webhookPanel, 69, "Allow @everyone Mentions", "WebhookMentionsEnabled")
+	text(webhookPanel, "Tag @everyone for Attributes", UDim2.new(0.48, -12, 0, 27), UDim2.fromOffset(10, 103), Enum.Font.GothamSemibold, Color3.fromRGB(218, 211, 237), 8)
+	local attributeField = Instance.new("TextButton")
+	attributeField.Size = UDim2.new(0.52, -18, 0, 25)
+	attributeField.Position = UDim2.new(0.48, 8, 0, 104)
+	attributeField.BackgroundColor3 = Color3.fromRGB(31, 26, 65)
+	attributeField.BorderSizePixel = 0
+	attributeField.AutoButtonColor = false
+	attributeField.Text = "None"
+	attributeField.TextXAlignment = Enum.TextXAlignment.Left
+	attributeField.TextTruncate = Enum.TextTruncate.AtEnd
+	attributeField.Font = Enum.Font.GothamSemibold
+	attributeField.TextSize = 8
+	attributeField.TextColor3 = Color3.fromRGB(215, 205, 237)
+	attributeField.Parent = webhookPanel
+	rounded(attributeField, 5)
+	outline(attributeField, Color3.fromRGB(91, 53, 162), 0.44)
+	local infoRow = Instance.new("Frame")
+	infoRow.Size = UDim2.new(1, -16, 0, 24)
+	infoRow.Position = UDim2.fromOffset(8, 139)
+	infoRow.BackgroundColor3 = Color3.fromRGB(61, 24, 119)
+	infoRow.BackgroundTransparency = 0.1
+	infoRow.BorderSizePixel = 0
+	infoRow.Parent = webhookPanel
+	rounded(infoRow, 5)
+	icon(infoRow, "info", 13, UDim2.fromOffset(9, 6), Color3.fromRGB(197, 130, 255))
+	text(infoRow, "Mentions require opt-in  •  Target match can tag when enabled", UDim2.new(1, -34, 1, 0), UDim2.fromOffset(29, 0), Enum.Font.GothamSemibold, Color3.fromRGB(196, 151, 244), 7)
+
+	local attributePopup = Instance.new("Frame")
+	attributePopup.Size = UDim2.new(0.52, -18, 0, 142)
+	attributePopup.Position = UDim2.new(0.48, 8, 0, 132)
+	attributePopup.BackgroundColor3 = Color3.fromRGB(12, 15, 33)
+	attributePopup.BorderSizePixel = 0
+	attributePopup.Visible = false
+	attributePopup.ZIndex = 60
+	attributePopup.Parent = webhookPanel
+	rounded(attributePopup, 6)
+	outline(attributePopup, Color3.fromRGB(132, 74, 232), 0.12)
+	local popupTitle = text(attributePopup, "Select attributes", UDim2.new(1, -54, 0, 25), UDim2.fromOffset(8, 3), Enum.Font.GothamBold, Color3.fromRGB(235, 227, 250), 8, 61)
+	local doneButton = Instance.new("TextButton")
+	doneButton.Size = UDim2.fromOffset(38, 21)
+	doneButton.Position = UDim2.new(1, -43, 0, 4)
+	doneButton.BackgroundColor3 = Color3.fromRGB(97, 53, 178)
+	doneButton.BorderSizePixel = 0
+	doneButton.Text = "Done"
+	doneButton.Font = Enum.Font.GothamBold
+	doneButton.TextSize = 7
+	doneButton.TextColor3 = Color3.fromRGB(245, 238, 255)
+	doneButton.ZIndex = 62
+	doneButton.Parent = attributePopup
+	rounded(doneButton, 4)
+	local optionScroll = Instance.new("ScrollingFrame")
+	optionScroll.Size = UDim2.new(1, -12, 0, 106)
+	optionScroll.Position = UDim2.fromOffset(6, 30)
+	optionScroll.BackgroundTransparency = 1
+	optionScroll.BorderSizePixel = 0
+	optionScroll.ScrollBarThickness = 2
+	optionScroll.ScrollBarImageColor3 = Color3.fromRGB(135, 76, 235)
+	optionScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+	optionScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	optionScroll.ZIndex = 61
+	optionScroll.Parent = attributePopup
+	local optionLayout = Instance.new("UIListLayout")
+	optionLayout.Padding = UDim.new(0, 3)
+	optionLayout.Parent = optionScroll
+	local selectedTags = {}
+	local optionRows = {}
+	local previousTagSetter = Rayfield._compat.bindings.WebhookTagAtts
+	local function refreshTagVisuals()
+		attributeField.Text = #selectedTags > 0 and ("  " .. table.concat(selectedTags, ", ")) or "  None"
+		for name, row in pairs(optionRows) do
+			local active = table.find(selectedTags, name) ~= nil
+			row.BackgroundColor3 = active and Color3.fromRGB(76, 46, 138) or Color3.fromRGB(22, 24, 47)
+			row.TextColor3 = active and Color3.fromRGB(238, 226, 255) or Color3.fromRGB(178, 168, 204)
+		end
+	end
+	local function applyTagSelection(values)
+		selectedTags = type(values) == "table" and table.clone(values) or {}
+		if previousTagSetter then pcall(previousTagSetter, selectedTags) end
+		refreshTagVisuals()
+	end
+	Rayfield:_bindFlag("WebhookTagAtts", selectedTags, applyTagSelection)
+	for _, attributeName in ipairs({"Strong","Powerful","Manic","Tough","Enrage","Sloppy","Lethargic","Godly","Daemon","Glass Cannon","Invincible","Scourge","Tragic","Hacker","Legendary"}) do
+		local option = Instance.new("TextButton")
+		option.Size = UDim2.new(1, -2, 0, 22)
+		option.BackgroundColor3 = Color3.fromRGB(22, 24, 47)
+		option.BorderSizePixel = 0
+		option.AutoButtonColor = false
+		option.Text = "  " .. attributeName
+		option.TextXAlignment = Enum.TextXAlignment.Left
+		option.Font = Enum.Font.GothamSemibold
+		option.TextSize = 7
+		option.TextColor3 = Color3.fromRGB(178, 168, 204)
+		option.ZIndex = 62
+		option.Parent = optionScroll
+		rounded(option, 4)
+		optionRows[attributeName] = option
+		option.MouseButton1Click:Connect(function()
+			local nextValues = table.clone(selectedTags)
+			local found = table.find(nextValues, attributeName)
+			if found then table.remove(nextValues, found) else table.insert(nextValues, attributeName) end
+			Rayfield:_setFlag("WebhookTagAtts", nextValues, false)
+		end)
+	end
+	refreshTagVisuals()
+	attributeField.MouseButton1Click:Connect(function() attributePopup.Visible = not attributePopup.Visible end)
+	doneButton.MouseButton1Click:Connect(function() attributePopup.Visible = false end)
+
+	local dataPanel = panel("Data Management", "Manage your configuration data.", "database", UDim2.new(0.55, 4, 0, 0), UDim2.new(0.45, -4, 0, 172))
+	actionButton(dataPanel, 39, "Save Configuration", "download", function()
+		local ok, err = safeSaveConfiguration()
+		notif("Configuration", ok and "Settings saved successfully." or (err or "Failed to save settings."))
+	end)
+	actionButton(dataPanel, 78, "Load Configuration", "upload", function()
+		local ok, err = safeLoadConfiguration()
+		if ok then refreshUI() end
+		notif("Configuration", ok and "Settings loaded successfully." or (err or "Failed to load settings."))
+	end)
+	actionButton(dataPanel, 117, "Delete Configuration (Reset)", "trash-2", function()
+		local okConfig, errConfig = safeDeleteFile("LunaHub_SUR/LunaHub_Settings.json")
+		local okSlots, errSlots = safeDeleteFile("sur_farmslots.txt")
+		storagePending = nil
+		getgenv().SURStorageStateV2[accountKey] = nil
+		local okStorage, errStorage = safeDeleteFile(storageFile)
+		table.clear(farmSlots)
+		selectedRemoveIndex = nil
+		refreshUI()
+		if okConfig and okSlots and okStorage then
+			notif("Configuration", "Configuration and saved targets deleted. Rejoin to reset.")
+		elseif okConfig and (okSlots or errSlots == "missing") and (okStorage or errStorage == "missing") then
+			notif("Configuration", "Configuration deleted. Saved targets cleared.")
+		else
+			notif("Configuration", "Reset incomplete: " .. tostring(errConfig or errSlots or errStorage))
+		end
+	end)
+
+	local antiPanel = panel("Anti-AFK", "Keep your session active.", "shield", UDim2.new(0, 0, 0, 181), UDim2.new(0.32, -4, 0, 113))
+	bindToggle(antiPanel, 40, "Anti AFK (Strong)", "AntiAFK")
+	local combatPanel = panel("Combat / Visual", "Visual and combat options.", "scan", UDim2.new(0.32, 3, 0, 181), UDim2.new(0.35, -4, 0, 113))
+	bindToggle(combatPanel, 40, "Auto Show Hitbox", "ShowHitbox")
+	bindToggle(combatPanel, 75, "Anti Ragdoll / Bypass Timestop", "AntiRagdoll")
+	local farmPanel = panel("Farm Options", "Farming convenience.", "sprout", UDim2.new(0.67, 3, 0, 181), UDim2.new(0.33, -3, 0, 113))
+	bindToggle(farmPanel, 40, "Popup on Match", "PopupToggle")
+	bindToggle(farmPanel, 75, "Convert to Display Name", "ConvToName")
+end
+
+executiveUI.buildSettingsWorkspace()
 
 --================== LOAD CONFIG ==================--
 local configLoaded, configLoadError = safeLoadConfiguration()
@@ -4841,6 +6879,7 @@ end
 
 localplr.CharacterAdded:Connect(function(char)
 	task.wait(2.5)
+	if getgenv().SURFarmSession ~= hubSession then return end
 	if getgenv().farmstands and not isFarmingActive then
 		notif("Auto Resume", "Nhân vật respawn → Tiếp tục Stand Farm...")
 		task.spawn(doStandFarm)
@@ -4854,6 +6893,48 @@ end)
 
 local function updateExecutiveDashboard()
 	local stand, att = readStandData()
+	local tier = readStandTier() or "Unknown"
+	observeStandTier(stand, tier ~= "Unknown" and tier or nil)
+	if executiveUI.dashboardFarmToggle then
+		executiveUI.dashboardFarmToggle:Set(getgenv().farmstands, true)
+	end
+	if executiveUI.dashboardStoreToggle then
+		executiveUI.dashboardStoreToggle:Set(autoStoreMatches, true)
+	end
+	if executiveUI.dashboardArrowField then
+		executiveUI.dashboardArrowField.Text = "  " .. tostring(selectedArrowType)
+	end
+	if executiveUI.dashboardStandField then
+		executiveUI.dashboardStandField.Text = "  " .. tostring(selectedStandForSlot or "Any")
+	end
+	if executiveUI.dashboardAttrField then
+		executiveUI.dashboardAttrField.Text = "  " .. table.concat(normalizeAttributes(selectedAttsForSlot), ", ")
+	end
+	if executiveUI.dashboardCurrentStand then
+		executiveUI.dashboardCurrentStand.Text = "Current Stand  •  " .. getDisplayName(stand or "None")
+	end
+	if executiveUI.dashboardCurrentAttribute then
+		executiveUI.dashboardCurrentAttribute.Text = "Attribute  •  " .. tostring(att or "None") .. "    Tier  •  " .. tier
+	end
+	if executiveUI.dashboardRollStatus then
+		executiveUI.dashboardRollStatus.Text = "Status  •  " .. (getgenv().farmstands and "Rolling and comparing targets" or "Waiting to start")
+	end
+	if executiveUI.dashboardRollFill then
+		executiveUI.dashboardRollFill.Size = UDim2.new(getgenv().farmstands and 0.68 or 0.08, 0, 1, 0)
+	end
+	if executiveUI.dashboardTargetRows then
+		for i, label in ipairs(executiveUI.dashboardTargetRows) do
+			local slot = farmSlots[i]
+			label.Text = slot and (i .. ".  " .. getSlotDisplayText(slot)) or (i .. ".  No target configured")
+		end
+	end
+	if executiveUI.dashboardStats then
+		local stats = farmStats or {}
+		executiveUI.dashboardStats[1].Text = "Arrows Used\n" .. tostring(stats.arrows or 0)
+		executiveUI.dashboardStats[2].Text = "Rokas Used\n" .. tostring(stats.rokas or 0)
+		executiveUI.dashboardStats[3].Text = "Matches Found\n" .. tostring(stats.matches or 0)
+		executiveUI.dashboardStats[4].Text = "Stands Stored\n" .. tostring(stats.stored or 0)
+	end
 	if executiveUI.dashboardFarmSection then
 		executiveUI.dashboardFarmSection:Set("Stand Farm  •  " .. (getgenv().farmstands and "RUNNING" or "OFF"))
 	end
@@ -4862,7 +6943,7 @@ local function updateExecutiveDashboard()
 		executiveUI.dashboardLairSection:Set("Auto Lair  •  " .. phase)
 	end
 	if executiveUI.dashboardCurrentSection then
-		executiveUI.dashboardCurrentSection:Set("Current  •  " .. getDisplayName(stand or "None") .. "  /  " .. tostring(att or "None"))
+		executiveUI.dashboardCurrentSection:Set("Current  •  " .. getDisplayName(stand or "None") .. "  /  " .. tostring(att or "None") .. "  /  Tier " .. tier)
 	end
 	if executiveUI.dashboardTargetSection then
 		executiveUI.dashboardTargetSection:Set("Targets  •  " .. #farmSlots .. " configured")
@@ -4876,13 +6957,12 @@ task.wait(0.5)
 refreshUI()
 updateFarmExtrasUI()
 updateExecutiveDashboard()
-local extrasElapsed = 0
-local extrasConnection
-extrasConnection = game:GetService("RunService").Heartbeat:Connect(function(dt)
-	if getgenv().SURFarmSession ~= hubSession then extrasConnection:Disconnect(); return end
-	extrasElapsed = extrasElapsed + dt
-	if extrasElapsed >= 1 then
-		extrasElapsed = 0
+executiveUI.extrasElapsed = 0
+executiveUI.extrasConnection = game:GetService("RunService").Heartbeat:Connect(function(dt)
+	if getgenv().SURFarmSession ~= hubSession then executiveUI.extrasConnection:Disconnect(); return end
+	executiveUI.extrasElapsed = executiveUI.extrasElapsed + dt
+	if executiveUI.extrasElapsed >= 1 then
+		executiveUI.extrasElapsed = 0
 		local ok, err = pcall(updateFarmExtrasUI)
 		if not ok then warn("Storage/Orb display: " .. tostring(err)) end
 		local dashboardOk, dashboardErr = pcall(updateExecutiveDashboard)
@@ -4890,9 +6970,7 @@ extrasConnection = game:GetService("RunService").Heartbeat:Connect(function(dt)
 	end
 end)
 
-local whiteScreenActive = whiteScreenGui and whiteScreenGui.Parent and whiteScreenGui.Enabled
-local menuVisible = whiteScreenActive or forceExecutiveWindowVisible()
-if menuVisible then
+if (whiteScreenGui and whiteScreenGui.Parent and whiteScreenGui.Enabled) or forceExecutiveWindowVisible() then
 	setBootstrapStatus("Ready  •  Press K to show/hide", false)
 	task.delay(1.25, function()
 		if bootstrapGui and bootstrapGui.Parent then bootstrapGui:Destroy() end
