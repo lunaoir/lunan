@@ -4580,7 +4580,7 @@ local function buildTargetsWorkspace()
 	local shell = Instance.new("Frame")
 	shell.Name = "TargetsWorkspace"
 	shell.LayoutOrder = -10
-	shell.Size = UDim2.new(1, 0, 0, 356)
+	shell.Size = UDim2.new(1, 0, 0, 402)
 	shell.BackgroundTransparency = 1
 	shell.Parent = page
 
@@ -4606,7 +4606,21 @@ local function buildTargetsWorkspace()
 		return label
 	end
 
-	local function panel(title, icon, position, size)
+	local function lunaIcon(parent, iconName, size, position, color, zIndex)
+		local image = Instance.new("ImageLabel")
+		image.Size = UDim2.fromOffset(size, size)
+		image.Position = position
+		image.BackgroundTransparency = 1
+		image.BorderSizePixel = 0
+		image.ZIndex = zIndex or 2
+		image.Parent = parent
+		if not Rayfield.ApplyLunaIcon(image, iconName, color or Color3.fromRGB(181, 117, 255)) then
+			image.Visible = false
+		end
+		return image
+	end
+
+	local function panel(title, iconName, position, size)
 		local frame = Instance.new("Frame")
 		frame.Size = size
 		frame.Position = position
@@ -4619,18 +4633,22 @@ local function buildTargetsWorkspace()
 		outline.Transparency = 0.28
 		outline.Parent = frame
 
-		makeText(frame, icon, UDim2.fromOffset(23, 23), UDim2.fromOffset(12, 9), Enum.Font.GothamBold, Color3.fromRGB(181, 117, 255)).TextSize = 17
+		if iconName == "plus" then
+			makeText(frame, "+", UDim2.fromOffset(18, 18), UDim2.fromOffset(13, 8), Enum.Font.GothamBold, Color3.fromRGB(181, 117, 255)).TextSize = 18
+		else
+			lunaIcon(frame, iconName, 17, UDim2.fromOffset(12, 9), Color3.fromRGB(181, 117, 255))
+		end
 		makeText(frame, title, UDim2.new(1, -76, 0, 19), UDim2.fromOffset(39, 9), Enum.Font.GothamBold, Color3.fromRGB(244, 241, 255)).TextSize = 12
 		local separator = Instance.new("Frame")
 		separator.Size = UDim2.new(1, -22, 0, 1)
-		separator.Position = UDim2.fromOffset(11, 39)
+		separator.Position = UDim2.fromOffset(11, 48)
 		separator.BackgroundColor3 = Color3.fromRGB(56, 44, 98)
 		separator.BorderSizePixel = 0
 		separator.Parent = frame
 		return frame
 	end
 
-	local form = panel("Create Target", "✚", UDim2.new(0, 0, 0, 0), UDim2.new(0.42, -4, 0, 356))
+	local form = panel("Create Target", "plus", UDim2.new(0, 0, 0, 0), UDim2.new(0.42, -4, 0, 402))
 	makeText(form, "Set a stand and its desired attributes.", UDim2.new(1, -24, 0, 13), UDim2.fromOffset(12, 29), Enum.Font.Gotham, Color3.fromRGB(132, 127, 162)).TextSize = 8
 
 	local function fieldLabel(text, y)
@@ -4658,17 +4676,18 @@ local function buildTargetsWorkspace()
 		edge.Color = Color3.fromRGB(72, 55, 130)
 		edge.Transparency = 0.52
 		edge.Parent = button
-		makeText(button, "⌄", UDim2.fromOffset(18, 18), UDim2.new(1, -21, 0.5, -9), Enum.Font.GothamBold, Color3.fromRGB(158, 147, 202)).TextSize = 11
+		local arrow = lunaIcon(button, "chevron-right", 13, UDim2.new(1, -20, 0.5, -7), Color3.fromRGB(158, 147, 202), 3)
+		arrow.Rotation = 90
 		return button
 	end
 
-	fieldLabel("Match Mode", 52)
+	fieldLabel("MATCH MODE", 58)
 	local matchModes = {"Stand + Attribute", "Stand Only", "Attribute Only"}
 	local modeButtons = {}
 	local modePositions = {
-		UDim2.fromOffset(12, 65),
-		UDim2.new(1 / 3, 4, 0, 65),
-		UDim2.new(2 / 3, -4, 0, 65),
+		UDim2.fromOffset(12, 71),
+		UDim2.new(1 / 3, 4, 0, 71),
+		UDim2.new(2 / 3, -4, 0, 71),
 	}
 	for index, mode in ipairs(matchModes) do
 		local modeButton = Instance.new("TextButton")
@@ -4697,10 +4716,10 @@ local function buildTargetsWorkspace()
 		end)
 	end
 	refreshModeButtons()
-	fieldLabel("Search & Select Stand", 96)
+	fieldLabel("SEARCH & SELECT STAND", 112)
 	local standSearch = Instance.new("TextBox")
 	standSearch.Size = UDim2.new(1, -24, 0, 25)
-	standSearch.Position = UDim2.fromOffset(12, 109)
+	standSearch.Position = UDim2.fromOffset(12, 125)
 	standSearch.BackgroundColor3 = Color3.fromRGB(25, 27, 55)
 	standSearch.BorderSizePixel = 0
 	standSearch.ClearTextOnFocus = false
@@ -4723,7 +4742,7 @@ local function buildTargetsWorkspace()
 	local standPicker = Instance.new("Frame")
 	standPicker.Name = "StandPicker"
 	standPicker.Size = UDim2.new(1, -24, 0, 180)
-	standPicker.Position = UDim2.fromOffset(12, 137)
+	standPicker.Position = UDim2.fromOffset(12, 153)
 	standPicker.BackgroundColor3 = Color3.fromRGB(13, 16, 35)
 	standPicker.BorderSizePixel = 0
 	standPicker.Visible = false
@@ -4740,7 +4759,7 @@ local function buildTargetsWorkspace()
 	pickerSearch.BackgroundColor3 = Color3.fromRGB(23, 26, 54)
 	pickerSearch.BorderSizePixel = 0
 	pickerSearch.ClearTextOnFocus = false
-	pickerSearch.PlaceholderText = "  ◉  Search for a stand..."
+		pickerSearch.PlaceholderText = "  Search for a stand..."
 	pickerSearch.PlaceholderColor3 = Color3.fromRGB(116, 109, 151)
 	pickerSearch.Text = ""
 	pickerSearch.TextXAlignment = Enum.TextXAlignment.Left
@@ -4779,17 +4798,17 @@ local function buildTargetsWorkspace()
 	pickerLayout.Padding = UDim.new(0, 3)
 	pickerLayout.Parent = pickerList
 
-	fieldLabel("Stand", 144)
-	local standField = selectField(157, selectedStandForSlot)
-	fieldLabel("Attributes (select multiple)", 190)
-	local attributeField = selectField(203, table.concat(normalizeAttributes(selectedAttsForSlot), ", "))
+	fieldLabel("STAND", 165)
+	local standField = selectField(178, selectedStandForSlot)
+	fieldLabel("ATTRIBUTES (SELECT MULTIPLE)", 219)
+	local attributeField = selectField(232, table.concat(normalizeAttributes(selectedAttsForSlot), ", "))
 
 	-- Attribute selector is a real multi-select list.  It is layered over the
 	-- lower form while open so the compact Target layout keeps its original size.
 	local attributePicker = Instance.new("Frame")
 	attributePicker.Name = "AttributePicker"
 	attributePicker.Size = UDim2.new(1, -24, 0, 180)
-	attributePicker.Position = UDim2.fromOffset(12, 137)
+	attributePicker.Position = UDim2.fromOffset(12, 153)
 	attributePicker.BackgroundColor3 = Color3.fromRGB(13, 16, 35)
 	attributePicker.BorderSizePixel = 0
 	attributePicker.Visible = false
@@ -4834,7 +4853,7 @@ local function buildTargetsWorkspace()
 
 	local addButton = Instance.new("TextButton")
 	addButton.Size = UDim2.new(1, -24, 0, 29)
-	addButton.Position = UDim2.fromOffset(12, 241)
+	addButton.Position = UDim2.fromOffset(12, 268)
 	addButton.BackgroundColor3 = Color3.fromRGB(124, 70, 235)
 	addButton.BorderSizePixel = 0
 	addButton.AutoButtonColor = false
@@ -4850,20 +4869,22 @@ local function buildTargetsWorkspace()
 
 	local lowerDivider = Instance.new("Frame")
 	lowerDivider.Size = UDim2.new(1, -24, 0, 1)
-	lowerDivider.Position = UDim2.fromOffset(12, 284)
+	lowerDivider.Position = UDim2.fromOffset(12, 311)
 	lowerDivider.BackgroundColor3 = Color3.fromRGB(52, 42, 89)
 	lowerDivider.BorderSizePixel = 0
 	lowerDivider.Parent = form
-	local recentLabel = makeText(form, "Recent: none yet", UDim2.new(1, -24, 0, 14), UDim2.fromOffset(12, 296), Enum.Font.GothamSemibold, Color3.fromRGB(130, 125, 161))
+	local recentTitle = makeText(form, "RECENT", UDim2.new(1, -24, 0, 12), UDim2.fromOffset(12, 321), Enum.Font.GothamSemibold, Color3.fromRGB(147, 139, 181))
+	recentTitle.TextSize = 7
+	local recentLabel = makeText(form, "No recent targets yet", UDim2.new(1, -24, 0, 14), UDim2.fromOffset(12, 334), Enum.Font.Gotham, Color3.fromRGB(130, 125, 161))
 	recentLabel.TextSize = 8
 
 	local refreshButton = Instance.new("TextButton")
-	refreshButton.Size = UDim2.new(1, -24, 0, 26)
-	refreshButton.Position = UDim2.fromOffset(12, 320)
+	refreshButton.Size = UDim2.new(1, -24, 0, 30)
+	refreshButton.Position = UDim2.fromOffset(12, 360)
 	refreshButton.BackgroundColor3 = Color3.fromRGB(19, 19, 43)
 	refreshButton.BorderSizePixel = 0
 	refreshButton.AutoButtonColor = false
-	refreshButton.Text = "⟳  Refresh Stand Catalog"
+	refreshButton.Text = "      Refresh Stand Catalog"
 	refreshButton.Font = Enum.Font.GothamSemibold
 	refreshButton.TextSize = 9
 	refreshButton.TextColor3 = Color3.fromRGB(205, 179, 255)
@@ -4873,8 +4894,9 @@ local function buildTargetsWorkspace()
 	refreshEdge.Color = Color3.fromRGB(145, 80, 246)
 	refreshEdge.Transparency = 0.2
 	refreshEdge.Parent = refreshButton
+	lunaIcon(refreshButton, "refresh-cw", 14, UDim2.new(0.5, -76, 0.5, -7), Color3.fromRGB(182, 120, 255), 3)
 
-	local listPanel = panel("Target List", "☷", UDim2.new(0.42, 2, 0, 0), UDim2.new(0.58, -2, 0, 356))
+	local listPanel = panel("Target List", "list-ordered", UDim2.new(0.42, 2, 0, 0), UDim2.new(0.58, -2, 0, 402))
 	local listSubtitle = makeText(listPanel, "Manage your farming targets.", UDim2.new(1, -135, 0, 12), UDim2.fromOffset(39, 28), Enum.Font.Gotham, Color3.fromRGB(130, 125, 161))
 	listSubtitle.TextSize = 8
 	local listCount = makeText(listPanel, "0 / ∞", UDim2.fromOffset(86, 16), UDim2.new(1, -96, 0, 13), Enum.Font.GothamBold, Color3.fromRGB(174, 109, 255))
@@ -4883,11 +4905,11 @@ local function buildTargetsWorkspace()
 
 	local listSearch = Instance.new("TextBox")
 	listSearch.Size = UDim2.new(1, -24, 0, 27)
-	listSearch.Position = UDim2.fromOffset(12, 48)
+	listSearch.Position = UDim2.fromOffset(12, 57)
 	listSearch.BackgroundColor3 = Color3.fromRGB(25, 27, 55)
 	listSearch.BorderSizePixel = 0
 	listSearch.ClearTextOnFocus = false
-	listSearch.PlaceholderText = "  ◉  Search targets..."
+	listSearch.PlaceholderText = "  Search targets..."
 	listSearch.PlaceholderColor3 = Color3.fromRGB(111, 106, 145)
 	listSearch.Text = ""
 	listSearch.TextXAlignment = Enum.TextXAlignment.Left
@@ -4902,8 +4924,8 @@ local function buildTargetsWorkspace()
 	listSearchStroke.Parent = listSearch
 
 	local targetScroll = Instance.new("ScrollingFrame")
-	targetScroll.Size = UDim2.new(1, -24, 0, 216)
-	targetScroll.Position = UDim2.fromOffset(12, 84)
+	targetScroll.Size = UDim2.new(1, -24, 0, 252)
+	targetScroll.Position = UDim2.fromOffset(12, 94)
 	targetScroll.BackgroundColor3 = Color3.fromRGB(12, 15, 30)
 	targetScroll.BackgroundTransparency = 0.18
 	targetScroll.BorderSizePixel = 0
@@ -4926,20 +4948,20 @@ local function buildTargetsWorkspace()
 
 	local footerLine = Instance.new("Frame")
 	footerLine.Size = UDim2.new(1, -24, 0, 1)
-	footerLine.Position = UDim2.fromOffset(12, 310)
+	footerLine.Position = UDim2.fromOffset(12, 354)
 	footerLine.BackgroundColor3 = Color3.fromRGB(52, 42, 89)
 	footerLine.BorderSizePixel = 0
 	footerLine.Parent = listPanel
-	local footerCount = makeText(listPanel, "0 Targets  •  Unlimited", UDim2.fromOffset(170, 18), UDim2.fromOffset(12, 321), Enum.Font.GothamSemibold, Color3.fromRGB(191, 184, 218))
+	local footerCount = makeText(listPanel, "0 Targets  •  Unlimited", UDim2.fromOffset(190, 18), UDim2.fromOffset(12, 367), Enum.Font.GothamSemibold, Color3.fromRGB(191, 184, 218))
 	footerCount.TextSize = 9
 	local clearButton = Instance.new("TextButton")
 	clearButton.Size = UDim2.fromOffset(82, 26)
 	clearButton.AnchorPoint = Vector2.new(1, 0)
-	clearButton.Position = UDim2.new(1, -12, 0, 318)
+	clearButton.Position = UDim2.new(1, -12, 0, 363)
 	clearButton.BackgroundColor3 = Color3.fromRGB(28, 24, 53)
 	clearButton.BorderSizePixel = 0
 	clearButton.AutoButtonColor = false
-	clearButton.Text = "♜  Clear All"
+	clearButton.Text = "      Clear All"
 	clearButton.Font = Enum.Font.GothamSemibold
 	clearButton.TextSize = 9
 	clearButton.TextColor3 = Color3.fromRGB(207, 184, 249)
@@ -4949,6 +4971,7 @@ local function buildTargetsWorkspace()
 	clearEdge.Color = Color3.fromRGB(100, 70, 171)
 	clearEdge.Transparency = 0.36
 	clearEdge.Parent = clearButton
+	lunaIcon(clearButton, "trash-2", 13, UDim2.fromOffset(13, 7), Color3.fromRGB(199, 133, 255), 3)
 
 	local function setFieldText(button, value)
 		button.Text = "  " .. tostring(value)
@@ -5187,12 +5210,13 @@ local function buildTargetsWorkspace()
 				remove.BackgroundColor3 = Color3.fromRGB(47, 25, 49)
 				remove.BorderSizePixel = 0
 				remove.AutoButtonColor = false
-				remove.Text = "♜"
+				remove.Text = ""
 				remove.Font = Enum.Font.GothamBold
 				remove.TextSize = 12
 				remove.TextColor3 = Color3.fromRGB(255, 101, 142)
 				remove.Parent = row
 				rounded(remove, 5)
+				lunaIcon(remove, "trash-2", 13, UDim2.fromOffset(7, 7), Color3.fromRGB(255, 101, 142), 3)
 				remove.MouseButton1Click:Connect(function()
 					local removed = farmSlots[index]
 					if removed then
@@ -5282,7 +5306,10 @@ local function buildTargetsWorkspace()
 
 	-- Keep compatibility with the rest of the script while rendering through the
 	-- compact workspace instead of a long stack of generic controls.
-	executiveUI.recentStandSection = {Set = function(_, value) recentLabel.Text = tostring(value) end}
+	executiveUI.recentStandSection = {Set = function(_, value)
+		local cleanValue = tostring(value or ""):gsub("^Recent:%s*", "")
+		recentLabel.Text = cleanValue ~= "" and cleanValue or "No recent targets yet"
+	end}
 	executiveUI.refreshTargetsWorkspace = renderTargetRows
 	executiveUI.refreshStandPicker = function()
 		if standPicker.Visible then renderStandPicker() end
