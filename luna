@@ -1083,6 +1083,17 @@ local LUNA_ICON_ATLAS = {
 	shield = {16898613777, 869, 0},
 	scan = {16898613699, 967, 196},
 	sprout = {16898613777, 918, 306},
+	user = {16898613869, 661, 869},
+	infinity = {16898613509, 661, 820},
+	["list-ordered"] = {16898613509, 710, 918},
+	activity = {16898612629, 514, 771},
+	send = {16898613699, 967, 857},
+	eye = {16898613353, 771, 563},
+	gauge = {16898613353, 771, 955},
+	cpu = {16898613044, 196, 869},
+	["chevron-right"] = {16898612819, 869, 759},
+	monitor = {16898613613, 404, 820},
+	["shield-check"] = {16898613777, 820, 257},
 }
 
 local function applyLunaIcon(imageLabel, iconName, color)
@@ -2892,6 +2903,7 @@ function Library:MakeWindow(Config)
         -- Expose only the small surface needed by the Luna dashboard shell.
         -- Existing controls continue to use the same page and callbacks.
         TabObject._page = page
+        TabObject._searchEntries = pageSearchEntries
         TabObject.Select = function()
             setActiveTab(TabName)
             applyPageSearch(Pages[TabName])
@@ -5286,23 +5298,229 @@ executiveUI.dashboardLairSection = Tabs.Dashboard:CreateSection("Auto Lair  • 
 executiveUI.dashboardCurrentSection = Tabs.Dashboard:CreateSection("Current  •  Loading...")
 executiveUI.dashboardTargetSection = Tabs.Dashboard:CreateSection("Targets  •  " .. #farmSlots)
 executiveUI.dashboardOrbSection = Tabs.Dashboard:CreateSection("2x Orb  •  Checking...")
-Tabs.Dashboard:CreateSection("Quick Actions")
-Tabs.Dashboard:CreateButton({
-	Name = "Start Stand + CArrow Farm",
-	Callback = function()
-		-- Lair starts first so boss positioning always wins immediately.
-		if executiveUI.lairToggleControl then executiveUI.lairToggleControl:Set(true) end
-		if farmToggle then farmToggle:Set(true) else startStandFarm() end
-	end,
-})
-Tabs.Dashboard:CreateButton({
-	Name = "Stop Stand + CArrow Farm",
-	Callback = function()
-		if farmToggle then farmToggle:Set(false) else stopStandFarm() end
-		if executiveUI.lairToggleControl then executiveUI.lairToggleControl:Set(false) end
-	end,
-})
-Tabs.Dashboard:CreateSection("Configure each feature in its dedicated tab")
+Tabs.Dashboard:CreateSection("FARM INTELLIGENCE")
+executiveUI.dashboardReadinessSection = Tabs.Dashboard:CreateSection("Ready  •  " .. #farmSlots .. " target rules  •  Unlimited capacity")
+Tabs.Dashboard:CreateSection("Priority  •  Targets are checked from top to bottom")
+Tabs.Dashboard:CreateSection("Controls  •  Configure each feature in its dedicated tab")
+
+-- Home control center inspired by the reference. It is status-only: farming
+-- can be started or stopped only inside the dedicated feature tabs.
+executiveUI.buildHomeWorkspace = function()
+	local page = Tabs.Dashboard._page
+	if not page then return end
+
+	local hero = page:FindFirstChild("PageHero")
+	if hero then
+		for _, item in ipairs(hero:GetDescendants()) do
+			if item:IsA("TextLabel") then
+				if item.Text == "Home" then
+					item.Text = "LUNA EXECUTIVE  •  CONTROL CENTER"
+					item.TextSize = 13
+				elseif item.Text == "Overview of your current session." then
+					item.Text = "Overview of your current session."
+				end
+			end
+		end
+	end
+
+	local shell = Instance.new("Frame")
+	shell.Name = "HomeDashboard"
+	shell.LayoutOrder = -10
+	shell.Size = UDim2.new(1, 0, 0, 326)
+	shell.BackgroundTransparency = 1
+	shell.Parent = page
+
+	local function rounded(instance, radius)
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0, radius or 7)
+		round.Parent = instance
+		return instance
+	end
+
+	local function outline(instance, color, transparency)
+		local edge = Instance.new("UIStroke")
+		edge.Color = color or Color3.fromRGB(94, 56, 170)
+		edge.Transparency = transparency or 0.32
+		edge.Thickness = 1
+		edge.Parent = instance
+		return edge
+	end
+
+	local function icon(parent, iconName, size, position, color)
+		local image = Instance.new("ImageLabel")
+		image.Size = UDim2.fromOffset(size, size)
+		image.Position = position
+		image.BackgroundTransparency = 1
+		image.BorderSizePixel = 0
+		image.Parent = parent
+		if not Rayfield.ApplyLunaIcon(image, iconName, color or Color3.fromRGB(181, 112, 255)) then
+			image.Visible = false
+		end
+		return image
+	end
+
+	local function text(parent, value, size, position, font, color, textSize)
+		local label = Instance.new("TextLabel")
+		label.Size = size
+		label.Position = position
+		label.BackgroundTransparency = 1
+		label.Text = tostring(value or "")
+		label.Font = font or Enum.Font.GothamSemibold
+		label.TextSize = textSize or 8
+		label.TextColor3 = color or Color3.fromRGB(190, 182, 218)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextYAlignment = Enum.TextYAlignment.Center
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Parent = parent
+		return label
+	end
+
+	local function panel(position, size)
+		local frame = Instance.new("Frame")
+		frame.Size = size
+		frame.Position = position
+		frame.BackgroundColor3 = Color3.fromRGB(12, 15, 32)
+		frame.BackgroundTransparency = 0.03
+		frame.BorderSizePixel = 0
+		frame.Parent = shell
+		rounded(frame, 8)
+		outline(frame, Color3.fromRGB(102, 61, 184), 0.28)
+		return frame
+	end
+
+	local function sectionHeader(parent, title, meta)
+		text(parent, title, UDim2.new(0.55, -16, 0, 29), UDim2.fromOffset(12, 0), Enum.Font.GothamBold, Color3.fromRGB(241, 235, 255), 10)
+		local line = Instance.new("Frame")
+		line.Size = UDim2.new(0.36, 0, 0, 1)
+		line.Position = UDim2.new(0.28, 0, 0, 15)
+		line.BackgroundColor3 = Color3.fromRGB(121, 67, 213)
+		line.BorderSizePixel = 0
+		line.Parent = parent
+		local metaLabel = text(parent, string.upper(meta or ""), UDim2.new(0.34, -12, 0, 29), UDim2.new(0.66, 0, 0, 0), Enum.Font.GothamSemibold, Color3.fromRGB(131, 111, 174), 6)
+		metaLabel.TextXAlignment = Enum.TextXAlignment.Right
+	end
+
+	local function statusCard(parent, position, size, dotColor, iconName, title, initialValue)
+		local card = Instance.new("Frame")
+		card.Size = size
+		card.Position = position
+		card.BackgroundColor3 = Color3.fromRGB(26, 24, 55)
+		card.BackgroundTransparency = 0.08
+		card.BorderSizePixel = 0
+		card.Parent = parent
+		rounded(card, 6)
+		outline(card, Color3.fromRGB(72, 49, 129), 0.48)
+		local dot = Instance.new("Frame")
+		dot.Size = UDim2.fromOffset(9, 9)
+		dot.Position = UDim2.fromOffset(11, math.floor((size.Y.Offset - 9) / 2))
+		dot.BackgroundColor3 = dotColor
+		dot.BorderSizePixel = 0
+		dot.Parent = card
+		rounded(dot, 5)
+		local glow = Instance.new("UIStroke")
+		glow.Color = dotColor
+		glow.Transparency = 0.55
+		glow.Thickness = 3
+		glow.Parent = dot
+		local iconTile = Instance.new("Frame")
+		iconTile.Size = UDim2.fromOffset(29, 29)
+		iconTile.Position = UDim2.fromOffset(31, math.floor((size.Y.Offset - 29) / 2))
+		iconTile.BackgroundColor3 = Color3.fromRGB(45, 34, 86)
+		iconTile.BorderSizePixel = 0
+		iconTile.Parent = card
+		rounded(iconTile, 5)
+		outline(iconTile, Color3.fromRGB(103, 61, 182), 0.38)
+		icon(iconTile, iconName, 15, UDim2.fromOffset(7, 7), Color3.fromRGB(184, 122, 255))
+		text(card, title, UDim2.new(1, -74, 0, 17), UDim2.fromOffset(69, 7), Enum.Font.GothamBold, Color3.fromRGB(234, 229, 247), 8)
+		local valueLabel = text(card, initialValue, UDim2.new(1, -74, 0, 17), UDim2.fromOffset(69, size.Y.Offset > 38 and 23 or 17), Enum.Font.GothamSemibold, Color3.fromRGB(180, 143, 230), 7)
+		return valueLabel
+	end
+
+	local function displayValue(raw)
+		local value = tostring(raw or "")
+		return value:match("•%s*(.+)") or value:match(":%s*(.+)") or value
+	end
+
+	local status = panel(UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 194))
+	sectionHeader(status, "System Status", "Real Time Overview")
+	local farmValue = statusCard(status, UDim2.fromOffset(12, 34), UDim2.new(0.5, -18, 0, 48), Color3.fromRGB(82, 237, 168), "crown", "Stand Farm", "OFF")
+	local lairValue = statusCard(status, UDim2.new(0.5, 6, 0, 34), UDim2.new(0.5, -18, 0, 48), Color3.fromRGB(255, 88, 127), "flame", "Auto Lair", "OFF")
+	local currentValue = statusCard(status, UDim2.fromOffset(12, 88), UDim2.new(0.5, -18, 0, 48), Color3.fromRGB(171, 91, 246), "user", "Current", "Loading...")
+	local targetsValue = statusCard(status, UDim2.new(0.5, 6, 0, 88), UDim2.new(0.5, -18, 0, 48), Color3.fromRGB(70, 171, 255), "crosshair", "Targets", "0 configured")
+	local orbValue = statusCard(status, UDim2.fromOffset(12, 142), UDim2.new(1, -24, 0, 40), Color3.fromRGB(83, 138, 255), "moon-star", "2x Orb", "Checking...")
+
+	executiveUI.dashboardFarmSection = {Set = function(_, value)
+		farmValue.Text = displayValue(value)
+		farmValue.TextColor3 = farmValue.Text:find("RUNNING", 1, true) and Color3.fromRGB(91, 230, 155) or Color3.fromRGB(255, 105, 136)
+	end}
+	executiveUI.dashboardLairSection = {Set = function(_, value)
+		lairValue.Text = displayValue(value)
+		lairValue.TextColor3 = lairValue.Text:find("RUNNING", 1, true) and Color3.fromRGB(91, 230, 155) or Color3.fromRGB(255, 105, 136)
+	end}
+	executiveUI.dashboardCurrentSection = {Set = function(_, value) currentValue.Text = displayValue(value) end}
+	executiveUI.dashboardTargetSection = {Set = function(_, value) targetsValue.Text = displayValue(value) end}
+	executiveUI.dashboardOrbSection = {Set = function(_, value) orbValue.Text = displayValue(value) end}
+
+	local intelligence = panel(UDim2.fromOffset(0, 202), UDim2.new(1, 0, 0, 124))
+	sectionHeader(intelligence, "Farm Intelligence", "Session Guide")
+	local function insightTile(xScale, iconName, title, value)
+		local tile = Instance.new("Frame")
+		tile.Size = UDim2.new(1 / 3, -14, 0, 48)
+		tile.Position = UDim2.new(xScale, xScale == 0 and 12 or 6, 0, 35)
+		tile.BackgroundColor3 = Color3.fromRGB(26, 24, 55)
+		tile.BackgroundTransparency = 0.08
+		tile.BorderSizePixel = 0
+		tile.Parent = intelligence
+		rounded(tile, 6)
+		outline(tile, Color3.fromRGB(73, 49, 130), 0.5)
+		icon(tile, iconName, 16, UDim2.fromOffset(10, 9), Color3.fromRGB(184, 111, 255))
+		text(tile, title, UDim2.new(1, -38, 0, 17), UDim2.fromOffset(34, 5), Enum.Font.GothamBold, Color3.fromRGB(231, 225, 245), 7)
+		return text(tile, value, UDim2.new(1, -38, 0, 18), UDim2.fromOffset(34, 22), Enum.Font.GothamSemibold, Color3.fromRGB(172, 138, 221), 7)
+	end
+	local readinessValue = insightTile(0, "infinity", "Target Capacity", #farmSlots .. " rules  •  Unlimited")
+	insightTile(1 / 3, "list-ordered", "Match Priority", "Top to bottom")
+	insightTile(2 / 3, "settings", "Safe Controls", "Use feature tabs")
+	local footer = Instance.new("Frame")
+	footer.Size = UDim2.new(1, -24, 0, 24)
+	footer.Position = UDim2.fromOffset(12, 91)
+	footer.BackgroundColor3 = Color3.fromRGB(20, 20, 43)
+	footer.BackgroundTransparency = 0.08
+	footer.BorderSizePixel = 0
+	footer.Parent = intelligence
+	rounded(footer, 5)
+	icon(footer, "info", 13, UDim2.fromOffset(10, 6), Color3.fromRGB(174, 112, 239))
+	text(footer, "Configure Stand Farm, Targets and Auto Lair from their dedicated tabs.", UDim2.new(1, -58, 1, 0), UDim2.fromOffset(31, 0), Enum.Font.GothamSemibold, Color3.fromRGB(159, 151, 190), 7)
+	local brand = text(footer, "LUNA HUB  —  PLAY SMARTER", UDim2.fromOffset(150, 24), UDim2.new(1, -158, 0, 0), Enum.Font.GothamBold, Color3.fromRGB(111, 91, 151), 5)
+	brand.TextXAlignment = Enum.TextXAlignment.Right
+	executiveUI.dashboardReadinessSection = {Set = function(_, value)
+		local count = tostring(value or ""):match("Ready%s+•%s+(%d+)") or tostring(#farmSlots)
+		readinessValue.Text = count .. " rules  •  Unlimited"
+	end}
+
+	local legacyHost = Instance.new("Frame")
+	legacyHost.Name = "LegacyHomeBindings"
+	legacyHost.Size = UDim2.fromOffset(0, 0)
+	legacyHost.Position = UDim2.fromOffset(-10000, -10000)
+	legacyHost.BackgroundTransparency = 1
+	legacyHost.Visible = false
+	legacyHost.Parent = page
+	for _, child in ipairs(page:GetChildren()) do
+		if child:IsA("GuiObject") and child.Name ~= "PageHero"
+			and child.Name ~= "HomeDashboard" and child ~= legacyHost then
+			child.Visible = false
+			child.Parent = legacyHost
+		end
+	end
+	if type(Tabs.Dashboard._searchEntries) == "table" then
+		table.clear(Tabs.Dashboard._searchEntries)
+	end
+	legacyHost:GetPropertyChangedSignal("Visible"):Connect(function()
+		if legacyHost.Visible then legacyHost.Visible = false end
+	end)
+	page.CanvasPosition = Vector2.new(0, 0)
+end
+
+executiveUI.buildHomeWorkspace()
 
 --================== TAB: STAND FARM ==================--
 Tabs.Farm:CreateSection("✦  FARM SETTINGS")
@@ -5836,6 +6054,36 @@ farmToggle = Tabs.Farm:CreateToggle({
 	end,
 })
 
+-- Keep the legacy Farm controls alive only as callback/config bindings. The
+-- compact FarmDashboard is the sole visible layout for this tab.
+executiveUI.hideLegacyFarmControls = function()
+	local page = Tabs.Farm._page
+	if not page then return end
+	local legacyHost = Instance.new("Frame")
+	legacyHost.Name = "LegacyFarmBindings"
+	legacyHost.Size = UDim2.fromOffset(0, 0)
+	legacyHost.Position = UDim2.fromOffset(-10000, -10000)
+	legacyHost.BackgroundTransparency = 1
+	legacyHost.Visible = false
+	legacyHost.Parent = page
+	for _, child in ipairs(page:GetChildren()) do
+		if child:IsA("GuiObject") and child.Name ~= "PageHero"
+			and child.Name ~= "FarmDashboard" and child ~= legacyHost then
+			child.Visible = false
+			child.Parent = legacyHost
+		end
+	end
+	if type(Tabs.Farm._searchEntries) == "table" then
+		table.clear(Tabs.Farm._searchEntries)
+	end
+	legacyHost:GetPropertyChangedSignal("Visible"):Connect(function()
+		if legacyHost.Visible then legacyHost.Visible = false end
+	end)
+	page.CanvasPosition = Vector2.new(0, 0)
+end
+
+executiveUI.hideLegacyFarmControls()
+
 Tabs.Settings:CreateSection("WEBHOOK NOTIFICATIONS")
 
 Tabs.Settings:CreateInput({
@@ -6315,6 +6563,307 @@ Tabs.Utilities:CreateButton({
 	end,
 })
 
+-- Compact Utilities workspace matching the Luna reference while retaining the
+-- existing local-only callbacks and configuration bindings.
+executiveUI.buildUtilitiesWorkspace = function()
+	local page = Tabs.Utilities._page
+	if not page then return end
+
+	local shell = Instance.new("Frame")
+	shell.Name = "UtilitiesWorkspace"
+	shell.LayoutOrder = -10
+	shell.Size = UDim2.new(1, 0, 0, 356)
+	shell.BackgroundTransparency = 1
+	shell.Parent = page
+
+	local function rounded(instance, radius)
+		local round = Instance.new("UICorner")
+		round.CornerRadius = UDim.new(0, radius or 7)
+		round.Parent = instance
+		return instance
+	end
+
+	local function outline(instance, color, transparency)
+		local edge = Instance.new("UIStroke")
+		edge.Color = color or Color3.fromRGB(91, 55, 164)
+		edge.Transparency = transparency or 0.4
+		edge.Thickness = 1
+		edge.Parent = instance
+		return edge
+	end
+
+	local function icon(parent, iconName, size, position, color)
+		local image = Instance.new("ImageLabel")
+		image.Size = UDim2.fromOffset(size, size)
+		image.Position = position
+		image.BackgroundTransparency = 1
+		image.BorderSizePixel = 0
+		image.Parent = parent
+		if not Rayfield.ApplyLunaIcon(image, iconName, color or Color3.fromRGB(183, 112, 255)) then
+			image.Visible = false
+		end
+		return image
+	end
+
+	local function text(parent, value, size, position, font, color, textSize)
+		local label = Instance.new("TextLabel")
+		label.Size = size
+		label.Position = position
+		label.BackgroundTransparency = 1
+		label.Text = tostring(value or "")
+		label.Font = font or Enum.Font.GothamSemibold
+		label.TextSize = textSize or 8
+		label.TextColor3 = color or Color3.fromRGB(193, 185, 220)
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextYAlignment = Enum.TextYAlignment.Center
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Parent = parent
+		return label
+	end
+
+	local function sectionBar(y, iconName, title, meta)
+		local bar = Instance.new("Frame")
+		bar.Size = UDim2.new(1, 0, 0, 25)
+		bar.Position = UDim2.fromOffset(0, y)
+		bar.BackgroundColor3 = Color3.fromRGB(40, 25, 78)
+		bar.BackgroundTransparency = 0.08
+		bar.BorderSizePixel = 0
+		bar.Parent = shell
+		rounded(bar, 6)
+		outline(bar, Color3.fromRGB(91, 53, 164), 0.62)
+		icon(bar, iconName, 13, UDim2.fromOffset(10, 6), Color3.fromRGB(192, 119, 255))
+		text(bar, string.upper(title), UDim2.new(0.55, -34, 1, 0), UDim2.fromOffset(31, 0), Enum.Font.GothamBold, Color3.fromRGB(205, 157, 250), 8)
+		local metaLabel = text(bar, meta, UDim2.new(0.43, -10, 1, 0), UDim2.new(0.57, 0, 0, 0), Enum.Font.Gotham, Color3.fromRGB(148, 116, 190), 6)
+		metaLabel.TextXAlignment = Enum.TextXAlignment.Right
+		return bar
+	end
+
+	local function actionCard(position, size, iconName, title, description, callback)
+		local button = Instance.new("TextButton")
+		button.Size = size
+		button.Position = position
+		button.BackgroundColor3 = Color3.fromRGB(25, 23, 53)
+		button.BackgroundTransparency = 0.05
+		button.BorderSizePixel = 0
+		button.AutoButtonColor = false
+		button.Text = ""
+		button.Parent = shell
+		rounded(button, 6)
+		outline(button, Color3.fromRGB(76, 48, 137), 0.42)
+		local tile = Instance.new("Frame")
+		tile.Size = UDim2.fromOffset(30, 30)
+		tile.Position = UDim2.fromOffset(10, 9)
+		tile.BackgroundColor3 = Color3.fromRGB(50, 31, 94)
+		tile.BorderSizePixel = 0
+		tile.Parent = button
+		rounded(tile, 6)
+		icon(tile, iconName, 16, UDim2.fromOffset(7, 7), Color3.fromRGB(195, 125, 255))
+		text(button, title, UDim2.new(1, -78, 0, 19), UDim2.fromOffset(49, 6), Enum.Font.GothamBold, Color3.fromRGB(232, 226, 246), 8)
+		text(button, description, UDim2.new(1, -78, 0, 17), UDim2.fromOffset(49, 24), Enum.Font.Gotham, Color3.fromRGB(148, 138, 180), 6)
+		icon(button, "chevron-right", 12, UDim2.new(1, -20, 0.5, -6), Color3.fromRGB(158, 126, 202))
+		button.MouseButton1Click:Connect(callback)
+		return button
+	end
+
+	local function bindToggle(parent, title, description, flag)
+		local row = Instance.new("TextButton")
+		row.Size = UDim2.new(1, 0, 1, 0)
+		row.BackgroundTransparency = 1
+		row.BorderSizePixel = 0
+		row.AutoButtonColor = false
+		row.Text = ""
+		row.Parent = parent
+		text(row, title, UDim2.new(1, -70, 0, 20), UDim2.fromOffset(11, 4), Enum.Font.GothamBold, Color3.fromRGB(231, 225, 245), 8)
+		text(row, description, UDim2.new(1, -70, 0, 17), UDim2.fromOffset(11, 22), Enum.Font.Gotham, Color3.fromRGB(143, 134, 174), 6)
+		local track = Instance.new("Frame")
+		track.Size = UDim2.fromOffset(35, 19)
+		track.Position = UDim2.new(1, -46, 0.5, -9)
+		track.BorderSizePixel = 0
+		track.Parent = row
+		rounded(track, 10)
+		local knob = Instance.new("Frame")
+		knob.Size = UDim2.fromOffset(13, 13)
+		knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		knob.BorderSizePixel = 0
+		knob.Parent = track
+		rounded(knob, 7)
+		local state = Rayfield._compat.flags[flag] == true
+		local previousSetter = Rayfield._compat.bindings[flag]
+		local function setVisual(value)
+			state = value == true
+			track.BackgroundColor3 = state and Color3.fromRGB(128, 66, 240) or Color3.fromRGB(56, 54, 81)
+			knob.Position = UDim2.new(0, state and 19 or 3, 0.5, -6)
+		end
+		Rayfield:_bindFlag(flag, state, function(value)
+			if previousSetter then pcall(previousSetter, value) end
+			setVisual(value)
+		end)
+		local control = {}
+		function control:Set(value)
+			Rayfield:_setFlag(flag, value == true, false)
+		end
+		row.MouseButton1Click:Connect(function() control:Set(not state) end)
+		setVisual(state)
+		return control
+	end
+
+	sectionBar(0, "zap", "Quick Tools", "Save time. Play smarter.")
+	actionCard(UDim2.fromOffset(0, 31), UDim2.new(0.5, -4, 0, 48), "send", "Teleport to Safe Zone", "Instantly teleport to a safe location.", function()
+		local char = localplr.Character
+		if char and char:FindFirstChild("HumanoidRootPart") then
+			char.HumanoidRootPart.CFrame = CFrame.new(-3047.042, 43.185, -1695.433)
+			notif("Teleport", "Moved to Safe Zone!")
+		end
+	end)
+	actionCard(UDim2.new(0.5, 4, 0, 31), UDim2.new(0.5, -4, 0, 48), "box", "Storage Stand", "Open your stand storage.", function()
+		local npc = game.Workspace:FindFirstChild("Map")
+			and game.Workspace.Map:FindFirstChild("NPCs")
+			and game.Workspace.Map.NPCs:FindFirstChild("admpn")
+		local remote = npc and npc:FindFirstChild("Done")
+		if remote then remote:FireServer(); notif("Storage Stand", "Remote fired.")
+		else notif("Storage Stand", "Storage NPC remote not found.") end
+	end)
+
+	sectionBar(86, "eye", "Visual", "Cleaner screen. Better focus.")
+	local visualCard = Instance.new("Frame")
+	visualCard.Size = UDim2.new(1, 0, 0, 42)
+	visualCard.Position = UDim2.fromOffset(0, 117)
+	visualCard.BackgroundColor3 = Color3.fromRGB(20, 21, 44)
+	visualCard.BorderSizePixel = 0
+	visualCard.Parent = shell
+	rounded(visualCard, 6)
+	outline(visualCard, Color3.fromRGB(69, 46, 124), 0.52)
+	whiteScreenToggle = bindToggle(visualCard, "Enable White Screen Overlay", "Reduces visual effects for smoother performance.", "WhiteScreenToggle")
+
+	sectionBar(166, "gauge", "Performance", "More FPS. Smoother experience.")
+	local performanceCard = Instance.new("Frame")
+	performanceCard.Size = UDim2.new(1, 0, 0, 43)
+	performanceCard.Position = UDim2.fromOffset(0, 197)
+	performanceCard.BackgroundColor3 = Color3.fromRGB(20, 21, 44)
+	performanceCard.BorderSizePixel = 0
+	performanceCard.Parent = shell
+	rounded(performanceCard, 6)
+	outline(performanceCard, Color3.fromRGB(69, 46, 124), 0.52)
+	text(performanceCard, "Target FPS Limit", UDim2.new(0.34, -12, 0, 19), UDim2.fromOffset(11, 4), Enum.Font.GothamBold, Color3.fromRGB(231, 225, 245), 8)
+	text(performanceCard, "Set a custom FPS limit for better stability.", UDim2.new(0.38, -12, 0, 16), UDim2.fromOffset(11, 23), Enum.Font.Gotham, Color3.fromRGB(143, 134, 174), 6)
+	local fpsTrack = Instance.new("Frame")
+	fpsTrack.Size = UDim2.new(0.43, 0, 0, 5)
+	fpsTrack.Position = UDim2.new(0.39, 0, 0.5, -2)
+	fpsTrack.BackgroundColor3 = Color3.fromRGB(55, 47, 80)
+	fpsTrack.BorderSizePixel = 0
+	fpsTrack.Parent = performanceCard
+	rounded(fpsTrack, 3)
+	local fpsFill = Instance.new("Frame")
+	fpsFill.Size = UDim2.new(0, 0, 1, 0)
+	fpsFill.BackgroundColor3 = Color3.fromRGB(153, 85, 244)
+	fpsFill.BorderSizePixel = 0
+	fpsFill.Parent = fpsTrack
+	rounded(fpsFill, 3)
+	local fpsValueLabel = text(performanceCard, "60 FPS", UDim2.fromOffset(48, 21), UDim2.new(1, -57, 0.5, -10), Enum.Font.GothamBold, Color3.fromRGB(200, 161, 250), 7)
+	fpsValueLabel.TextXAlignment = Enum.TextXAlignment.Center
+	fpsValueLabel.BackgroundColor3 = Color3.fromRGB(42, 31, 78)
+	fpsValueLabel.BackgroundTransparency = 0
+	rounded(fpsValueLabel, 5)
+	local fpsButton = Instance.new("TextButton")
+	fpsButton.Size = UDim2.new(1, 0, 0, 19)
+	fpsButton.Position = UDim2.new(0, 0, 0.5, -9)
+	fpsButton.BackgroundTransparency = 1
+	fpsButton.Text = ""
+	fpsButton.Parent = fpsTrack
+	local fpsValue = tonumber(Rayfield._compat.flags.FpsTargetLair) or 60
+	local previousFpsSetter = Rayfield._compat.bindings.FpsTargetLair
+	local function setFpsVisual(value)
+		fpsValue = math.clamp(math.floor(((tonumber(value) or 60) - 30) / 10 + 0.5) * 10 + 30, 30, 240)
+		fpsFill.Size = UDim2.new((fpsValue - 30) / 210, 0, 1, 0)
+		fpsValueLabel.Text = tostring(fpsValue) .. " FPS"
+	end
+	Rayfield:_bindFlag("FpsTargetLair", fpsValue, function(value)
+		if previousFpsSetter then pcall(previousFpsSetter, value) end
+		setFpsVisual(value)
+	end)
+	setFpsVisual(fpsValue)
+	local function setFpsFromX(x)
+		local width = math.max(fpsTrack.AbsoluteSize.X, 1)
+		local ratio = math.clamp((x - fpsTrack.AbsolutePosition.X) / width, 0, 1)
+		Rayfield:_setFlag("FpsTargetLair", 30 + ratio * 210, false)
+	end
+	fpsButton.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		setFpsFromX(input.Position.X)
+		local inputService = game:GetService("UserInputService")
+		local moveConnection, endConnection
+		moveConnection = inputService.InputChanged:Connect(function(changed)
+			if changed.UserInputType == Enum.UserInputType.MouseMovement or changed.UserInputType == Enum.UserInputType.Touch then
+				setFpsFromX(changed.Position.X)
+			end
+		end)
+		endConnection = inputService.InputEnded:Connect(function(ended)
+			if ended.UserInputType == Enum.UserInputType.MouseButton1 or ended.UserInputType == Enum.UserInputType.Touch then
+				if moveConnection then moveConnection:Disconnect() end
+				if endConnection then endConnection:Disconnect() end
+			end
+		end)
+	end)
+
+	sectionBar(247, "cpu", "Optimization", "Game runs better. Farm longer.")
+	local function optimizerRow(y, iconName, title, description, muted, callback)
+		local row = Instance.new("TextButton")
+		row.Size = UDim2.new(1, 0, 0, 32)
+		row.Position = UDim2.fromOffset(0, y)
+		row.BackgroundColor3 = Color3.fromRGB(24, 22, 50)
+		row.BackgroundTransparency = muted and 0.28 or 0.08
+		row.BorderSizePixel = 0
+		row.AutoButtonColor = false
+		row.Text = ""
+		row.Parent = shell
+		rounded(row, 6)
+		outline(row, Color3.fromRGB(67, 45, 119), muted and 0.74 or 0.54)
+		local tile = Instance.new("Frame")
+		tile.Size = UDim2.fromOffset(23, 23)
+		tile.Position = UDim2.fromOffset(8, 5)
+		tile.BackgroundColor3 = muted and Color3.fromRGB(38, 35, 61) or Color3.fromRGB(48, 31, 89)
+		tile.BorderSizePixel = 0
+		tile.Parent = row
+		rounded(tile, 5)
+		icon(tile, iconName, 13, UDim2.fromOffset(5, 5), muted and Color3.fromRGB(99, 91, 123) or Color3.fromRGB(187, 117, 255))
+		text(row, title, UDim2.new(1, -54, 0, 16), UDim2.fromOffset(39, 2), Enum.Font.GothamBold, muted and Color3.fromRGB(137, 131, 158) or Color3.fromRGB(225, 219, 240), 7)
+		text(row, description, UDim2.new(1, -54, 0, 14), UDim2.fromOffset(39, 16), Enum.Font.Gotham, muted and Color3.fromRGB(100, 96, 119) or Color3.fromRGB(139, 131, 169), 6)
+		icon(row, "chevron-right", 11, UDim2.new(1, -18, 0.5, -5), muted and Color3.fromRGB(82, 78, 103) or Color3.fromRGB(145, 114, 188))
+		if callback then row.MouseButton1Click:Connect(callback) end
+		return row
+	end
+	optimizerRow(278, "shield-check", "Safe Performance Mode", "Local FPS and rendering controls are ready.", false, function()
+		notif("Optimizer", "Use the FPS Limit and White Screen controls above.")
+	end)
+	optimizerRow(315, "cpu", "Optimizer Script Unavailable", "Remote optimizer code remains disabled for safety.", true, function()
+		notif("Optimizer", "Disabled: remote code is not executed by this build.")
+	end)
+
+	local legacyHost = Instance.new("Frame")
+	legacyHost.Name = "LegacyUtilitiesBindings"
+	legacyHost.Size = UDim2.fromOffset(0, 0)
+	legacyHost.Position = UDim2.fromOffset(-10000, -10000)
+	legacyHost.BackgroundTransparency = 1
+	legacyHost.Visible = false
+	legacyHost.Parent = page
+	for _, child in ipairs(page:GetChildren()) do
+		if child:IsA("GuiObject") and child.Name ~= "PageHero"
+			and child.Name ~= "UtilitiesWorkspace" and child ~= legacyHost then
+			child.Visible = false
+			child.Parent = legacyHost
+		end
+	end
+	if type(Tabs.Utilities._searchEntries) == "table" then
+		table.clear(Tabs.Utilities._searchEntries)
+	end
+	legacyHost:GetPropertyChangedSignal("Visible"):Connect(function()
+		if legacyHost.Visible then legacyHost.Visible = false end
+	end)
+	page.CanvasPosition = Vector2.new(0, 0)
+end
+
+executiveUI.buildUtilitiesWorkspace()
+
 --================== TAB: SETTINGS ==================--
 
 Tabs.Settings:CreateSection("DATA MANAGEMENT")
@@ -6540,14 +7089,24 @@ executiveUI.buildSettingsWorkspace = function()
 	local legacyHost = Instance.new("Frame")
 	legacyHost.Name = "LegacySettingsBindings"
 	legacyHost.Size = UDim2.fromOffset(0, 0)
+	legacyHost.Position = UDim2.fromOffset(-10000, -10000)
 	legacyHost.BackgroundTransparency = 1
 	legacyHost.Visible = false
 	legacyHost.Parent = page
 	for _, child in ipairs(page:GetChildren()) do
 		if child:IsA("GuiObject") and child.Name ~= "PageHero" and child ~= legacyHost then
+			child.Visible = false
 			child.Parent = legacyHost
 		end
 	end
+	-- These entries point at the old rows and applyPageSearch would otherwise
+	-- make them visible again whenever Settings is selected.
+	if type(Tabs.Settings._searchEntries) == "table" then
+		table.clear(Tabs.Settings._searchEntries)
+	end
+	legacyHost:GetPropertyChangedSignal("Visible"):Connect(function()
+		if legacyHost.Visible then legacyHost.Visible = false end
+	end)
 	page.CanvasPosition = Vector2.new(0, 0)
 
 	local shell = Instance.new("Frame")
@@ -6752,13 +7311,16 @@ executiveUI.buildSettingsWorkspace = function()
 	text(infoRow, "Mentions require opt-in  •  Target match can tag when enabled", UDim2.new(1, -34, 1, 0), UDim2.fromOffset(29, 0), Enum.Font.GothamSemibold, Color3.fromRGB(196, 151, 244), 7)
 
 	local attributePopup = Instance.new("Frame")
-	attributePopup.Size = UDim2.new(0.52, -18, 0, 142)
-	attributePopup.Position = UDim2.new(0.48, 8, 0, 132)
+	-- Parent the popup to the workspace rather than the Webhook card. With
+	-- Sibling ZIndexBehavior, a child cannot draw over cards created after its
+	-- parent; making it a workspace sibling keeps the selector above every card.
+	attributePopup.Size = UDim2.new(0.286, -20, 0, 142)
+	attributePopup.Position = UDim2.new(0.264, 6, 0, 132)
 	attributePopup.BackgroundColor3 = Color3.fromRGB(12, 15, 33)
 	attributePopup.BorderSizePixel = 0
 	attributePopup.Visible = false
 	attributePopup.ZIndex = 60
-	attributePopup.Parent = webhookPanel
+	attributePopup.Parent = shell
 	rounded(attributePopup, 6)
 	outline(attributePopup, Color3.fromRGB(132, 74, 232), 0.12)
 	local popupTitle = text(attributePopup, "Select attributes", UDim2.new(1, -54, 0, 25), UDim2.fromOffset(8, 3), Enum.Font.GothamBold, Color3.fromRGB(235, 227, 250), 8, 61)
@@ -6947,6 +7509,9 @@ local function updateExecutiveDashboard()
 	end
 	if executiveUI.dashboardTargetSection then
 		executiveUI.dashboardTargetSection:Set("Targets  •  " .. #farmSlots .. " configured")
+	end
+	if executiveUI.dashboardReadinessSection then
+		executiveUI.dashboardReadinessSection:Set("Ready  •  " .. #farmSlots .. " target rules  •  Unlimited capacity")
 	end
 	if executiveUI.dashboardOrbSection then
 		executiveUI.dashboardOrbSection:Set(orbStatusText())
