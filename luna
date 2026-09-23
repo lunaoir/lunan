@@ -12,11 +12,8 @@ local popup = true
 local askroka = false
 local convtoname = true
 local webhookurl = ""
--- Mentions are opt-in. A webhook is a credential and should never default to
--- pinging an entire server for every farm event.
-local webhookMentionEnabled = false
-local tagperson = "@everyone"
-local webhookTagAtts = {}
+local webhookNotifyWrongStand = true
+local webhookNotifyMatchedStand = true
 local webhookNextRequestAt = 0
 --================== SETTINGS ==================--
 
@@ -2955,11 +2952,11 @@ function Library:SaveConfiguration()
             pcall(makefolder, cfg.FolderName)
         end
     end
-    -- Discord webhook URLs are credentials. Keep them out of the plain-text
-    -- configuration file, including any value left over from older versions.
+    -- Keep the active webhook URL with the rest of the local configuration so
+    -- Save/Load restores the Settings page. Deprecated mention flags stay out.
     local flagsToSave = {}
     for flag, value in pairs(self._compat.flags) do
-        if flag ~= "WebhookURL" then
+        if flag ~= "WebhookMentionsEnabled" and flag ~= "WebhookTagAtts" then
             flagsToSave[flag] = value
         end
     end
@@ -3010,8 +3007,7 @@ function Library:LoadConfiguration()
         return true
     end
     for flag, value in pairs(data.flags) do
-        -- Do not restore credentials persisted by older versions.
-        if flag ~= "WebhookURL" then
+        if flag ~= "WebhookMentionsEnabled" and flag ~= "WebhookTagAtts" then
             self:_setFlag(flag, value, true)
         end
     end
@@ -3271,17 +3267,11 @@ local function showMessageBox(text, title, style)
 	return nil
 end
 
-local function shouldTagEveryone(attValue, isSlotMatch)
-	if not webhookMentionEnabled then return false end
-	if isSlotMatch then return true end
-	if #webhookTagAtts == 0 then return true end
-	for _, a in ipairs(webhookTagAtts) do
-		if a == attValue then return true end
-	end
-	return false
-end
-
-local function webhook(text, stand, color, attValue, isSlotMatch)
+local function webhook(eventKind, stand, attValue, slotNumber)
+	local isMatch = eventKind == "match"
+	if not isMatch and eventKind ~= "miss" then return false, "Unknown webhook event." end
+	if isMatch and not webhookNotifyMatchedStand then return false, "Matched-Stand notifications are disabled." end
+	if not isMatch and not webhookNotifyWrongStand then return false, "Wrong-Stand notifications are disabled." end
 	if webhookurl == "" then return false, "Webhook URL is empty." end
 	if not isDiscordWebhookUrl(webhookurl) then
 		return false, "Webhook URL must be an official Discord webhook URL."
@@ -3315,22 +3305,13 @@ local function webhook(text, stand, color, attValue, isSlotMatch)
 		return total
 	end
 
-	text = tostring(text)
 	local displayStand = stand and getDisplayName(stand) or "Unknown"
 	local displayAtt = tostring(attValue or "Unknown")
-
-	if convtoname and stand then
-		pcall(function()
-			text = replacePlain(text, stand:upper(), displayStand:upper())
-		end)
-	end
-
-	local title = "Luna Hub | Stand Update"
-	if string.find(text, "MATCH", 1, true) then
-		title = "Luna Hub | Match Found"
-	elseif string.find(text, "ROKA", 1, true) then
-		title = "Luna Hub | Roka Used"
-	end
+	local title = isMatch and "Luna Hub | Target Stand Found" or "Luna Hub | Stand Not Matched"
+	local statusText = isMatch
+		and ("Matched target #" .. tostring(slotNumber or "?"))
+		or "No configured target matched"
+	local embedColor = isMatch and 0x46E6A4 or 0xF0C75E
 
 	local standArrowCount = countItemByName("Stand Arrow")
 	local chargedArrowCount = countItemByName("Charged Arrow")
@@ -3350,7 +3331,7 @@ local function webhook(text, stand, color, attValue, isSlotMatch)
 		},
 		{
 			["name"] = "Status",
-			["value"] = text,
+			["value"] = "`" .. statusText .. "`",
 			["inline"] = false
 		},
 		{
@@ -3365,37 +3346,33 @@ local function webhook(text, stand, color, attValue, isSlotMatch)
 		}
 	}
 
-	if isSlotMatch then
+	if isMatch then
 		table.insert(fields, 3, {
 			["name"] = "Matched Target",
-			["value"] = "`Yes`",
+			["value"] = "`#" .. tostring(slotNumber or "?") .. "`",
 			["inline"] = true
 		})
 	end
 
+	-- Reserve a serialized request slot instead of dropping a target result.
+	-- Each Arrow produces at most one event, so this protects Discord's rate
+	-- limit without allowing a previous miss to swallow a later match.
 	local now = os.clock()
-	if now < webhookNextRequestAt then
-		return false, "Webhook rate limited locally."
-	end
-	-- Serialized farm events can otherwise create unbounded request tasks and
-	-- notification spam. Keep a conservative local minimum interval.
-	webhookNextRequestAt = now + 0.75
+	local sendAt = math.max(now, webhookNextRequestAt)
+	webhookNextRequestAt = sendAt + 0.8
+	if sendAt > now then task.wait(sendAt - now) end
 	local ok, response = pcall(function()
-		local content = ""
-		if shouldTagEveryone(attValue, isSlotMatch) then
-			content = tagperson
-		end
 		return requestFunction({
 			Url = webhookurl,
 			Method = "POST",
 			Headers = { ["Content-Type"] = "application/json" },
 			Body = jsonservice:JSONEncode({
-				["content"] = content,
+				["content"] = "",
 				["embeds"] = {{
 					["title"] = title,
 					["description"] = "━━━━━━━━━━━━━━━━━━",
 					["type"] = "rich",
-					["color"] = color or tonumber(0xFFFF00),
+					["color"] = embedColor,
 					["fields"] = fields,
 					["footer"] = {
 						["text"] = "⚡ Luna Hub • Stand Upright Rebooted"
@@ -3465,8 +3442,6 @@ local function popupfunc(text, toroka, stand)
 			repeat
 				local current = readStandData()
 				if current == "None" then
-					webhook("ROKA USED: " .. originalAtt:upper() .. " " .. getDisplayName(originalStand):upper(),
-						originalStand, 0xFF0000, originalAtt, false)
 					return
 				end
 				if current and current ~= originalStand then return end
@@ -3654,6 +3629,122 @@ local function readSavedState(path)
 	if result ~= nil and type(result) ~= "table" then return nil, "Invalid saved state: " .. path end
 	return result
 end
+
+-- Persistent Charged Arrow usage statistics. Counts are account-specific and
+-- only advance after the game confirms that an Arrow produced a Stand.
+executiveUI.cArrowStatsFile = "sur_carrow_stats_v1_" .. accountKey .. ".json"
+executiveUI.cArrowStatsCacheKey = "SURCArrowStatsV1"
+executiveUI.cArrowPersistenceWarningShown = false
+
+function executiveUI.cArrowPeriodKeys()
+	local ok, dayKey, weekKey, monthKey = pcall(function()
+		return os.date("%Y-%m-%d"), os.date("%Y-W%W"), os.date("%Y-%m")
+	end)
+	if ok then return dayKey, weekKey, monthKey end
+	local dayNumber = math.floor(os.time() / 86400)
+	return tostring(dayNumber), tostring(math.floor(dayNumber / 7)), tostring(math.floor(dayNumber / 30))
+end
+
+function executiveUI.safeCArrowCounter(value)
+	local number = tonumber(value)
+	if not number or number ~= number or number < 0 then return 0 end
+	return math.floor(math.min(number, 1000000000000000))
+end
+
+executiveUI.cArrowStats = {
+	total = 0,
+	day = 0,
+	week = 0,
+	month = 0,
+	dayKey = "",
+	weekKey = "",
+	monthKey = "",
+}
+
+function executiveUI.copyCArrowStats(source)
+	return {
+		total = executiveUI.safeCArrowCounter(source and source.total),
+		day = executiveUI.safeCArrowCounter(source and source.day),
+		week = executiveUI.safeCArrowCounter(source and source.week),
+		month = executiveUI.safeCArrowCounter(source and source.month),
+		dayKey = type(source and source.dayKey) == "string" and source.dayKey or "",
+		weekKey = type(source and source.weekKey) == "string" and source.weekKey or "",
+		monthKey = type(source and source.monthKey) == "string" and source.monthKey or "",
+	}
+end
+
+function executiveUI.refreshCArrowPeriods()
+	local dayKey, weekKey, monthKey = executiveUI.cArrowPeriodKeys()
+	local changed = false
+	if executiveUI.cArrowStats.dayKey ~= dayKey then
+		executiveUI.cArrowStats.dayKey, executiveUI.cArrowStats.day = dayKey, 0
+		changed = true
+	end
+	if executiveUI.cArrowStats.weekKey ~= weekKey then
+		executiveUI.cArrowStats.weekKey, executiveUI.cArrowStats.week = weekKey, 0
+		changed = true
+	end
+	if executiveUI.cArrowStats.monthKey ~= monthKey then
+		executiveUI.cArrowStats.monthKey, executiveUI.cArrowStats.month = monthKey, 0
+		changed = true
+	end
+	return changed
+end
+
+function executiveUI.cacheCArrowStats()
+	local key = executiveUI.cArrowStatsCacheKey
+	getgenv()[key] = getgenv()[key] or {}
+	getgenv()[key][accountKey] = executiveUI.copyCArrowStats(executiveUI.cArrowStats)
+end
+
+function executiveUI.saveCArrowStats()
+	executiveUI.refreshCArrowPeriods()
+	executiveUI.cacheCArrowStats()
+	local saved = persistState(executiveUI.cArrowStatsFile, executiveUI.cArrowStats)
+	if not saved and not executiveUI.cArrowPersistenceWarningShown then
+		executiveUI.cArrowPersistenceWarningShown = true
+		warn("CArrow statistics are session-only because writefile is unavailable.")
+	end
+	return saved
+end
+
+function executiveUI.loadCArrowStats()
+	local key = executiveUI.cArrowStatsCacheKey
+	getgenv()[key] = getgenv()[key] or {}
+	local saved, readError = readSavedState(executiveUI.cArrowStatsFile)
+	local candidate = saved or getgenv()[key][accountKey]
+	if type(candidate) == "table" then executiveUI.cArrowStats = executiveUI.copyCArrowStats(candidate) end
+	if readError then warn(readError) end
+	local changed = executiveUI.refreshCArrowPeriods()
+	executiveUI.cacheCArrowStats()
+	if changed and saved then executiveUI.saveCArrowStats() end
+end
+
+function executiveUI.incrementCArrowStats()
+	executiveUI.refreshCArrowPeriods()
+	local stats = executiveUI.cArrowStats
+	stats.total = executiveUI.safeCArrowCounter(stats.total) + 1
+	stats.day = executiveUI.safeCArrowCounter(stats.day) + 1
+	stats.week = executiveUI.safeCArrowCounter(stats.week) + 1
+	stats.month = executiveUI.safeCArrowCounter(stats.month) + 1
+	executiveUI.saveCArrowStats()
+end
+
+function executiveUI.resetCArrowStats()
+	local dayKey, weekKey, monthKey = executiveUI.cArrowPeriodKeys()
+	executiveUI.cArrowStats = {
+		total = 0,
+		day = 0,
+		week = 0,
+		month = 0,
+		dayKey = dayKey,
+		weekKey = weekKey,
+		monthKey = monthKey,
+	}
+	executiveUI.saveCArrowStats()
+end
+
+executiveUI.loadCArrowStats()
 
 local function readStandRecord(prefix)
 	local data = localplr:FindFirstChild("Data")
@@ -4114,8 +4205,7 @@ local function doStandFarm()
 					activeItem = nil
 					local dn = getDisplayName(stand)
 					notif("MATCH!", "Target " .. slotNum .. ": " .. att .. " " .. dn)
-					task.spawn(webhook, "MATCH FOUND: " .. att:upper() .. " " .. dn:upper()
-						.. " (Target " .. slotNum .. ")", stand, 0x00FF00, att, true)
+					task.spawn(webhook, "match", stand, att, slotNum)
 					if autoStoreMatches then
 						local stored, detail = storeMatchedStand(stand, att, running)
 						if not stored then
@@ -4126,8 +4216,6 @@ local function doStandFarm()
 						farmStats.stored = farmStats.stored + 1
 						pendingArrowNotice = false
 						notif("Stand Stored", dn .. " / " .. att .. " -> " .. detail)
-						task.spawn(webhook, "STORED: " .. att:upper() .. " " .. dn:upper()
-							.. " -> " .. detail, stand, 0x00FF00, att, true)
 						-- Re-read the stand taken OUT of storage before deciding what to use.
 						continue
 					end
@@ -4138,8 +4226,7 @@ local function doStandFarm()
 				end
 				if pendingArrowNotice then
 					pendingArrowNotice = false
-					task.spawn(webhook, "ARROW #" .. farmStats.arrows .. ": " .. att:upper()
-						.. " " .. getDisplayName(stand):upper(), stand, 0xFFFF00, att, false)
+					task.spawn(webhook, "miss", stand, att)
 				end
 			end
 
@@ -4197,12 +4284,13 @@ local function doStandFarm()
 			errors = 0
 			if usingArrow then
 				farmStats.arrows = farmStats.arrows + 1
+				if itemName == "Charged Arrow" then
+					executiveUI.incrementCArrowStats()
+				end
 				pendingArrowNotice = true
 				-- The next iteration waits for attribute replication and checks the slots.
 			else
 				farmStats.rokas = farmStats.rokas + 1
-				task.spawn(webhook, "ROKA USED: " .. att:upper() .. " " .. getDisplayName(stand):upper(),
-					stand, 0xFF0000, att, false)
 			end
 		end
 	end, function(message) return debug.traceback(tostring(message), 2) end)
@@ -4547,7 +4635,27 @@ local function buildFarmDashboard()
 	local fillRound = Instance.new("UICorner", executiveUI.dashboardRollFill)
 	fillRound.CornerRadius = UDim.new(1, 0)
 
-	local stats = card("Farm Statistics", "▥", UDim2.new(0.5, 3, 0, 194), UDim2.new(0.5, -3, 0, 176))
+	local stats = card("CArrow Statistics", "▥", UDim2.new(0.5, 3, 0, 194), UDim2.new(0.5, -3, 0, 176))
+	local resetStats = Instance.new("TextButton")
+	resetStats.Size = UDim2.fromOffset(52, 21)
+	resetStats.Position = UDim2.new(1, -64, 0, 9)
+	resetStats.BackgroundColor3 = Color3.fromRGB(53, 31, 91)
+	resetStats.BorderSizePixel = 0
+	resetStats.AutoButtonColor = false
+	resetStats.Text = "Reset"
+	resetStats.Font = Enum.Font.GothamBold
+	resetStats.TextSize = 8
+	resetStats.TextColor3 = Color3.fromRGB(205, 166, 255)
+	resetStats.Parent = stats
+	local resetRound = Instance.new("UICorner", resetStats)
+	resetRound.CornerRadius = UDim.new(0, 5)
+	local resetOutline = Instance.new("UIStroke", resetStats)
+	resetOutline.Color = Color3.fromRGB(126, 75, 218)
+	resetOutline.Transparency = 0.35
+	resetStats.MouseButton1Click:Connect(function()
+		executiveUI.resetCArrowStats()
+		notif("CArrow Statistics", "Total, daily, weekly and monthly counters reset.")
+	end)
 	local function statBox(text, xScale, xOffset, y)
 		local box = Instance.new("Frame")
 		box.Size = UDim2.new(0.5, -18, 0, 45)
@@ -4562,10 +4670,10 @@ local function buildFarmDashboard()
 		return label
 	end
 	executiveUI.dashboardStats = {
-		statBox("Arrows Used\n0", 0, 12, 47),
-		statBox("Rokas Used\n0", 0.5, 6, 47),
-		statBox("Matches Found\n0", 0, 12, 101),
-		statBox("Stands Stored\n0", 0.5, 6, 101),
+		statBox("Total CArrows\n0", 0, 12, 47),
+		statBox("Today\n0", 0.5, 6, 47),
+		statBox("This Week\n0", 0, 12, 101),
+		statBox("This Month\n0", 0.5, 6, 101),
 	}
 end
 
@@ -6115,40 +6223,40 @@ Tabs.Settings:CreateSection("WEBHOOK NOTIFICATIONS")
 
 Tabs.Settings:CreateInput({
 	Name = "Webhook URL",
-	CurrentValue = "",
+	CurrentValue = webhookurl,
 	PlaceholderText = "https://discord.com/api/webhooks/...",
 	RemoveTextAfterFocusLost = false,
+	Flag = "WebhookURL",
 	Callback = function(Text)
 		local candidate = cleanText(Text)
 		if candidate == "" or isDiscordWebhookUrl(candidate) then
 			webhookurl = candidate
 		else
+			Rayfield._compat.flags.WebhookURL = webhookurl
 			notif("Webhook", "Use a Discord webhook URL (https://discord.com/api/webhooks/...).")
 		end
 	end,
 })
 
 Tabs.Settings:CreateToggle({
-	Name = "Allow @everyone Mentions",
-	CurrentValue = false,
-	Flag = "WebhookMentionsEnabled",
+	Name = "Notify When Stand Does Not Match",
+	CurrentValue = true,
+	Flag = "WebhookNotifyWrongStand",
 	Callback = function(Value)
-		webhookMentionEnabled = Value == true
+		webhookNotifyWrongStand = Value == true
 	end,
 })
 
-Tabs.Settings:CreateDropdown({
-	Name = "Tag @everyone for Attributes",
-	Options = {"Strong","Powerful","Manic","Tough","Enrage","Sloppy","Lethargic","Godly","Daemon","Glass Cannon","Invincible","Scourge","Tragic","Hacker","Legendary"},
-	CurrentOption = {},
-	MultipleOptions = true,
-	Flag = "WebhookTagAtts",
-	Callback = function(Options)
-		webhookTagAtts = type(Options) == "table" and table.clone(Options) or {}
+Tabs.Settings:CreateToggle({
+	Name = "Notify When Target Stand Is Found",
+	CurrentValue = true,
+	Flag = "WebhookNotifyMatchedStand",
+	Callback = function(Value)
+		webhookNotifyMatchedStand = Value == true
 	end,
 })
 
-Tabs.Settings:CreateSection("Mentions require opt-in  •  Target match can tag when enabled")
+Tabs.Settings:CreateSection("Only wrong-target and matched-target results are sent")
 
 --================== TAB: AUTO LAIR ==================--
 local useLairNPCName = "i_stabman"
@@ -7290,7 +7398,7 @@ executiveUI.buildSettingsWorkspace = function()
 	webhookInput.BackgroundColor3 = Color3.fromRGB(31, 26, 65)
 	webhookInput.BorderSizePixel = 0
 	webhookInput.ClearTextOnFocus = false
-	webhookInput.Text = ""
+	webhookInput.Text = webhookurl
 	webhookInput.PlaceholderText = "https://discord.com/api/webhooks/..."
 	webhookInput.PlaceholderColor3 = Color3.fromRGB(105, 96, 138)
 	webhookInput.TextColor3 = Color3.fromRGB(218, 211, 237)
@@ -7300,32 +7408,33 @@ executiveUI.buildSettingsWorkspace = function()
 	webhookInput.Parent = webhookPanel
 	rounded(webhookInput, 5)
 	outline(webhookInput, Color3.fromRGB(91, 53, 162), 0.44)
+	local previousWebhookSetter = Rayfield._compat.bindings.WebhookURL
+	local function setWebhookValue(value)
+		local candidate = cleanText(value)
+		if candidate ~= "" and not isDiscordWebhookUrl(candidate) then
+			Rayfield._compat.flags.WebhookURL = webhookurl
+			webhookInput.Text = webhookurl
+			return false
+		end
+		if previousWebhookSetter then pcall(previousWebhookSetter, candidate) end
+		webhookurl = candidate
+		Rayfield._compat.flags.WebhookURL = candidate
+		webhookInput.Text = candidate
+		return true
+	end
+	Rayfield:_bindFlag("WebhookURL", webhookurl, setWebhookValue)
+	setWebhookValue(Rayfield._compat.flags.WebhookURL)
 	webhookInput.FocusLost:Connect(function()
 		local candidate = cleanText(webhookInput.Text)
 		if candidate == "" or isDiscordWebhookUrl(candidate) then
-			webhookurl = candidate
+			Rayfield:_setFlag("WebhookURL", candidate, false)
 		else
 			notif("Webhook", "Use a Discord webhook URL (https://discord.com/api/webhooks/...).")
 			webhookInput.Text = webhookurl
 		end
 	end)
-	bindToggle(webhookPanel, 69, "Allow @everyone Mentions", "WebhookMentionsEnabled")
-	text(webhookPanel, "Tag @everyone for Attributes", UDim2.new(0.48, -12, 0, 27), UDim2.fromOffset(10, 103), Enum.Font.GothamSemibold, Color3.fromRGB(218, 211, 237), 8)
-	local attributeField = Instance.new("TextButton")
-	attributeField.Size = UDim2.new(0.52, -18, 0, 25)
-	attributeField.Position = UDim2.new(0.48, 8, 0, 104)
-	attributeField.BackgroundColor3 = Color3.fromRGB(31, 26, 65)
-	attributeField.BorderSizePixel = 0
-	attributeField.AutoButtonColor = false
-	attributeField.Text = "None"
-	attributeField.TextXAlignment = Enum.TextXAlignment.Left
-	attributeField.TextTruncate = Enum.TextTruncate.AtEnd
-	attributeField.Font = Enum.Font.GothamSemibold
-	attributeField.TextSize = 8
-	attributeField.TextColor3 = Color3.fromRGB(215, 205, 237)
-	attributeField.Parent = webhookPanel
-	rounded(attributeField, 5)
-	outline(attributeField, Color3.fromRGB(91, 53, 162), 0.44)
+	bindToggle(webhookPanel, 69, "Notify when Stand does not match", "WebhookNotifyWrongStand")
+	bindToggle(webhookPanel, 104, "Notify when target Stand is found", "WebhookNotifyMatchedStand")
 	local infoRow = Instance.new("Frame")
 	infoRow.Size = UDim2.new(1, -16, 0, 24)
 	infoRow.Position = UDim2.fromOffset(8, 139)
@@ -7335,93 +7444,17 @@ executiveUI.buildSettingsWorkspace = function()
 	infoRow.Parent = webhookPanel
 	rounded(infoRow, 5)
 	icon(infoRow, "info", 13, UDim2.fromOffset(9, 6), Color3.fromRGB(197, 130, 255))
-	text(infoRow, "Mentions require opt-in  •  Target match can tag when enabled", UDim2.new(1, -34, 1, 0), UDim2.fromOffset(29, 0), Enum.Font.GothamSemibold, Color3.fromRGB(196, 151, 244), 7)
-
-	local attributePopup = Instance.new("Frame")
-	-- Parent the popup to the workspace rather than the Webhook card. With
-	-- Sibling ZIndexBehavior, a child cannot draw over cards created after its
-	-- parent; making it a workspace sibling keeps the selector above every card.
-	attributePopup.Size = UDim2.new(0.286, -20, 0, 142)
-	attributePopup.Position = UDim2.new(0.264, 6, 0, 132)
-	attributePopup.BackgroundColor3 = Color3.fromRGB(12, 15, 33)
-	attributePopup.BorderSizePixel = 0
-	attributePopup.Visible = false
-	attributePopup.ZIndex = 60
-	attributePopup.Parent = shell
-	rounded(attributePopup, 6)
-	outline(attributePopup, Color3.fromRGB(132, 74, 232), 0.12)
-	local popupTitle = text(attributePopup, "Select attributes", UDim2.new(1, -54, 0, 25), UDim2.fromOffset(8, 3), Enum.Font.GothamBold, Color3.fromRGB(235, 227, 250), 8, 61)
-	local doneButton = Instance.new("TextButton")
-	doneButton.Size = UDim2.fromOffset(38, 21)
-	doneButton.Position = UDim2.new(1, -43, 0, 4)
-	doneButton.BackgroundColor3 = Color3.fromRGB(97, 53, 178)
-	doneButton.BorderSizePixel = 0
-	doneButton.Text = "Done"
-	doneButton.Font = Enum.Font.GothamBold
-	doneButton.TextSize = 7
-	doneButton.TextColor3 = Color3.fromRGB(245, 238, 255)
-	doneButton.ZIndex = 62
-	doneButton.Parent = attributePopup
-	rounded(doneButton, 4)
-	local optionScroll = Instance.new("ScrollingFrame")
-	optionScroll.Size = UDim2.new(1, -12, 0, 106)
-	optionScroll.Position = UDim2.fromOffset(6, 30)
-	optionScroll.BackgroundTransparency = 1
-	optionScroll.BorderSizePixel = 0
-	optionScroll.ScrollBarThickness = 2
-	optionScroll.ScrollBarImageColor3 = Color3.fromRGB(135, 76, 235)
-	optionScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-	optionScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	optionScroll.ZIndex = 61
-	optionScroll.Parent = attributePopup
-	local optionLayout = Instance.new("UIListLayout")
-	optionLayout.Padding = UDim.new(0, 3)
-	optionLayout.Parent = optionScroll
-	local selectedTags = {}
-	local optionRows = {}
-	local previousTagSetter = Rayfield._compat.bindings.WebhookTagAtts
-	local function refreshTagVisuals()
-		attributeField.Text = #selectedTags > 0 and ("  " .. table.concat(selectedTags, ", ")) or "  None"
-		for name, row in pairs(optionRows) do
-			local active = table.find(selectedTags, name) ~= nil
-			row.BackgroundColor3 = active and Color3.fromRGB(76, 46, 138) or Color3.fromRGB(22, 24, 47)
-			row.TextColor3 = active and Color3.fromRGB(238, 226, 255) or Color3.fromRGB(178, 168, 204)
-		end
-	end
-	local function applyTagSelection(values)
-		selectedTags = type(values) == "table" and table.clone(values) or {}
-		if previousTagSetter then pcall(previousTagSetter, selectedTags) end
-		refreshTagVisuals()
-	end
-	Rayfield:_bindFlag("WebhookTagAtts", selectedTags, applyTagSelection)
-	for _, attributeName in ipairs({"Strong","Powerful","Manic","Tough","Enrage","Sloppy","Lethargic","Godly","Daemon","Glass Cannon","Invincible","Scourge","Tragic","Hacker","Legendary"}) do
-		local option = Instance.new("TextButton")
-		option.Size = UDim2.new(1, -2, 0, 22)
-		option.BackgroundColor3 = Color3.fromRGB(22, 24, 47)
-		option.BorderSizePixel = 0
-		option.AutoButtonColor = false
-		option.Text = "  " .. attributeName
-		option.TextXAlignment = Enum.TextXAlignment.Left
-		option.Font = Enum.Font.GothamSemibold
-		option.TextSize = 7
-		option.TextColor3 = Color3.fromRGB(178, 168, 204)
-		option.ZIndex = 62
-		option.Parent = optionScroll
-		rounded(option, 4)
-		optionRows[attributeName] = option
-		option.MouseButton1Click:Connect(function()
-			local nextValues = table.clone(selectedTags)
-			local found = table.find(nextValues, attributeName)
-			if found then table.remove(nextValues, found) else table.insert(nextValues, attributeName) end
-			Rayfield:_setFlag("WebhookTagAtts", nextValues, false)
-		end)
-	end
-	refreshTagVisuals()
-	attributeField.MouseButton1Click:Connect(function() attributePopup.Visible = not attributePopup.Visible end)
-	doneButton.MouseButton1Click:Connect(function() attributePopup.Visible = false end)
+	text(infoRow, "Only these two Stand results are sent", UDim2.new(1, -34, 1, 0), UDim2.fromOffset(29, 0), Enum.Font.GothamSemibold, Color3.fromRGB(196, 151, 244), 7)
 
 	local dataPanel = panel("Data Management", "Manage your configuration data.", "database", UDim2.new(0.55, 4, 0, 0), UDim2.new(0.45, -4, 0, 172))
 	actionButton(dataPanel, 39, "Save Configuration", "download", function()
+		local candidate = cleanText(webhookInput.Text)
+		if candidate ~= "" and not isDiscordWebhookUrl(candidate) then
+			notif("Webhook", "Use a valid Discord webhook URL before saving.")
+			webhookInput.Text = webhookurl
+			return
+		end
+		Rayfield:_setFlag("WebhookURL", candidate, false)
 		local ok, err = safeSaveConfiguration()
 		notif("Configuration", ok and "Settings saved successfully." or (err or "Failed to save settings."))
 	end)
@@ -7518,11 +7551,12 @@ local function updateExecutiveDashboard()
 		end
 	end
 	if executiveUI.dashboardStats then
-		local stats = farmStats or {}
-		executiveUI.dashboardStats[1].Text = "Arrows Used\n" .. tostring(stats.arrows or 0)
-		executiveUI.dashboardStats[2].Text = "Rokas Used\n" .. tostring(stats.rokas or 0)
-		executiveUI.dashboardStats[3].Text = "Matches Found\n" .. tostring(stats.matches or 0)
-		executiveUI.dashboardStats[4].Text = "Stands Stored\n" .. tostring(stats.stored or 0)
+		if executiveUI.refreshCArrowPeriods() then executiveUI.saveCArrowStats() end
+		local cArrowStats = executiveUI.cArrowStats
+		executiveUI.dashboardStats[1].Text = "Total CArrows\n" .. tostring(cArrowStats.total or 0)
+		executiveUI.dashboardStats[2].Text = "Today\n" .. tostring(cArrowStats.day or 0)
+		executiveUI.dashboardStats[3].Text = "This Week\n" .. tostring(cArrowStats.week or 0)
+		executiveUI.dashboardStats[4].Text = "This Month\n" .. tostring(cArrowStats.month or 0)
 	end
 	if executiveUI.dashboardFarmSection then
 		executiveUI.dashboardFarmSection:Set("Stand Farm  •  " .. (getgenv().farmstands and "RUNNING" or "OFF"))
