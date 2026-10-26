@@ -1,1335 +1,1582 @@
---[[
-    ================================================================================
-    HẮC BẠCH BENTO UI LIBRARY — V2.0 (FULL COMPATIBILITY & BUGFIX EDITION)
-    - Khớp 100% thiết kế Bento (Ảnh 1) & Nút rút gọn `<` mép phải (Ảnh 2)
-    - Tương thích 100% với LunaHub_Executive.lua (Flags, Dropdown, Slider, Input...)
-    ================================================================================
-]]
-
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local MarketplaceService = game:GetService("MarketplaceService")
-local StatsService = game:GetService("Stats")
-local HttpService = game:GetService("HttpService")
+-- Luna Bento UI: existing SUR control API and hover telemetry.
+-- Server age is read from game HUD; unavailable data is displayed explicitly.
 
 local function createEmbeddedLunaUI()
-    local LocalPlayer = Players.LocalPlayer
-    local Mouse = LocalPlayer:GetMouse()
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ContentProvider = game:GetService("ContentProvider")
+local Lighting = game:GetService("Lighting")
+local HttpService = game:GetService("HttpService")
 
-    local Library = {}
-    Library._compat = {
-        flags = {},
-        bindings = {},
-        config = nil,
-    }
 
-    -- Bảng màu Hắc Bạch Kiến Trúc Tối Giản (Đúng chuẩn ảnh mẫu + Tông Đen Trắng)
-    local PALETTE = {
-        bg          = Color3.fromRGB(14, 14, 16),    -- Đen nền sâu
-        panel       = Color3.fromRGB(22, 23, 27),    -- Nền khung Bento chính
-        card        = Color3.fromRGB(32, 34, 40),    -- Nền các ô Bento Card
-        cardHover   = Color3.fromRGB(44, 46, 54),    -- Khi rê chuột vào ô
-        accent      = Color3.fromRGB(246, 246, 250), -- Trắng Bạch Ngọc (Active)
-        accentMuted = Color3.fromRGB(180, 182, 192), -- Bạc Sương Khói
-        border      = Color3.fromRGB(68, 70, 80),    -- Viền mảnh quanh các khối
-        borderLight = Color3.fromRGB(225, 225, 235), -- Viền sáng Bạch Ngọc
-        text        = Color3.fromRGB(250, 250, 252), -- Chữ trắng chính
-        textSub     = Color3.fromRGB(162, 164, 174), -- Chữ xám phụ
-        textDark    = Color3.fromRGB(12, 12, 15),    -- Chữ đen khi nền trắng
-    }
+--================== CẤU HÌNH TRUNG TÂM ==================--
+local UI_CONFIG = {
+    Theme = "HacBach",
+    LogoID = "",
+    HubName = "HẮC BẠCH VÔ THƯỜNG",
+    HubSubtitle = "THÁI CỰC SONG ĐIỆN  •  STAND UPRIGHT REBOOTED"
+}
 
-    Library.THEMES = {
-        ["LunaViolet"] = PALETTE,
-        ["HacBach"]    = PALETTE,
-    }
-    Library.COLORS = PALETTE
+local Library = {}
+Library._compat = {
+    flags = {},
+    bindings = {},
+    config = nil,
+}
 
-    -- Dọn sạch kết nối cũ khi thực thi lại script (Chống lag / Memory Leak)
-    local oldConns = getgenv and getgenv().HacBachBentoConns
-    if type(oldConns) == "table" then
-        for _, c in ipairs(oldConns) do
-            pcall(function() c:Disconnect() end)
+-- BẢNG MÀU HẮC BẠCH KIẾN TRÚC V3 (HIGH-CONTRAST YIN-YANG PALETTE)
+Library.THEMES = {
+    ["HacBach"] = {
+        bg          = Color3.fromRGB(7, 7, 9),       -- Đen Huyền Vũ (Nền đại điện)
+        panel       = Color3.fromRGB(13, 13, 16),    -- Đen Mặc Thạch (Khung khu vực)
+        card        = Color3.fromRGB(19, 19, 23),    -- Xám Hắc Ngọc (Thẻ tính năng)
+        navHover    = Color3.fromRGB(28, 28, 34),    -- Xám Vân Khói (Khi lướt chuột)
+        accent1     = Color3.fromRGB(246, 246, 250), -- Trắng Bạch Ngọc (Dương cực)
+        accent2     = Color3.fromRGB(178, 178, 188), -- Bạc Hàn Thiết (Viền sáng phụ)
+        text        = Color3.fromRGB(250, 250, 252), -- Chữ Bạch Ngọc
+        textInverse = Color3.fromRGB(9, 9, 12),      -- Chữ Hắc Mặc (Trên nền Trắng)
+        textSub     = Color3.fromRGB(165, 165, 175), -- Chữ Xám Bạc
+        muted       = Color3.fromRGB(98, 98, 108),   -- Chữ Xám Tro
+        glow        = Color3.fromRGB(255, 255, 255), -- Hào quang Bạch Quang
+        border      = Color3.fromRGB(48, 48, 56),    -- Viền Tĩnh
+    },
+    ["BachNgoc"] = {
+        bg          = Color3.fromRGB(14, 14, 18),
+        panel       = Color3.fromRGB(22, 22, 27),
+        card        = Color3.fromRGB(29, 29, 35),
+        navHover    = Color3.fromRGB(40, 40, 48),
+        accent1     = Color3.fromRGB(255, 255, 255),
+        accent2     = Color3.fromRGB(210, 210, 220),
+        text        = Color3.fromRGB(255, 255, 255),
+        textInverse = Color3.fromRGB(10, 10, 14),
+        textSub     = Color3.fromRGB(185, 185, 195),
+        muted       = Color3.fromRGB(120, 120, 130),
+        glow        = Color3.fromRGB(245, 245, 250),
+        border      = Color3.fromRGB(68, 68, 78),
+    },
+    ["ThuyMac"] = {
+        bg          = Color3.fromRGB(4, 4, 6),
+        panel       = Color3.fromRGB(10, 10, 13),
+        card        = Color3.fromRGB(15, 15, 19),
+        navHover    = Color3.fromRGB(24, 24, 30),
+        accent1     = Color3.fromRGB(228, 228, 236),
+        accent2     = Color3.fromRGB(145, 145, 156),
+        text        = Color3.fromRGB(242, 242, 247),
+        textInverse = Color3.fromRGB(8, 8, 10),
+        textSub     = Color3.fromRGB(150, 150, 162),
+        muted       = Color3.fromRGB(88, 88, 98),
+        glow        = Color3.fromRGB(220, 220, 230),
+        border      = Color3.fromRGB(40, 40, 48),
+    },
+    -- Giữ bí danh LunaViolet trỏ về HacBach để tương thích code gốc
+    ["LunaViolet"] = nil,
+}
+Library.THEMES["LunaViolet"] = Library.THEMES["HacBach"]
+Library.COLORS = Library.THEMES["HacBach"]
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- Quản lý kết nối sạch sẽ, không rò rỉ bộ nhớ khi chạy lại script
+local previousPlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
+local previousGui = previousPlayerGui and previousPlayerGui:FindFirstChild("TienTaiStandHub")
+if previousGui then previousGui:Destroy() end
+local oldUIConnections = getgenv and getgenv().LunaHubUIConnections
+if type(oldUIConnections) == "table" then
+    for _, connection in ipairs(oldUIConnections) do
+        pcall(function() connection:Disconnect() end)
+    end
+end
+local uiConnections = {}
+if getgenv then
+    getgenv().LunaHubUIConnections = uiConnections
+end
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(uiConnections, connection)
+    return connection
+end
+
+local function cloneArray(list)
+    local result = {}
+    if type(list) == "table" then
+        for _, value in ipairs(list) do
+            table.insert(result, value)
         end
     end
-    local uiConnections = {}
-    if getgenv then
-        getgenv().HacBachBentoConns = uiConnections
-    end
-    local function connect(sig, fn)
-        local c = sig:Connect(fn)
-        table.insert(uiConnections, c)
-        return c
-    end
+    return result
+end
 
-    local function tween(obj, props, duration, style, dir)
-        if not obj then return nil end
-        local t = TweenService:Create(
-            obj,
-            TweenInfo.new(duration or 0.26, style or Enum.EasingStyle.Quart, dir or Enum.EasingDirection.Out),
-            props
-        )
-        t:Play()
-        return t
-    end
+function Library:_setFlag(flag, value, fromLoad)
+    if not flag or flag == "" then return end
+    self._compat.flags[flag] = value
+    local setter = self._compat.bindings[flag]
+    if setter then setter(value, fromLoad) end
+end
 
-    local function makeCorner(parent, radius)
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, radius or 10)
-        c.Parent = parent
-        return c
+function Library:_bindFlag(flag, defaultValue, setter)
+    if not flag or flag == "" then return end
+    if self._compat.flags[flag] == nil then
+        self._compat.flags[flag] = defaultValue
     end
+    self._compat.bindings[flag] = setter
+end
 
-    local function makeStroke(parent, color, thickness, transparency)
-        local s = Instance.new("UIStroke")
-        s.Color = color or PALETTE.border
-        s.Thickness = thickness or 1
-        s.Transparency = transparency or 0.35
-        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Parent = parent
-        return s
-    end
+--================== HỆ THỐNG TWEEN & BLUR MƯỢT TUYỆT ĐỐI ==================--
+local function tween(obj, goal, duration, style, dir)
+    if not obj then return nil end
+    style = style or Enum.EasingStyle.Exponential
+    dir = dir or Enum.EasingDirection.Out
+    local t = TweenService:Create(obj, TweenInfo.new(duration or 0.26, style, dir), goal)
+    t:Play()
+    return t
+end
 
-    local function cloneArray(list)
-        local res = {}
-        if type(list) == "table" then
-            for _, v in ipairs(list) do table.insert(res, v) end
-        end
-        return res
-    end
+local function corner(r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 6)
+    return c
+end
 
-    --================== HỆ THỐNG ICON ATLAS CHUẨN (FIX LỖI ẢNH VỠ) ==================--
-    local LUNA_ICON_ATLAS = {
-        crown = {16898613044, 404, 918}, home = {16898613509, 820, 147},
-        crosshair = {16898613044, 453, 869}, box = {16898612819, 771, 196},
-        flame = {16898613353, 967, 306}, wrench = {16898613869, 820, 906},
-        settings = {16898613777, 771, 257}, ["moon-star"] = {16898613613, 355, 869},
-        info = {16898613509, 612, 869}, clock = {16898613044, 771, 661},
-        zap = {16898613869, 918, 906}, ["circle-check"] = {16898612819, 869, 955},
-        ["refresh-cw"] = {16898613699, 404, 869}, package = {16898613613, 918, 196},
-        link = {16898613509, 918, 453}, database = {16898613044, 710, 869},
-        download = {16898613044, 820, 906}, upload = {16898613869, 612, 869},
-        ["trash-2"] = {16898613869, 257, 918}, shield = {16898613777, 869, 0},
-        scan = {16898613699, 967, 196}, sprout = {16898613777, 918, 306},
-        user = {16898613869, 661, 869}, infinity = {16898613509, 661, 820},
-        ["list-ordered"] = {16898613509, 710, 918}, activity = {16898612629, 514, 771},
-        send = {16898613699, 967, 857}, eye = {16898613353, 771, 563},
-        gauge = {16898613353, 771, 955}, cpu = {16898613044, 196, 869},
-        ["chevron-right"] = {16898612819, 869, 759}, monitor = {16898613613, 404, 820},
-        ["shield-check"] = {16898613777, 820, 257},
+-- BlurEffect giữ cố định, chỉ Tween Size -> Không bao giờ gây khựng frame khi bật/tắt menu
+local activeBlurTween = nil
+local function attachCornerBrackets(parent, armLen, thickness, color, transparency, inset)
+    if parent:FindFirstChild("HacBach_Corners") then return end
+    armLen = armLen or 8
+    thickness = thickness or 1
+    color = color or Color3.fromRGB(235, 235, 242)
+    transparency = transparency or 0.35
+    inset = inset or 2
+
+    local holder = Instance.new("Frame")
+    holder.Name = "HacBach_Corners"
+    holder.Size = UDim2.new(1, 0, 1, 0)
+    holder.BackgroundTransparency = 1
+    holder.ZIndex = math.max(parent.ZIndex + 1, 2)
+    holder.Active = false
+    holder.Parent = parent
+
+    local corners = {
+        {ax = 0, ay = 0, px = inset, py = inset},
+        {ax = 1, ay = 0, px = -inset, py = inset},
+        {ax = 0, ay = 1, px = inset, py = -inset},
+        {ax = 1, ay = 1, px = -inset, py = -inset},
     }
 
-    local function applyLunaIcon(imageLabel, iconName, color)
-        local icon = LUNA_ICON_ATLAS[iconName] or LUNA_ICON_ATLAS["home"]
-        imageLabel.Image = "rbxassetid://" .. tostring(icon[1])
-        imageLabel.ImageRectSize = Vector2.new(48, 48)
-        imageLabel.ImageRectOffset = Vector2.new(icon[2], icon[3])
-        imageLabel.ImageColor3 = color or PALETTE.text
-        imageLabel.ImageTransparency = 0
-        imageLabel.ScaleType = Enum.ScaleType.Stretch
-        return true
-    end
-    Library.ApplyLunaIcon = applyLunaIcon
+    for _, cfg in ipairs(corners) do
+        local hBar = Instance.new("Frame")
+        hBar.AnchorPoint = Vector2.new(cfg.ax, cfg.ay)
+        hBar.Position = UDim2.new(cfg.ax, cfg.px, cfg.ay, cfg.py)
+        hBar.Size = UDim2.fromOffset(armLen, thickness)
+        hBar.BackgroundColor3 = color
+        hBar.BackgroundTransparency = transparency
+        hBar.BorderSizePixel = 0
+        hBar.ZIndex = holder.ZIndex
+        hBar.Parent = holder
 
-    --================== HỆ THỐNG FLAGS & CONFIG COMPATIBILITY ==================--
-    function Library:_setFlag(flag, value, fromLoad)
-        if not flag or flag == "" then return end
-        self._compat.flags[flag] = value
-        local setter = self._compat.bindings[flag]
-        if setter then setter(value, fromLoad) end
+        local vBar = Instance.new("Frame")
+        vBar.AnchorPoint = Vector2.new(cfg.ax, cfg.ay)
+        vBar.Position = UDim2.new(cfg.ax, cfg.px, cfg.ay, cfg.py)
+        vBar.Size = UDim2.fromOffset(thickness, armLen)
+        vBar.BackgroundColor3 = color
+        vBar.BackgroundTransparency = transparency
+        vBar.BorderSizePixel = 0
+        vBar.ZIndex = holder.ZIndex
+        vBar.Parent = holder
     end
+    return holder
+end
 
-    function Library:_bindFlag(flag, defaultValue, setter)
-        if not flag or flag == "" then return end
-        if self._compat.flags[flag] == nil then
-            self._compat.flags[flag] = defaultValue
+-- 2. Pháp Trận Thái Cực Âm Dương (Procedural Rotating Yin-Yang Emblem)
+local function spawnInkRipple(button, clickX, clickY, isDarkRipple)
+    if not button or not button:IsA("GuiObject") then return end
+    local absPos = button.AbsolutePosition
+    local absSize = button.AbsoluteSize
+    local relX = clickX and math.clamp(clickX - absPos.X, 0, absSize.X) or (absSize.X * 0.5)
+    local relY = clickY and math.clamp(clickY - absPos.Y, 0, absSize.Y) or (absSize.Y * 0.5)
+
+    local holder = Instance.new("Frame")
+    holder.Name = "HacBach_InkRipple"
+    holder.Size = UDim2.new(1, 0, 1, 0)
+    holder.BackgroundTransparency = 1
+    holder.ClipsDescendants = true
+    holder.ZIndex = math.max(button.ZIndex + 1, 2)
+    holder.Active = false
+    holder.Parent = button
+
+    local ripple = Instance.new("Frame")
+    ripple.AnchorPoint = Vector2.new(0.5, 0.5)
+    ripple.Position = UDim2.fromOffset(relX, relY)
+    ripple.Size = UDim2.fromOffset(0, 0)
+    ripple.BackgroundColor3 = isDarkRipple and Color3.fromRGB(12, 12, 16) or Color3.fromRGB(246, 246, 250)
+    ripple.BackgroundTransparency = 0.52
+    ripple.BorderSizePixel = 0
+    ripple.ZIndex = holder.ZIndex
+    ripple.Parent = holder
+    Instance.new("UICorner", ripple).CornerRadius = UDim.new(1, 0)
+
+    local ring = Instance.new("UIStroke", ripple)
+    ring.Color = isDarkRipple and Color3.fromRGB(35, 35, 42) or Color3.fromRGB(255, 255, 255)
+    ring.Thickness = 1.4
+    ring.Transparency = 0.25
+
+    local maxRadius = math.max(absSize.X, absSize.Y) * 2.1
+    tween(ripple, {
+        Size = UDim2.fromOffset(maxRadius, maxRadius),
+        BackgroundTransparency = 1
+    }, 0.48, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    tween(ring, {Transparency = 1}, 0.48, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+
+    task.delay(0.50, function()
+        if holder and holder.Parent then
+            holder:Destroy()
         end
-        self._compat.bindings[flag] = setter
-    end
+    end)
+end
 
-    -- Bộ chuyển đổi màu tự động ép các Workspace cũ (Tím/Xanh) sang tông Hắc Bạch Bento
-    local function toBentoMonochrome(c, role)
-        if typeof(c) ~= "Color3" then return c end
-        local r, g, b = c.R * 255, c.G * 255, c.B * 255
-        local lum = 0.299 * r + 0.587 * g + 0.114 * b
-        if role == "bg" then
-            if lum < 22 then return PALETTE.bg
-            elseif lum < 42 then return PALETTE.panel
-            elseif lum < 85 then
-                if r > 85 and b > 145 then return PALETTE.accent end
-                return PALETTE.card
-            else return PALETTE.accent end
-        elseif role == "stroke" then
-            if lum > 95 or (r > 100 and b > 160) then return PALETTE.borderLight end
-            return PALETTE.border
-        elseif role == "text" then
-            if lum > 185 then return PALETTE.text
-            else return PALETTE.textSub end
+local function brightSurface(inst)
+    while inst and not inst:IsA("ScreenGui") do
+        if inst:IsA("GuiObject") and inst.BackgroundTransparency < 0.5 then
+            local c = inst.BackgroundColor3
+            return c.R > 0.72 and c.G > 0.72 and c.B > 0.72
         end
-        return PALETTE.text
+        inst = inst.Parent
     end
+    return false
+end
 
-    local styledSet = setmetatable({}, {__mode = "k"})
-    local function restyleChildToBento(inst)
-        if not inst or not inst.Parent or styledSet[inst] then return end
-        styledSet[inst] = true
-        if inst:IsA("GuiObject") then
-            if inst.BackgroundTransparency < 0.98 then
-                inst.BackgroundColor3 = toBentoMonochrome(inst.BackgroundColor3, "bg")
+local function createRipple(button, clickPosX, clickPosY)
+    spawnInkRipple(button, clickPosX, clickPosY, brightSurface(button))
+end
+
+--================== ICON ATLAS & LOGO HELPERS ==================--
+local LUNA_ICON_ATLAS = {
+    crown = {16898613044, 404, 918}, home = {16898613509, 820, 147},
+    crosshair = {16898613044, 453, 869}, box = {16898612819, 771, 196},
+    flame = {16898613353, 967, 306}, wrench = {16898613869, 820, 906},
+    settings = {16898613777, 771, 257}, ["moon-star"] = {16898613613, 355, 869},
+    info = {16898613509, 612, 869}, clock = {16898613044, 771, 661},
+    zap = {16898613869, 918, 906}, ["circle-check"] = {16898612819, 869, 955},
+    ["refresh-cw"] = {16898613699, 404, 869}, package = {16898613613, 918, 196},
+    link = {16898613509, 918, 453}, database = {16898613044, 710, 869},
+    download = {16898613044, 820, 906}, upload = {16898613869, 612, 869},
+    ["trash-2"] = {16898613869, 257, 918}, shield = {16898613777, 869, 0},
+    scan = {16898613699, 967, 196}, sprout = {16898613777, 918, 306},
+    user = {16898613869, 661, 869}, infinity = {16898613509, 661, 820},
+    ["list-ordered"] = {16898613509, 710, 918}, activity = {16898612629, 514, 771},
+    send = {16898613699, 967, 857}, eye = {16898613353, 771, 563},
+    gauge = {16898613353, 771, 955}, cpu = {16898613044, 196, 869},
+    ["chevron-right"] = {16898612819, 869, 759}, monitor = {16898613613, 404, 820},
+    ["shield-check"] = {16898613777, 820, 257},
+}
+
+local function toMonochromeColor(c, role)
+    if typeof(c) ~= "Color3" then return c end
+    local r, g, b = c.R * 255, c.G * 255, c.B * 255
+    local maxC, minC = math.max(r, g, b), math.min(r, g, b)
+    local sat = (maxC == 0) and 0 or ((maxC - minC) / maxC)
+    local lum = 0.299 * r + 0.587 * g + 0.114 * b
+
+    if sat < 0.12 or maxC-minC<8 then return c end
+
+    if role == "bg" then
+        if lum < 20 then return Color3.fromRGB(8, 8, 10)
+        elseif lum < 35 then return Color3.fromRGB(14, 14, 18)
+        elseif lum < 58 then return Color3.fromRGB(21, 21, 26)
+        elseif lum < 120 then
+            -- Các nút Tím chủ đạo (Add Target, Active Toggle, Selected Mode) -> Chuyển sang Bạch Ngọc
+            if r > 85 and b > 145 then
+                return Color3.fromRGB(242, 242, 248)
             end
-            if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
-                local bright = (inst.BackgroundTransparency < 0.5) and (inst.BackgroundColor3.R > 0.75)
-                inst.TextColor3 = bright and PALETTE.textDark or toBentoMonochrome(inst.TextColor3, "text")
+            return Color3.fromRGB(34, 34, 40)
+        else
+            return Color3.fromRGB(246, 246, 250)
+        end
+    elseif role == "stroke" then
+        if lum > 90 or (r > 100 and b > 165) then
+            return Color3.fromRGB(218, 218, 228)
+        end
+        return Color3.fromRGB(52, 52, 60)
+    elseif role == "text" then
+        if lum > 190 then return Color3.fromRGB(248, 248, 252)
+        elseif lum > 130 then return Color3.fromRGB(182, 182, 192)
+        else return Color3.fromRGB(118, 118, 128) end
+    elseif role == "image" then
+        return Color3.fromRGB(238, 238, 244)
+    end
+    local v = math.clamp(math.floor(lum), 12, 248)
+    return Color3.fromRGB(v, v, v)
+end
+Library.MonochromeColor = toMonochromeColor
+
+local function applyLunaIcon(imageLabel, iconName, color)
+    local icon = LUNA_ICON_ATLAS[iconName]
+    if not icon then return false end
+    imageLabel.Image = "rbxassetid://" .. tostring(icon[1])
+    imageLabel.ImageRectSize = Vector2.new(48, 48)
+    imageLabel.ImageRectOffset = Vector2.new(icon[2], icon[3])
+    imageLabel.ImageColor3 = toMonochromeColor(color or Color3.fromRGB(242, 242, 248), "image")
+    imageLabel.ImageTransparency = 0
+    imageLabel.ScaleType = Enum.ScaleType.Stretch
+    return true
+end
+Library.ApplyLunaIcon = applyLunaIcon
+
+local reworkedSet = setmetatable({}, {__mode = "k"})
+local function isHacBachInternal(inst)
+    while inst do
+        if inst.Name:sub(1, 8) == "HacBach_" then return true end
+        inst = inst.Parent
+    end
+    return false
+end
+
+-- Legacy SUR dashboards update colors directly. Watch their color changes only;
+-- V3 controls/decoration are excluded by the HacBach_ namespace above.
+local function watchWorkspaceColors(inst)
+    if not inst:IsA("GuiObject") and not inst:IsA("UIStroke") then return end
+    local busy=false
+    local isText=inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox")
+    local isImage=inst:IsA("ImageLabel") or inst:IsA("ImageButton")
+    local function apply()
+        if busy or not inst.Parent then return end
+        busy=true
+        if inst:IsA("UIStroke") then inst.Color=toMonochromeColor(inst.Color,"stroke")
+        else
+            inst.BackgroundColor3=toMonochromeColor(inst.BackgroundColor3,"bg")
+            if isText then
+                local color=toMonochromeColor(inst.TextColor3,"text")
+                if brightSurface(inst) then color=Library.COLORS.textInverse
+                elseif math.max(color.R,color.G,color.B)<0.22 then color=Library.COLORS.text end
+                inst.TextColor3=color
             end
-            if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
-                if inst.Name ~= "RealAvatarImg" and inst.Name ~= "RealGameIcon" then
-                    inst.ImageColor3 = toBentoMonochrome(inst.ImageColor3, "text")
+            if isImage then inst.ImageColor3=toMonochromeColor(inst.ImageColor3,"image") end
+        end
+        busy=false
+    end
+    if inst:IsA("UIStroke") then inst:GetPropertyChangedSignal("Color"):Connect(apply)
+    else
+        inst:GetPropertyChangedSignal("BackgroundColor3"):Connect(function()
+            apply()
+            for _,child in ipairs(inst:GetChildren()) do
+                if child:IsA("TextLabel") or child:IsA("TextButton") or child:IsA("TextBox") then
+                    if brightSurface(child) then child.TextColor3=Library.COLORS.textInverse
+                    elseif math.max(child.TextColor3.R,child.TextColor3.G,child.TextColor3.B)<0.22 then
+                        child.TextColor3=Library.COLORS.text
+                    end
                 end
             end
-        elseif inst:IsA("UIStroke") then
-            inst.Color = toBentoMonochrome(inst.Color, "stroke")
+        end)
+        if isText then inst:GetPropertyChangedSignal("TextColor3"):Connect(apply) end
+        if isImage then inst:GetPropertyChangedSignal("ImageColor3"):Connect(apply) end
+    end
+    apply()
+end
+
+local function reworkWorkspaceInstance(inst)
+    if not inst or not inst.Parent or reworkedSet[inst] or isHacBachInternal(inst) then return end
+    reworkedSet[inst]=true
+    if inst:IsA("UIGradient") then
+        local points={}
+        for _,kp in ipairs(inst.Color.Keypoints) do
+            table.insert(points,ColorSequenceKeypoint.new(kp.Time,toMonochromeColor(kp.Value,"bg")))
+        end
+        if #points>=2 then inst.Color=ColorSequence.new(points) end
+    end
+    watchWorkspaceColors(inst)
+end
+
+--============================================================================--
+-- ĐỔI CHỦ ĐỀ HẮC BẠCH (THEME SWITCHER)
+--============================================================================--
+function Library:ChangeTheme(themeName)
+    local NEW_COLORS = Library.THEMES[themeName]
+    if not NEW_COLORS then return end
+    local OLD_COLORS = Library.COLORS
+
+    local colorMap = {}
+    for key, oldColor in pairs(OLD_COLORS) do
+        if typeof(oldColor) == "Color3" and typeof(NEW_COLORS[key]) == "Color3" then
+            colorMap[oldColor:ToHex()] = NEW_COLORS[key]
         end
     end
 
-    --================== HÀM TẠO CỬA SỔ CHÍNH (BENTO WINDOW) ==================--
-    function Library:MakeWindow(Config)
-        Config = Config or {}
-        local toggleKey = tostring(Config.ToggleKeybind or Config.ToggleUIKeybind or "K")
-
-        local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-        -- Đặt đúng tên "TienTaiStandHub" để tương thích 100% với forceExecutiveWindowVisible()
-        local oldGui = playerGui:FindFirstChild("TienTaiStandHub")
-        if oldGui then oldGui:Destroy() end
-
-        local screenGui = Instance.new("ScreenGui")
-        screenGui.Name = "TienTaiStandHub"
-        screenGui.ResetOnSpawn = false
-        screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-        screenGui.DisplayOrder = 999999
-        screenGui.Parent = playerGui
-
-        connect(screenGui.DescendantAdded, function(desc)
-            task.defer(function()
-                if desc and desc.Parent then restyleChildToBento(desc) end
-            end)
-        end)
-
-        -- Kích thước chuẩn tỷ lệ Bento (Đủ rộng cho cả Bento Grid lẫn các Workspace của Script)
-        local viewport = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
-        local isMobile = viewport.X <= 820
-        local MENU_W = isMobile and math.clamp(viewport.X - 36, 520, 680) or 760
-        local MENU_H = isMobile and math.clamp(viewport.Y - 48, 390, 460) or 460
-        local LEFT_COL_W = isMobile and 136 or 164
-
-        --====================================================================--
-        -- 1. NÚT RÚT GỌN `<` SÁT MÉP PHẢI MÀN HÌNH (ẢNH 2)
-        --====================================================================--
-        local dockTab = Instance.new("TextButton")
-        dockTab.Name = "RightEdgeDockTab"
-        dockTab.Size = UDim2.fromOffset(26, 68)
-        dockTab.AnchorPoint = Vector2.new(1, 0.5)
-        dockTab.Position = UDim2.new(1, 0, 0.5, 0)
-        dockTab.BackgroundColor3 = PALETTE.panel
-        dockTab.BorderSizePixel = 0
-        dockTab.Text = "‹"
-        dockTab.Font = Enum.Font.GothamBold
-        dockTab.TextSize = 22
-        dockTab.TextColor3 = PALETTE.text
-        dockTab.AutoButtonColor = false
-        dockTab.Visible = false
-        dockTab.ZIndex = 100
-        dockTab.Parent = screenGui
-        makeCorner(dockTab, 10)
-        makeStroke(dockTab, PALETTE.borderLight, 1.2, 0.35)
-
-        -- Miếng che cạnh phải để nút `<` dính liền vào mép màn hình như Ảnh 2
-        local rightFlushPatch = Instance.new("Frame")
-        rightFlushPatch.Size = UDim2.new(0, 8, 1, 0)
-        rightFlushPatch.Position = UDim2.new(1, -4, 0, 0)
-        rightFlushPatch.BackgroundColor3 = PALETTE.panel
-        rightFlushPatch.BorderSizePixel = 0
-        rightFlushPatch.ZIndex = 101
-        rightFlushPatch.Parent = dockTab
-
-        dockTab.MouseEnter:Connect(function()
-            tween(dockTab, {Size = UDim2.fromOffset(32, 74), BackgroundColor3 = PALETTE.cardHover}, 0.18)
-        end)
-        dockTab.MouseLeave:Connect(function()
-            tween(dockTab, {Size = UDim2.fromOffset(26, 68), BackgroundColor3 = PALETTE.panel}, 0.18)
-        end)
-
-        --====================================================================--
-        -- 2. KHUNG ĐẠI ĐIỆN BENTO (ROOT - ẢNH 1)
-        --====================================================================--
-        local root = Instance.new("Frame")
-        root.Name = "Root"
-        root.AnchorPoint = Vector2.new(0.5, 0.5)
-        root.Size = UDim2.fromOffset(MENU_W, MENU_H)
-        root.Position = UDim2.new(0.5, 0, 0.5, 0)
-        root.BackgroundColor3 = PALETTE.panel
-        root.BorderSizePixel = 0
-        root.ZIndex = 10
-        root.Parent = screenGui
-        makeCorner(root, 16)
-        makeStroke(root, PALETTE.border, 1.4, 0.25)
-
-        local rootScale = Instance.new("UIScale", root)
-        rootScale.Scale = 1
-
-        -- Kéo thả mượt mà bằng phần viền trên hoặc cột trái
-        local dragging, dragStart, startPos = false, nil, nil
-        local function bindDrag(handle)
-            handle.InputBegan:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-                    dragging = true
-                    dragStart = inp.Position
-                    startPos = root.Position
+    local gui = LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild("TienTaiStandHub")
+    if gui then
+        for _, obj in ipairs(gui:GetDescendants()) do
+            if not isHacBachInternal(obj) then
+                if obj:IsA("GuiObject") then
+                    local hex = obj.BackgroundColor3:ToHex()
+                    if colorMap[hex] then tween(obj, {BackgroundColor3 = colorMap[hex]}, 0.32) end
+                    if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                        local tHex = obj.TextColor3:ToHex()
+                        if colorMap[tHex] then tween(obj, {TextColor3 = colorMap[tHex]}, 0.32) end
+                    end
+                elseif obj:IsA("UIStroke") then
+                    local sHex = obj.Color:ToHex()
+                    if colorMap[sHex] then tween(obj, {Color = colorMap[sHex]}, 0.32) end
                 end
-            end)
+            end
         end
-        bindDrag(root)
-        connect(UserInputService.InputChanged, function(inp)
-            if dragging and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then
-                local delta = inp.Position - dragStart
-                root.Position = UDim2.new(
-                    startPos.X.Scale, startPos.X.Offset + delta.X,
-                    startPos.Y.Scale, startPos.Y.Offset + delta.Y
-                )
-            end
-        end)
-        connect(UserInputService.InputEnded, function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-                dragging = false
-            end
-        end)
+    end
+    Library.COLORS = NEW_COLORS
+end
 
-        --====================================================================--
-        -- 3. CỘT BÊN TRÁI: KHUNG AVATAR DỌC BO TRÒN (ĐÚNG MẪU ẢNH 1)
-        --====================================================================--
-        local leftPillar = Instance.new("Frame")
-        leftPillar.Name = "AvatarPillar"
-        leftPillar.Size = UDim2.new(0, LEFT_COL_W, 1, -28)
-        leftPillar.Position = UDim2.fromOffset(14, 14)
-        leftPillar.BackgroundColor3 = PALETTE.card
-        leftPillar.BorderSizePixel = 0
-        leftPillar.ZIndex = 11
-        leftPillar.Parent = root
-        makeCorner(leftPillar, 14)
-        makeStroke(leftPillar, PALETTE.border, 1.2, 0.35)
-        bindDrag(leftPillar)
-
-        -- Vòng tròn Avatar lớn ở phần trên cột trái (giống hệt ảnh 1)
-        local avatarRing = Instance.new("Frame")
-        avatarRing.Size = UDim2.fromOffset(92, 92)
-        avatarRing.AnchorPoint = Vector2.new(0.5, 0)
-        avatarRing.Position = UDim2.new(0.5, 0, 0, 22)
-        avatarRing.BackgroundColor3 = PALETTE.bg
-        avatarRing.BorderSizePixel = 0
-        avatarRing.ZIndex = 12
-        avatarRing.Parent = leftPillar
-        makeCorner(avatarRing, 46)
-        makeStroke(avatarRing, PALETTE.borderLight, 1.5, 0.3)
-
-        local avatarImg = Instance.new("ImageLabel")
-        avatarImg.Name = "RealAvatarImg"
-        avatarImg.Size = UDim2.new(1, -8, 1, -8)
-        avatarImg.AnchorPoint = Vector2.new(0.5, 0.5)
-        avatarImg.Position = UDim2.new(0.5, 0, 0.5, 0)
-        avatarImg.BackgroundTransparency = 1
-        avatarImg.ZIndex = 13
-        avatarImg.Parent = avatarRing
-        makeCorner(avatarImg, 44)
-
+--============================================================================--
+-- KHỞI TẠO CỬA SỔ CHÍNH (THÁI CỰC SONG ĐIỆN - MAKEWINDOW V3)
+--============================================================================--
+function Library:MakeWindow(Config)
+    Config = Config or {}
+    local MarketplaceService = game:GetService("MarketplaceService")
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local oldGui = playerGui:FindFirstChild("TienTaiStandHub")
+    if oldGui then oldGui:Destroy() end
+    local function make(class, parent, props)
+        local obj = Instance.new(class)
+        for key, value in pairs(props or {}) do obj[key] = value end
+        obj.Parent = parent
+        return obj
+    end
+    local function stroke(obj)
+        return make("UIStroke", obj, {Color=Library.COLORS.border, Thickness=1, Transparency=0.3})
+    end
+    local function label(parent, text, pos, size, font, color, z)
+        return make("TextLabel", parent, {BackgroundTransparency=1, Text=text, Position=pos, Size=size,
+            Font=font or Enum.Font.Gotham, TextSize=11, TextColor3=color or Library.COLORS.text,
+            TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, ZIndex=z or 12})
+    end
+    local screenGui = make("ScreenGui", playerGui, {Name="TienTaiStandHub", ResetOnSpawn=false,
+        IgnoreGuiInset=true, DisplayOrder=999999, ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+    local alive = true
+    local menuOpen = Config.StartHidden ~= true
+    local menuSequence, hoverSequence = 0, 0
+    local menuTweens = {}
+    local hoverTween
+    local fitScale = 1
+    local layout = {contentInset=6}
+    local toggleKey = Config.ToggleKeybind or "K"
+    local root = make("Frame", screenGui, {Name="Root", AnchorPoint=Vector2.new(0.5,0.5),
+        Size=UDim2.fromOffset(820,500), Position=UDim2.fromScale(0.5,0.5),
+        BackgroundColor3=Library.COLORS.panel, BorderSizePixel=0, Visible=menuOpen, ZIndex=10})
+    corner(16).Parent=root; stroke(root)
+    local rootScale=make("UIScale",root,{Scale=1})
+    local openPosition=root.Position
+    local pillar=make("Frame",root,{Name="HacBach_AvatarPillar", Size=UDim2.new(0,156,1,-28),
+        Position=UDim2.fromOffset(14,14), BackgroundColor3=Library.COLORS.card, BorderSizePixel=0,ZIndex=11})
+    corner(12).Parent=pillar;stroke(pillar)
+    local avatar=make("ImageLabel",pillar,{Name="RealAvatarImg",Size=UDim2.fromOffset(84,84),
+        Position=UDim2.new(0.5,-42,0,24), BackgroundColor3=Library.COLORS.bg,BorderSizePixel=0,ZIndex=12})
+    corner(42).Parent=avatar
+    label(pillar,LocalPlayer.DisplayName or LocalPlayer.Name,UDim2.fromOffset(12,122),UDim2.new(1,-24,0,22),Enum.Font.GothamBold)
+    label(pillar,"@"..LocalPlayer.Name,UDim2.fromOffset(12,146),UDim2.new(1,-24,0,20),nil,Library.COLORS.textSub)
+    label(pillar,"LUNA HUB",UDim2.fromOffset(12,202),UDim2.new(1,-24,0,22),Enum.Font.GothamBold)
+    local sub=label(pillar,"Stand Upright\nRebooted",UDim2.fromOffset(12,230),UDim2.new(1,-24,0,44),nil,Library.COLORS.textSub)
+    sub.TextWrapped=true
+    label(pillar,"["..toggleKey.."]  Menu",UDim2.new(0,12,1,-84),UDim2.new(1,-24,0,20),nil,Library.COLORS.textSub)
+    local minimize=make("TextButton",pillar,{Name="MinimizeToEdge",Size=UDim2.new(1,-24,0,32),
+        Position=UDim2.new(0,12,1,-44),BackgroundColor3=Library.COLORS.bg,Text="Thu gọn  ›",
+        Font=Enum.Font.GothamBold,TextSize=11,TextColor3=Library.COLORS.text,BorderSizePixel=0,AutoButtonColor=false,ZIndex=13})
+    corner(8).Parent=minimize;stroke(minimize)
+    local right=make("Frame",root,{Name="RightBentoSection",Size=UDim2.new(1,-196,1,-28),
+        Position=UDim2.fromOffset(182,14),BackgroundTransparency=1,ZIndex=11})
+    local dragHandle=label(right,"LUNA  /  CONTROL CENTER",UDim2.fromOffset(2,0),UDim2.new(1,0,0,24),Enum.Font.GothamBold)
+    dragHandle.Name="HacBach_DragHandle";dragHandle.Active=true
+    local tabsBar=make("ScrollingFrame",right,{Name="HacBach_TopPillTabBar",Size=UDim2.new(1,0,0,40),
+        Position=UDim2.fromOffset(0,32),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,
+        ScrollingDirection=Enum.ScrollingDirection.X,CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.X,ZIndex=12})
+    make("UIListLayout",tabsBar,{FillDirection=Enum.FillDirection.Horizontal,SortOrder=Enum.SortOrder.LayoutOrder,
+        VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,6)})
+    local content=make("Frame",right,{Name="Content",Size=UDim2.new(1,0,1,-82),
+        Position=UDim2.fromOffset(0,82),BackgroundTransparency=1,ZIndex=12})
+    local dock=make("TextButton",screenGui,{Name="HacBach_RightEdgeDockTab",AnchorPoint=Vector2.new(1,0.5),
+        Size=UDim2.fromOffset(28,66),Position=UDim2.fromScale(1,0.5),BackgroundColor3=Library.COLORS.card,
+        BackgroundTransparency=0.08,Text="‹",Font=Enum.Font.GothamBold,TextSize=26,TextColor3=Library.COLORS.text,
+        AutoButtonColor=false,BorderSizePixel=0,Visible=not menuOpen,ZIndex=100})
+    corner(9).Parent=dock;stroke(dock)
+    -- A sibling of Root: hover information remains available while the menu is closed.
+    local drawer=make("Frame",screenGui,{Name="HacBach_HoverTelemetryDrawer",AnchorPoint=Vector2.new(1,0.5),
+        Size=UDim2.fromOffset(310,154),Position=UDim2.new(1,-28,0.5,0),BackgroundColor3=Library.COLORS.panel,
+        BorderSizePixel=0,Visible=false,ZIndex=90})
+    corner(12).Parent=drawer;stroke(drawer)
+    local drawerScale=make("UIScale",drawer,{Scale=1})
+    local gameIcon=make("ImageLabel",drawer,{Name="RealGameIcon",Size=UDim2.fromOffset(46,46),
+        Position=UDim2.fromOffset(14,14),BackgroundColor3=Library.COLORS.card,BorderSizePixel=0,
+        Image="rbxthumb://type=GameIcon&id="..tostring(game.GameId).."&w=150&h=150",ZIndex=91})
+    corner(9).Parent=gameIcon
+    local gameName=label(drawer,"Đang đọc tên game…",UDim2.fromOffset(72,16),UDim2.new(1,-86,0,24),Enum.Font.GothamBold,nil,91)
+    gameName.Name="GameName"
+    label(drawer,"SERVER OVERVIEW",UDim2.fromOffset(72,40),UDim2.new(1,-86,0,16),nil,Library.COLORS.textSub,91)
+    local function metric(name,title,x,width)
+        label(drawer,title,UDim2.fromOffset(x,80),UDim2.fromOffset(width,16),nil,Library.COLORS.textSub,91)
+        local v=label(drawer,"—",UDim2.fromOffset(x,102),UDim2.fromOffset(width,26),Enum.Font.GothamBold,nil,91)
+        v.Name=name;v.TextSize=15;return v
+    end
+    local fpsValue=metric("FPSValue","FPS",14,66)
+    local pingValue=metric("PingValue","PING · ms",87,78)
+    local serverValue=metric("ServerAgeValue","SERVER TIME",173,125)
+    local drawerOpen=false
+    local dockHovered,drawerHovered=false,false
+    local frameCount,frameElapsed=0,0
+    local serverLabel
+    local scanElapsed=5
+    local metadataRequested=false
+    local function parseServerAge(text,allowClock)
+        text=string.lower(tostring(text or ""):gsub("<[^>]*>",""))
+        local body=text:match("server%s*time%s*:%s*(.+)") or text:match("server%s*age%s*:%s*(.+)")
+        if not body and allowClock then body=text end
+        if not body then return nil end
+        local h,m,s=body:match("^(%d+):(%d+):(%d+)%s*$")
+        if h and tonumber(m)<60 and tonumber(s)<60 then return tonumber(h)*3600+tonumber(m)*60+tonumber(s) end
+        m,s=body:match("^(%d+):(%d+)%s*$")
+        if m and tonumber(s)<60 then return tonumber(m)*60+tonumber(s) end
+        local d=body:match("(%d+)%s*days?")
+        h=body:match("(%d+)%s*hours?")
+        m=body:match("(%d+)%s*minutes?")
+        s=body:match("(%d+)%s*seconds?")
+        if d or h or m or s then return (tonumber(d) or 0)*86400+(tonumber(h) or 0)*3600+(tonumber(m) or 0)*60+(tonumber(s) or 0) end
+        return nil
+    end
+    local function labelAge(obj)
+        if not obj or not obj.Parent or obj:IsDescendantOf(screenGui) then return nil end
+        if not obj:IsA("TextLabel") and not obj:IsA("TextButton") then return nil end
+        local name=string.lower(obj.Name):gsub("[%s_]","")
+        return parseServerAge(obj.Text,name=="servertime" or name=="serverage" or name=="serveruptime")
+    end
+    local function readServerAge()
+        local age=labelAge(serverLabel)
+        if age then return age end
+        serverLabel=nil
+        if scanElapsed<5 then return nil end
+        scanElapsed=0
+        -- Read the game's HUD only. Do not confuse client DistributedGameTime with server age.
+        for _,obj in ipairs(playerGui:GetDescendants()) do
+            age=labelAge(obj)
+            if age then serverLabel=obj;return age end
+        end
+        return nil
+    end
+    local function refreshMetrics()
+        local ok,ping=pcall(function() return LocalPlayer:GetNetworkPing() end)
+        pingValue.Text=ok and type(ping)=="number" and ping>=0 and ping<math.huge
+            and tostring(math.floor(ping*1000+0.5)) or "—"
+        local age=readServerAge()
+        serverValue.Text=age and string.format("%02d:%02d:%02d",math.floor(age/3600),math.floor(age/60)%60,age%60) or "Chưa có dữ liệu"
+        serverValue.TextSize=age and 15 or 11
+    end
+    local function requestMetadata()
+        if metadataRequested then return end
+        metadataRequested=true
         task.spawn(function()
-            pcall(function()
-                local content, ready = Players:GetUserThumbnailAsync(
-                    LocalPlayer.UserId,
-                    Enum.ThumbnailType.HeadShot,
-                    Enum.ThumbnailSize.Size150x150
-                )
-                if ready and avatarImg.Parent then
-                    avatarImg.Image = content
-                end
+            local ok,info=pcall(function()
+                return MarketplaceService:GetProductInfoAsync(game.PlaceId)
             end)
+            if not alive or not gameName.Parent then return end
+            gameName.Text=ok and type(info)=="table" and tostring(info.Name or "Game #"..game.PlaceId) or "Game #"..game.PlaceId
+            if ok and type(info)=="table" and tonumber(info.IconImageAssetId) and tonumber(info.IconImageAssetId)>0 then
+                gameIcon.Image="rbxassetid://"..tostring(info.IconImageAssetId)
+            end
         end)
-
-        local dispNameLbl = Instance.new("TextLabel")
-        dispNameLbl.Size = UDim2.new(1, -16, 0, 20)
-        dispNameLbl.Position = UDim2.fromOffset(8, 126)
-        dispNameLbl.BackgroundTransparency = 1
-        dispNameLbl.Text = LocalPlayer.DisplayName or LocalPlayer.Name
-        dispNameLbl.Font = Enum.Font.GothamBold
-        dispNameLbl.TextSize = 13
-        dispNameLbl.TextColor3 = PALETTE.text
-        dispNameLbl.TextTruncate = Enum.TextTruncate.AtEnd
-        dispNameLbl.ZIndex = 12
-        dispNameLbl.Parent = leftPillar
-
-        local userNameLbl = Instance.new("TextLabel")
-        userNameLbl.Size = UDim2.new(1, -16, 0, 14)
-        userNameLbl.Position = UDim2.fromOffset(8, 146)
-        userNameLbl.BackgroundTransparency = 1
-        userNameLbl.Text = "@" .. LocalPlayer.Name
-        userNameLbl.Font = Enum.Font.Gotham
-        userNameLbl.TextSize = 10
-        userNameLbl.TextColor3 = PALETTE.textSub
-        userNameLbl.TextTruncate = Enum.TextTruncate.AtEnd
-        userNameLbl.ZIndex = 12
-        userNameLbl.Parent = leftPillar
-
-        -- Đường kẻ mảnh ngăn cách trong cột trái
-        local pillarDivider = Instance.new("Frame")
-        pillarDivider.Size = UDim2.new(1, -28, 0, 1)
-        pillarDivider.Position = UDim2.fromOffset(14, 174)
-        pillarDivider.BackgroundColor3 = PALETTE.border
-        pillarDivider.BackgroundTransparency = 0.45
-        pillarDivider.BorderSizePixel = 0
-        pillarDivider.ZIndex = 12
-        pillarDivider.Parent = leftPillar
-
-        -- Khu vực hiển thị tóm tắt nhanh bên dưới Avatar
-        local quickOverview = Instance.new("TextLabel")
-        quickOverview.Size = UDim2.new(1, -20, 0, 70)
-        quickOverview.Position = UDim2.fromOffset(10, 186)
-        quickOverview.BackgroundTransparency = 1
-        quickOverview.Text = "HẮC BẠCH VÔ THƯỜNG\n\n• Chế độ: Bento UI\n• Phím tắt: [" .. toggleKey .. "]\n• Trạng thái: Sẵn sàng"
-        quickOverview.Font = Enum.Font.GothamSemibold
-        quickOverview.TextSize = 10
-        quickOverview.TextColor3 = PALETTE.textSub
-        quickOverview.TextXAlignment = Enum.TextXAlignment.Left
-        quickOverview.TextYAlignment = Enum.TextYAlignment.Top
-        quickOverview.ZIndex = 12
-        quickOverview.Parent = leftPillar
-
-        -- Nút thu gọn về mép phải `<` đặt ngay dưới đáy cột trái
-        local minimizeToEdgeBtn = Instance.new("TextButton")
-        minimizeToEdgeBtn.Size = UDim2.new(1, -20, 0, 30)
-        minimizeToEdgeBtn.Position = UDim2.new(0, 10, 1, -40)
-        minimizeToEdgeBtn.BackgroundColor3 = PALETTE.bg
-        minimizeToEdgeBtn.BorderSizePixel = 0
-        minimizeToEdgeBtn.Text = "Thu về mép phải  ›"
-        minimizeToEdgeBtn.Font = Enum.Font.GothamBold
-        minimizeToEdgeBtn.TextSize = 10
-        minimizeToEdgeBtn.TextColor3 = PALETTE.text
-        minimizeToEdgeBtn.AutoButtonColor = false
-        minimizeToEdgeBtn.ZIndex = 13
-        minimizeToEdgeBtn.Parent = leftPillar
-        makeCorner(minimizeToEdgeBtn, 8)
-        makeStroke(minimizeToEdgeBtn, PALETTE.border, 1, 0.4)
-
-        --====================================================================--
-        -- 4. KHU VỰC BÊN PHẢI: THANH PILL TAB NGANG + KHUNG NỘI DUNG (ẢNH 1)
-        --====================================================================--
-        local rightX = LEFT_COL_W + 26
-        local rightW = MENU_W - rightX - 14
-
-        local rightSection = Instance.new("Frame")
-        rightSection.Name = "RightBentoSection"
-        rightSection.Size = UDim2.new(0, rightW, 1, -28)
-        rightSection.Position = UDim2.fromOffset(rightX, 14)
-        rightSection.BackgroundTransparency = 1
-        rightSection.ZIndex = 11
-        rightSection.Parent = root
-
-        -- HÀNG TRÊN CÙNG: Các nút Tab hình viên thuốc (Pill Buttons) xếp ngang như Ảnh 1
-        local topPillBar = Instance.new("ScrollingFrame")
-        topPillBar.Name = "TopPillTabBar"
-        topPillBar.Size = UDim2.new(1, 0, 0, 38)
-        topPillBar.Position = UDim2.fromOffset(0, 0)
-        topPillBar.BackgroundTransparency = 1
-        topPillBar.BorderSizePixel = 0
-        topPillBar.ScrollBarThickness = 0
-        topPillBar.ScrollingDirection = Enum.ScrollingDirection.X
-        topPillBar.CanvasSize = UDim2.new(0, 0, 0, 0)
-        topPillBar.AutomaticCanvasSize = Enum.AutomaticSize.X
-        topPillBar.ZIndex = 12
-        topPillBar.Parent = rightSection
-
-        local pillLayout = Instance.new("UIListLayout")
-        pillLayout.FillDirection = Enum.FillDirection.Horizontal
-        pillLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-        pillLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-        pillLayout.SortOrder = Enum.SortOrder.LayoutOrder
-        pillLayout.Padding = UDim.new(0, 8)
-        pillLayout.Parent = topPillBar
-
-        -- KHUNG NỘI DUNG CHÍNH BÊN DƯỚI THANH TAB
-        local contentHost = Instance.new("Frame")
-        contentHost.Name = "Content"
-        contentHost.Size = UDim2.new(1, 0, 1, -46)
-        contentHost.Position = UDim2.fromOffset(0, 46)
-        contentHost.BackgroundTransparency = 1
-        contentHost.ZIndex = 12
-        contentHost.Parent = rightSection
-
-        --====================================================================--
-        -- 5. NÚT MŨI TÊN ĐÁY `↓` & NGĂN KÉO HOVER (FPS / MS / SERVER / GAME)
-        -- Rê chuột vào tự động trượt mở, không cần nhấn hay kéo (Đúng Ảnh 1)
-        --====================================================================--
-        -- Vùng cảm biến Hover liền mạch (Sensor Zone) giúp chuột di chuyển không bị giật
-        local hoverZone = Instance.new("Frame")
-        hoverZone.Name = "BottomHoverSensor"
-        hoverZone.AnchorPoint = Vector2.new(0.5, 0)
-        hoverZone.Size = UDim2.fromOffset(52, 24)
-        hoverZone.Position = UDim2.new(0.5, 0, 1, -10)
-        hoverZone.BackgroundTransparency = 1
-        hoverZone.ZIndex = 30
-        hoverZone.Parent = root
-
-        -- Nút bán nguyệt nhỏ ở sát cạnh đáy chính (giống chấm `v` trong ảnh 1)
-        local notchBadge = Instance.new("Frame")
-        notchBadge.Size = UDim2.fromOffset(28, 14)
-        notchBadge.AnchorPoint = Vector2.new(0.5, 0.5)
-        notchBadge.Position = UDim2.new(0.5, 0, 1, 0)
-        notchBadge.BackgroundColor3 = PALETTE.panel
-        notchBadge.BorderSizePixel = 0
-        notchBadge.ZIndex = 26
-        notchBadge.Parent = root
-        makeCorner(notchBadge, 7)
-        makeStroke(notchBadge, PALETTE.border, 1, 0.3)
-
-        local notchChevron = Instance.new("TextLabel")
-        notchChevron.Size = UDim2.new(1, 0, 1, 0)
-        notchChevron.BackgroundTransparency = 1
-        notchChevron.Text = "⌄"
-        notchChevron.Font = Enum.Font.GothamBold
-        notchChevron.TextSize = 12
-        notchChevron.TextColor3 = PALETTE.text
-        notchChevron.ZIndex = 27
-        notchChevron.Parent = notchBadge
-
-        -- Nút tròn lớn chứa mũi tên `↓` ngay bên dưới (giống hệt vòng tròn mũi tên trắng trong Ảnh 1)
-        local arrowCircle = Instance.new("Frame")
-        arrowCircle.Size = UDim2.fromOffset(38, 38)
-        arrowCircle.AnchorPoint = Vector2.new(0.5, 0)
-        arrowCircle.Position = UDim2.new(0.5, 0, 1, 10)
-        arrowCircle.BackgroundColor3 = PALETTE.card
-        arrowCircle.BackgroundTransparency = 0.15
-        arrowCircle.BorderSizePixel = 0
-        arrowCircle.ZIndex = 26
-        arrowCircle.Parent = root
-        makeCorner(arrowCircle, 19)
-        makeStroke(arrowCircle, PALETTE.borderLight, 1.2, 0.35)
-
-        local arrowSymbol = Instance.new("TextLabel")
-        arrowSymbol.Size = UDim2.new(1, 0, 1, 0)
-        arrowSymbol.BackgroundTransparency = 1
-        arrowSymbol.Text = "↓"
-        arrowSymbol.Font = Enum.Font.GothamBold
-        arrowSymbol.TextSize = 18
-        arrowSymbol.TextColor3 = PALETTE.accent
-        arrowSymbol.ZIndex = 27
-        arrowSymbol.Parent = arrowCircle
-
-        -- Ngăn kéo thông tin trượt mở khi rê chuột vào mũi tên
-        local infoDrawer = Instance.new("Frame")
-        infoDrawer.Name = "HoverTelemetryDrawer"
-        infoDrawer.AnchorPoint = Vector2.new(0.5, 0)
-        infoDrawer.Size = UDim2.fromOffset(MENU_W - 40, 0)
-        infoDrawer.Position = UDim2.new(0.5, 0, 1, 54)
-        infoDrawer.BackgroundColor3 = PALETTE.panel
-        infoDrawer.BorderSizePixel = 0
-        infoDrawer.ClipsDescendants = true
-        infoDrawer.Visible = false
-        infoDrawer.ZIndex = 28
-        infoDrawer.Parent = root
-        makeCorner(infoDrawer, 12)
-        makeStroke(infoDrawer, PALETTE.borderLight, 1.2, 0.3)
-
-        local drawerInner = Instance.new("Frame")
-        drawerInner.Size = UDim2.new(1, -20, 0, 64)
-        drawerInner.Position = UDim2.fromOffset(10, 8)
-        drawerInner.BackgroundTransparency = 1
-        drawerInner.ZIndex = 29
-        drawerInner.Parent = infoDrawer
-
-        -- Ảnh Game & Tên Game
-        local gameThumb = Instance.new("ImageLabel")
-        gameThumb.Name = "RealGameIcon"
-        gameThumb.Size = UDim2.fromOffset(48, 48)
-        gameThumb.Position = UDim2.fromOffset(4, 8)
-        gameThumb.BackgroundColor3 = PALETTE.bg
-        gameThumb.BorderSizePixel = 0
-        gameThumb.Image = "rbxthumb://type=GameIcon&id=" .. tostring(game.GameId) .. "&w=150&h=150"
-        gameThumb.ZIndex = 30
-        gameThumb.Parent = drawerInner
-        makeCorner(gameThumb, 8)
-        makeStroke(gameThumb, PALETTE.border, 1, 0.4)
-
-        local gameNameLabel = Instance.new("TextLabel")
-        gameNameLabel.Size = UDim2.fromOffset(210, 20)
-        gameNameLabel.Position = UDim2.fromOffset(62, 10)
-        gameNameLabel.BackgroundTransparency = 1
-        gameNameLabel.Text = "Stand Upright: Rebooted"
-        gameNameLabel.Font = Enum.Font.GothamBold
-        gameNameLabel.TextSize = 13
-        gameNameLabel.TextColor3 = PALETTE.text
-        gameNameLabel.TextXAlignment = Enum.TextXAlignment.Left
-        gameNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-        gameNameLabel.ZIndex = 30
-        gameNameLabel.Parent = drawerInner
-
-        local placeIdSub = Instance.new("TextLabel")
-        placeIdSub.Size = UDim2.fromOffset(210, 16)
-        placeIdSub.Position = UDim2.fromOffset(62, 32)
-        placeIdSub.BackgroundTransparency = 1
-        placeIdSub.Text = "Place ID: " .. tostring(game.PlaceId)
-        placeIdSub.Font = Enum.Font.Gotham
-        placeIdSub.TextSize = 10
-        placeIdSub.TextColor3 = PALETTE.textSub
-        placeIdSub.TextXAlignment = Enum.TextXAlignment.Left
-        placeIdSub.ZIndex = 30
-        placeIdSub.Parent = drawerInner
-
-        task.spawn(function()
-            pcall(function()
-                local info = MarketplaceService:GetProductInfo(game.PlaceId)
-                if info and info.Name and gameNameLabel.Parent then
-                    gameNameLabel.Text = info.Name
-                end
-                if info and info.IconImageAssetId and info.IconImageAssetId ~= 0 and gameThumb.Parent then
-                    gameThumb.Image = "rbxassetid://" .. tostring(info.IconImageAssetId)
-                end
+    end
+    local function setDrawer(open)
+        if not alive then return end
+        open=open and not menuOpen and dock.Visible
+        hoverSequence+=1
+        local seq=hoverSequence
+        if hoverTween then hoverTween:Cancel() end
+        drawerOpen=open
+        if open then
+            drawer.Visible=true;frameCount=0;frameElapsed=0;fpsValue.Text="—"
+            refreshMetrics();requestMetadata()
+            hoverTween=tween(drawer,{Position=UDim2.new(1,-28,0.5,0)},0.18)
+        else
+            hoverTween=tween(drawer,{Position=UDim2.new(1,-18,0.5,0)},0.14)
+            hoverTween.Completed:Connect(function(state)
+                if alive and seq==hoverSequence and state==Enum.PlaybackState.Completed then drawer.Visible=false end
             end)
-        end)
-
-        -- 3 Ô chỉ số: FPS | PING (ms) | SERVER TIME
-        local function createMetricBox(rightOffset, labelTitle, defaultVal)
-            local box = Instance.new("Frame")
-            box.Size = UDim2.fromOffset(102, 48)
-            box.AnchorPoint = Vector2.new(1, 0)
-            box.Position = UDim2.new(1, -rightOffset, 0, 8)
-            box.BackgroundColor3 = PALETTE.bg
-            box.BorderSizePixel = 0
-            box.ZIndex = 30
-            box.Parent = drawerInner
-            makeCorner(box, 8)
-            makeStroke(box, PALETTE.border, 1, 0.45)
-
-            local t = Instance.new("TextLabel")
-            t.Size = UDim2.new(1, 0, 0, 16)
-            t.Position = UDim2.fromOffset(0, 5)
-            t.BackgroundTransparency = 1
-            t.Text = labelTitle
-            t.Font = Enum.Font.GothamBold
-            t.TextSize = 9
-            t.TextColor3 = PALETTE.textSub
-            t.ZIndex = 31
-            t.Parent = box
-
-            local v = Instance.new("TextLabel")
-            v.Size = UDim2.new(1, 0, 0, 22)
-            v.Position = UDim2.fromOffset(0, 21)
-            v.BackgroundTransparency = 1
-            v.Text = defaultVal
-            v.Font = Enum.Font.GothamBlack
-            v.TextSize = 13
-            v.TextColor3 = PALETTE.accent
-            v.ZIndex = 31
-            v.Parent = box
-            return v
         end
-
-        local serverTimeVal = createMetricBox(4, "SERVER TIME", "00:00:00")
-        local pingMsVal     = createMetricBox(114, "PING (MS)", "40 ms")
-        local fpsCounterVal = createMetricBox(224, "FPS", "60")
-
-        -- Cập nhật FPS, Ping, Server Time nhẹ nhàng mỗi 0.5s
-        local frames = 0
-        local lastTick = os.clock()
-        connect(RunService.RenderStepped, function()
-            frames = frames + 1
-            local now = os.clock()
-            if now - lastTick >= 0.5 then
-                local fps = math.clamp(math.floor(frames / (now - lastTick) + 0.5), 1, 999)
-                fpsCounterVal.Text = tostring(fps) .. " FPS"
-                frames = 0
-                lastTick = now
-
-                local ping = 0
-                pcall(function()
-                    ping = math.floor(StatsService.Network.ServerStatsItem["Data Ping"]:GetValue())
-                end)
-                pingMsVal.Text = tostring(ping) .. " ms"
-
-                local srvSeconds = math.floor(workspace.DistributedGameTime)
-                local h = math.floor(srvSeconds / 3600)
-                local m = math.floor((srvSeconds % 3600) / 60)
-                local s = srvSeconds % 60
-                serverTimeVal.Text = string.format("%02d:%02d:%02d", h, m, s)
-            end
+    end
+    local leaveSequence=0
+    local function leaveLater()
+        leaveSequence+=1;local seq=leaveSequence
+        task.delay(0.14,function()
+            if alive and seq==leaveSequence and not dockHovered and not drawerHovered then setDrawer(false) end
         end)
+    end
+    dock.MouseEnter:Connect(function() dockHovered=true;leaveSequence+=1;setDrawer(true) end)
+    dock.MouseLeave:Connect(function() dockHovered=false;leaveLater() end)
+    drawer.MouseEnter:Connect(function() drawerHovered=true;leaveSequence+=1 end)
+    drawer.MouseLeave:Connect(function() drawerHovered=false;leaveLater() end)
+    connect(RunService.RenderStepped,function(dt)
+        if not alive or not drawerOpen or not drawer.Visible or not screenGui.Enabled then return end
+        frameCount+=1;frameElapsed+=dt;scanElapsed+=dt
+        if frameElapsed>=0.5 then
+            fpsValue.Text=tostring(math.floor(frameCount/math.max(frameElapsed,0.001)+0.5))
+            frameCount=0;frameElapsed=0;refreshMetrics()
+        end
+    end)
+    local dropdownClosers={}
+    local function closeAllDropdowns(exceptCloser)
+        for _,closer in ipairs(dropdownClosers) do if closer~=exceptCloser then closer() end end
+    end
+    local pointer,dragStart,dragPosition
+    local function cancelMenuTweens()
+        for _,t in ipairs(menuTweens) do t:Cancel() end
+        table.clear(menuTweens)
+    end
+    local function setMenuOpen(open)
+        if not alive or menuOpen==open then return end
+        if menuOpen then openPosition=root.Position end
+        menuOpen=open;menuSequence+=1;local seq=menuSequence
+        pointer=nil;cancelMenuTweens();closeAllDropdowns()
+        dockHovered=false;drawerHovered=false;leaveSequence+=1;setDrawer(false)
+        if open then
+            dock.Visible=false;root.Visible=true
+            table.insert(menuTweens,tween(rootScale,{Scale=fitScale},0.24))
+            table.insert(menuTweens,tween(root,{Position=openPosition},0.24))
+        else
+            table.insert(menuTweens,tween(rootScale,{Scale=fitScale*0.94},0.18))
+            local t=tween(root,{Position=UDim2.new(openPosition.X.Scale,openPosition.X.Offset+18,openPosition.Y.Scale,openPosition.Y.Offset)},0.18)
+            table.insert(menuTweens,t)
+            t.Completed:Connect(function(state)
+                if alive and seq==menuSequence and state==Enum.PlaybackState.Completed then
+                    root.Visible=false;dock.Visible=true
+                end
+            end)
+        end
+    end
+    dock.MouseButton1Click:Connect(function() setMenuOpen(true) end)
+    minimize.MouseButton1Click:Connect(function() setMenuOpen(false) end)
+    connect(UserInputService.InputBegan,function(input,gp)
+        if not gp and input.KeyCode==Enum.KeyCode[toggleKey] then setMenuOpen(not menuOpen) end
+    end)
+    local function beginDrag(input)
+        if pointer or not menuOpen then return end
+        if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+        pointer=input;dragStart=Vector2.new(input.Position.X,input.Position.Y);dragPosition=root.Position
+    end
+    dragHandle.InputBegan:Connect(beginDrag)
+    avatar.InputBegan:Connect(beginDrag)
+    connect(UserInputService.InputChanged,function(input)
+        if not alive or not pointer then return end
+        if pointer.UserInputType==Enum.UserInputType.Touch then if input~=pointer then return end
+        elseif input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+        local delta=Vector2.new(input.Position.X,input.Position.Y)-dragStart
+        if delta.Magnitude<5 then return end
+        cancelMenuTweens()
+        root.Position=UDim2.new(dragPosition.X.Scale,dragPosition.X.Offset+delta.X,dragPosition.Y.Scale,dragPosition.Y.Offset+delta.Y)
+        openPosition=root.Position
+    end)
+    connect(UserInputService.InputEnded,function(input)
+        if pointer and (input==pointer or (pointer.UserInputType==Enum.UserInputType.MouseButton1 and input.UserInputType==Enum.UserInputType.MouseButton1)) then pointer=nil end
+    end)
+    local viewportConnection
+    local function resize()
+        local camera=workspace.CurrentCamera
+        local v=camera and camera.ViewportSize or Vector2.new(1280,720)
+        fitScale=math.max(0.1,math.min(1,(v.X-24)/820,(v.Y-24)/500))
+        menuSequence+=1;cancelMenuTweens();closeAllDropdowns();pointer=nil
+        rootScale.Scale=menuOpen and fitScale or fitScale*0.94
+        root.Position=UDim2.fromScale(0.5,0.5);openPosition=root.Position
+        root.Visible=menuOpen;dock.Visible=not menuOpen
+        drawerScale.Scale=math.max(0.1,math.min(1,(v.X-40)/310,(v.Y-24)/154))
+    end
+    local function bindViewport()
+        if viewportConnection then viewportConnection:Disconnect() end
+        local camera=workspace.CurrentCamera
+        if camera then viewportConnection=connect(camera:GetPropertyChangedSignal("ViewportSize"),resize) end
+        resize()
+    end
+    connect(workspace:GetPropertyChangedSignal("CurrentCamera"),bindViewport);bindViewport()
+    task.spawn(function()
+        local ok,url,ready=pcall(function()
+            return Players:GetUserThumbnailAsync(LocalPlayer.UserId,Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size150x150)
+        end)
+        if alive and avatar.Parent and ok and ready then avatar.Image=url end
+    end)
+    connect(screenGui.Destroying,function()
+        alive=false;menuSequence+=1;hoverSequence+=1;leaveSequence+=1;pointer=nil;serverLabel=nil
+        cancelMenuTweens();if hoverTween then hoverTween:Cancel() end
+        for _,c in ipairs(uiConnections) do c:Disconnect() end
+        table.clear(uiConnections)
+        if getgenv and getgenv().LunaHubUIConnections==uiConnections then getgenv().LunaHubUIConnections=nil end
+    end)
+    local WindowObject={}
+    local Pages={}
+    local FirstTab=true
+    local tabOrderIndex=0
+    local function buildSearchText(...)
+        local values={}
+        for i=1,select("#",...) do
+            local value=select(i,...)
+            if type(value)=="table" then for _,v in ipairs(value) do table.insert(values,tostring(v)) end
+            elseif value~=nil then table.insert(values,tostring(value)) end
+        end
+        return string.lower(table.concat(values," "))
+    end
+    local function setActiveTab(name)
+        closeAllDropdowns()
+        for tabName,data in pairs(Pages) do
+            local active=name==tabName
+            data.Page.Visible=active
+            tween(data.Btn,{BackgroundColor3=active and Library.COLORS.accent1 or Library.COLORS.card},0.16)
+            tween(data.Label,{TextColor3=active and Library.COLORS.textInverse or Library.COLORS.textSub},0.16)
+            tween(data.Icon,{ImageColor3=active and Library.COLORS.textInverse or Library.COLORS.textSub},0.16)
+        end
+    end
+    function WindowObject:MakeTab(TabConfig)
+        TabConfig=TabConfig or {}
+        local TabName=TabConfig.Name or "Tab"
+        tabOrderIndex+=1
+        local btn=make("TextButton",tabsBar,{Name="PillTab_"..TabName,LayoutOrder=tabOrderIndex,
+            Size=UDim2.fromOffset(math.max(78,#TabName*7+36),30),BackgroundColor3=Library.COLORS.card,
+            BorderSizePixel=0,AutoButtonColor=false,Text="",ZIndex=13})
+        corner(15).Parent=btn;stroke(btn)
+        local icon=make("ImageLabel",btn,{Size=UDim2.fromOffset(14,14),Position=UDim2.fromOffset(10,8),BackgroundTransparency=1,ZIndex=14})
+        applyLunaIcon(icon,TabConfig.Icon or "home",Library.COLORS.textSub)
+        local tabLabel=label(btn,TabName,UDim2.fromOffset(30,0),UDim2.new(1,-38,1,0),Enum.Font.GothamBold,nil,14)
+        local page=make("ScrollingFrame",content,{Name="Page_"..TabName,Size=UDim2.fromScale(1,1),
+            BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,CanvasSize=UDim2.fromOffset(0,0),
+            AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=FirstTab,ZIndex=13})
+        make("UIListLayout",page,{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,6)})
+        make("Frame",page,{Name="PageHero",LayoutOrder=-100,Size=UDim2.fromOffset(0,0),BackgroundTransparency=1,Visible=false})
+        local pageSearchEntries={}
+        local function registerSearchTarget(instance,...)
+            local entry={Instance=instance,SearchText=buildSearchText(...)}
+            table.insert(pageSearchEntries,entry);return entry
+        end
+        local function updateSearchTarget(entry,...)
+            if entry then entry.SearchText=buildSearchText(...) end
+        end
+        Pages[TabName]={Page=page,Btn=btn,Label=tabLabel,Icon=icon}
+        if FirstTab then FirstTab=false;setActiveTab(TabName) end
+        btn.MouseButton1Click:Connect(function() setActiveTab(TabName) end)
+        local TabObject={}
+        -- Existing control implementations follow, including searchable multi-select.
+        function TabObject:AddToggle(TogConfig)
+            local titleText = TogConfig.Name or "Toggle"
+            local initial = TogConfig.Default
+            if initial == nil then initial = TogConfig.CurrentValue end
+            initial = initial or false
+            local callback = TogConfig.Callback or function() end
+            local flag = TogConfig.Flag
 
-        -- Logic Hover mở/đóng mượt không bị nhấp nháy
-        local drawerShown = false
-        local function updateHoverCheck()
-            if not root.Visible then return end
-            local mPos = UserInputService:GetMouseLocation()
-            local rPos, rSize = arrowCircle.AbsolutePosition, arrowCircle.AbsoluteSize
-            local nPos, nSize = notchBadge.AbsolutePosition, notchBadge.AbsoluteSize
+            local row = Instance.new("TextButton")
+            row.Name = "HacBach_ToggleRow"
+            row.Size = UDim2.new(1, 0, 0, 38)
+            row.BackgroundColor3 = Library.COLORS.card
+            row.BackgroundTransparency = 0.06
+            row.Text = ""
+            row.AutoButtonColor = false
+            row.Parent = page
+            corner(6).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.border
+            rStroke.Transparency = 0.35
+            attachCornerBrackets(row, 6, 1, Color3.fromRGB(220, 220, 230), 0.55, 2)
+            registerSearchTarget(row, titleText)
 
-            local nearArrow = (mPos.X >= rPos.X - 18 and mPos.X <= rPos.X + rSize.X + 18)
-                          and (mPos.Y >= nPos.Y - 12 and mPos.Y <= rPos.Y + rSize.Y + 35)
+            local leftIndicator = Instance.new("Frame")
+            leftIndicator.Size = UDim2.new(0, 3, 0, 18)
+            leftIndicator.Position = UDim2.new(0, 4, 0.5, -9)
+            leftIndicator.BackgroundColor3 = initial and Library.COLORS.accent1 or Library.COLORS.muted
+            leftIndicator.BorderSizePixel = 0
+            leftIndicator.Parent = row
+            corner(2).Parent = leftIndicator
 
-            local nearDrawer = false
-            if drawerShown then
-                local dPos, dSize = infoDrawer.AbsolutePosition, infoDrawer.AbsoluteSize
-                nearDrawer = (mPos.X >= dPos.X - 12 and mPos.X <= dPos.X + dSize.X + 12)
-                         and (mPos.Y >= rPos.Y - 10 and mPos.Y <= dPos.Y + dSize.Y + 16)
-            end
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(1, -76, 1, 0)
+            lbl.Position = UDim2.new(0, 14, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = titleText
+            lbl.Font = Enum.Font.GothamBold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
 
-            local shouldOpen = nearArrow or nearDrawer
-            if shouldOpen ~= drawerShown then
-                drawerShown = shouldOpen
-                if drawerShown then
-                    infoDrawer.Visible = true
-                    tween(infoDrawer, {Size = UDim2.fromOffset(MENU_W - 40, 80)}, 0.25, Enum.EasingStyle.Exponential)
-                    tween(arrowSymbol, {Rotation = 180}, 0.22)
-                    tween(arrowCircle, {BackgroundColor3 = PALETTE.accent}, 0.22)
-                    tween(arrowSymbol, {TextColor3 = PALETTE.textDark}, 0.22)
+            local on = initial
+            local knobOuter = Instance.new("Frame")
+            knobOuter.Size = UDim2.fromOffset(42, 22)
+            knobOuter.Position = UDim2.new(1, -50, 0.5, -11)
+            knobOuter.BackgroundColor3 = on and Color3.fromRGB(246, 246, 250) or Color3.fromRGB(11, 11, 14)
+            knobOuter.Parent = row
+            corner(11).Parent = knobOuter
+
+            local shade = Instance.new("UIStroke", knobOuter)
+            shade.Color = on and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(72, 72, 82)
+            shade.Transparency = on and 0.15 or 0.4
+            shade.Thickness = 1
+
+            local knobInner = Instance.new("Frame")
+            knobInner.Size = UDim2.fromOffset(16, 16)
+            knobInner.Position = UDim2.new(0, on and 23 or 3, 0.5, -8)
+            knobInner.BackgroundColor3 = on and Color3.fromRGB(10, 10, 13) or Color3.fromRGB(220, 220, 230)
+            knobInner.Parent = knobOuter
+            corner(8).Parent = knobInner
+
+            -- Tâm Nhãn Âm Dương bên trong núm gạt
+            local knobCore = Instance.new("Frame")
+            knobCore.Size = UDim2.fromOffset(5, 5)
+            knobCore.Position = UDim2.new(0.5, -2, 0.5, -2)
+            knobCore.BackgroundColor3 = on and Color3.fromRGB(246, 246, 250) or Color3.fromRGB(12, 12, 16)
+            knobCore.BorderSizePixel = 0
+            knobCore.Parent = knobInner
+            corner(3).Parent = knobCore
+
+            row.MouseEnter:Connect(function()
+                tween(rStroke, {Color = Color3.fromRGB(210, 210, 220), Transparency = 0.15}, 0.16)
+            end)
+            row.MouseLeave:Connect(function()
+                tween(rStroke, {Color = Library.COLORS.border, Transparency = 0.35}, 0.16)
+            end)
+
+            local function applyToggle(nextValue, fromLoad)
+                on = (nextValue == true)
+                if not fromLoad then
+                    createRipple(row, Mouse.X, Mouse.Y)
+                end
+                if on then
+                    tween(leftIndicator, {BackgroundColor3 = Color3.fromRGB(246, 246, 250), Size = UDim2.new(0, 3, 0, 22), Position = UDim2.new(0, 4, 0.5, -11)}, 0.22)
+                    tween(knobOuter, {BackgroundColor3 = Color3.fromRGB(246, 246, 250)}, 0.22)
+                    tween(knobInner, {Position = UDim2.new(0, 23, 0.5, -8), BackgroundColor3 = Color3.fromRGB(10, 10, 13), Rotation = 180}, 0.24, Enum.EasingStyle.Back)
+                    tween(knobCore, {BackgroundColor3 = Color3.fromRGB(246, 246, 250)}, 0.22)
+                    tween(shade, {Color = Color3.fromRGB(255, 255, 255), Transparency = 0.15}, 0.22)
                 else
-                    tween(arrowSymbol, {Rotation = 0}, 0.22)
-                    tween(arrowCircle, {BackgroundColor3 = PALETTE.card}, 0.22)
-                    tween(arrowSymbol, {TextColor3 = PALETTE.accent}, 0.22)
-                    local t = tween(infoDrawer, {Size = UDim2.fromOffset(MENU_W - 40, 0)}, 0.20, Enum.EasingStyle.Quart)
-                    t.Completed:Connect(function()
-                        if not drawerShown then infoDrawer.Visible = false end
-                    end)
+                    tween(leftIndicator, {BackgroundColor3 = Library.COLORS.muted, Size = UDim2.new(0, 3, 0, 14), Position = UDim2.new(0, 4, 0.5, -7)}, 0.22)
+                    tween(knobOuter, {BackgroundColor3 = Color3.fromRGB(11, 11, 14)}, 0.22)
+                    tween(knobInner, {Position = UDim2.new(0, 3, 0.5, -8), BackgroundColor3 = Color3.fromRGB(220, 220, 230), Rotation = 0}, 0.22, Enum.EasingStyle.Quart)
+                    tween(knobCore, {BackgroundColor3 = Color3.fromRGB(12, 12, 16)}, 0.22)
+                    tween(shade, {Color = Color3.fromRGB(72, 72, 82), Transparency = 0.4}, 0.22)
                 end
-            end
-        end
-        connect(UserInputService.InputChanged, function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseMovement then
-                updateHoverCheck()
-            end
-        end)
-
-        --====================================================================--
-        -- 6. CHUYỂN ĐỘNG ĐÓNG / MỞ MENU GIỮA KHUNG CHÍNH & NÚT `<` MÉP PHẢI
-        --====================================================================--
-        local menuVisible = true
-        local animBusy = false
-
-        local function setMenuOpen(state)
-            if animBusy or menuVisible == state then return end
-            animBusy = true
-            menuVisible = state
-
-            if menuVisible then
-                dockTab.Visible = false
-                root.Visible = true
-                rootScale.Scale = 0.88
-                root.Position = UDim2.new(0.55, 0, 0.5, 0)
-                tween(rootScale, {Scale = 1}, 0.28, Enum.EasingStyle.Exponential)
-                local t = tween(root, {Position = UDim2.new(0.5, 0, 0.5, 0)}, 0.28, Enum.EasingStyle.Exponential)
-                t.Completed:Connect(function() animBusy = false end)
-            else
-                drawerShown = false
-                infoDrawer.Visible = false
-                infoDrawer.Size = UDim2.fromOffset(MENU_W - 40, 0)
-                tween(rootScale, {Scale = 0.88}, 0.20, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
-                local t = tween(root, {Position = UDim2.new(0.58, 0, 0.5, 0)}, 0.20, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
-                t.Completed:Connect(function()
-                    root.Visible = false
-                    rootScale.Scale = 1
-                    dockTab.Visible = true
-                    dockTab.Position = UDim2.new(1, 26, 0.5, 0)
-                    tween(dockTab, {Position = UDim2.new(1, 0, 0.5, 0)}, 0.22, Enum.EasingStyle.Back)
-                    animBusy = false
-                end)
-            end
-        end
-
-        dockTab.MouseButton1Click:Connect(function() setMenuOpen(true) end)
-        minimizeToEdgeBtn.MouseButton1Click:Connect(function() setMenuOpen(false) end)
-
-        connect(UserInputService.InputBegan, function(inp, gp)
-            if gp then return end
-            if inp.KeyCode == Enum.KeyCode[toggleKey] or inp.KeyCode == Enum.KeyCode.RightShift then
-                setMenuOpen(not menuVisible)
-            end
-        end)
-
-        --====================================================================--
-        -- 7. QUẢN LÝ TAB & CÁC THÀNH PHẦN ĐIỀU KHIỂN (TƯƠNG THÍCH 100%)
-        --====================================================================--
-        local WindowObject = {}
-        local Pages = {}
-        local FirstTab = true
-
-        local function selectTab(targetName)
-            for name, data in pairs(Pages) do
-                local active = (name == targetName)
-                data.Page.Visible = active
-                if active then
-                    tween(data.Pill, {BackgroundColor3 = PALETTE.accent}, 0.2)
-                    tween(data.Icon, {ImageColor3 = PALETTE.textDark}, 0.2)
-                    tween(data.Label, {TextColor3 = PALETTE.textDark}, 0.2)
-                    tween(data.Stroke, {Color = Color3.fromRGB(255, 255, 255), Transparency = 0.05}, 0.2)
-                else
-                    tween(data.Pill, {BackgroundColor3 = PALETTE.card}, 0.2)
-                    tween(data.Icon, {ImageColor3 = PALETTE.text}, 0.2)
-                    tween(data.Label, {TextColor3 = PALETTE.textSub}, 0.2)
-                    tween(data.Stroke, {Color = PALETTE.border, Transparency = 0.35}, 0.2)
-                end
-            end
-        end
-
-        function WindowObject:MakeTab(TabConfig)
-            TabConfig = TabConfig or {}
-            local TabName = TabConfig.Name or "Tab"
-            local tabIcons = {
-                ["Home"] = "home", ["Stand Farm"] = "crown", ["Targets"] = "crosshair",
-                ["Storage & Orb"] = "box", ["Auto Lair"] = "flame", ["Utilities"] = "wrench",
-                ["Settings"] = "settings",
-            }
-            local iconKey = TabConfig.Icon or tabIcons[TabName] or "home"
-
-            -- Nút Pill hình viên thuốc trên hàng ngang (Ảnh 1)
-            local pillBtn = Instance.new("TextButton")
-            pillBtn.Name = "PillTab_" .. TabName
-            pillBtn.AutomaticSize = Enum.AutomaticSize.X
-            pillBtn.Size = UDim2.fromOffset(68, 30)
-            pillBtn.BackgroundColor3 = PALETTE.card
-            pillBtn.BorderSizePixel = 0
-            pillBtn.Text = ""
-            pillBtn.AutoButtonColor = false
-            pillBtn.ZIndex = 13
-            pillBtn.Parent = topPillBar
-            makeCorner(pillBtn, 15)
-            local pStroke = makeStroke(pillBtn, PALETTE.border, 1, 0.35)
-
-            local pillPad = Instance.new("UIPadding", pillBtn)
-            pillPad.PaddingLeft = UDim.new(0, 12)
-            pillPad.PaddingRight = UDim.new(0, 12)
-
-            local pillRow = Instance.new("UIListLayout", pillBtn)
-            pillRow.FillDirection = Enum.FillDirection.Horizontal
-            pillRow.VerticalAlignment = Enum.VerticalAlignment.Center
-            pillRow.Padding = UDim.new(0, 6)
-
-            local pIcon = Instance.new("ImageLabel")
-            pIcon.Size = UDim2.fromOffset(14, 14)
-            pIcon.BackgroundTransparency = 1
-            pIcon.ZIndex = 14
-            pIcon.Parent = pillBtn
-            applyLunaIcon(pIcon, iconKey, PALETTE.text)
-
-            local pText = Instance.new("TextLabel")
-            pText.AutomaticSize = Enum.AutomaticSize.X
-            pText.Size = UDim2.fromOffset(0, 20)
-            pText.BackgroundTransparency = 1
-            pText.Text = TabName
-            pText.Font = Enum.Font.GothamBold
-            pText.TextSize = 11
-            pText.TextColor3 = PALETTE.textSub
-            pText.ZIndex = 14
-            pText.Parent = pillBtn
-
-            -- Trang cuộn của Tab
-            local page = Instance.new("ScrollingFrame")
-            page.Name = "Page_" .. TabName
-            page.Size = UDim2.new(1, 0, 1, 0)
-            page.BackgroundTransparency = 1
-            page.BorderSizePixel = 0
-            page.ScrollBarThickness = 2
-            page.ScrollBarImageColor3 = PALETTE.accent
-            page.CanvasSize = UDim2.new(0, 0, 0, 0)
-            page.AutomaticCanvasSize = Enum.AutomaticSize.Y
-            page.Visible = FirstTab
-            page.ZIndex = 13
-            page.Parent = contentHost
-
-            local pageList = Instance.new("UIListLayout", page)
-            pageList.SortOrder = Enum.SortOrder.LayoutOrder
-            pageList.Padding = UDim.new(0, 6)
-
-            -- PageHero ẩn gọn để tương thích với các lệnh lọc child.Name ~= "PageHero" trong script chính
-            local hero = Instance.new("Frame")
-            hero.Name = "PageHero"
-            hero.LayoutOrder = -100
-            hero.Size = UDim2.new(1, 0, 0, 0)
-            hero.BackgroundTransparency = 1
-            hero.Visible = false
-            hero.Parent = page
-
-            Pages[TabName] = {
-                Page = page, Pill = pillBtn, Icon = pIcon, Label = pText,
-                Stroke = pStroke, SearchEntries = {}
-            }
-
-            if FirstTab then
-                FirstTab = false
-                selectTab(TabName)
-            end
-
-            pillBtn.MouseButton1Click:Connect(function()
-                selectTab(TabName)
-            end)
-
-            local TabObject = {}
-            TabObject._page = page
-            TabObject._searchEntries = Pages[TabName].SearchEntries
-            TabObject.Select = function() selectTab(TabName) end
-
-            -- 1. HÀM DỰNG BỐ CỤC BENTO 5 Ô Y HỆT ẢNH 1 (2 Ô LỚN TRÁI + 3 Ô NHỎ PHẢI)
-            function TabObject:AddBentoShowcase(config)
-                config = config or {}
-                local bentoFrame = Instance.new("Frame")
-                bentoFrame.Name = "BentoShowcaseGrid"
-                bentoFrame.Size = UDim2.new(1, 0, 0, 320)
-                bentoFrame.BackgroundTransparency = 1
-                bentoFrame.Parent = page
-
-                local function createBentoTile(pos, size, iconKey, labelText, onClick)
-                    local tile = Instance.new("TextButton")
-                    tile.Position = pos
-                    tile.Size = size
-                    tile.BackgroundColor3 = PALETTE.card
-                    tile.BorderSizePixel = 0
-                    tile.Text = ""
-                    tile.AutoButtonColor = false
-                    tile.Parent = bentoFrame
-                    makeCorner(tile, 12)
-                    local st = makeStroke(tile, PALETTE.border, 1.2, 0.35)
-
-                    local ic = Instance.new("ImageLabel")
-                    ic.Size = UDim2.fromOffset(32, 32)
-                    ic.AnchorPoint = Vector2.new(0.5, 0.5)
-                    ic.Position = UDim2.new(0.5, 0, 0.45, 0)
-                    ic.BackgroundTransparency = 1
-                    ic.Parent = tile
-                    applyLunaIcon(ic, iconKey, PALETTE.accentMuted)
-
-                    local lb = Instance.new("TextLabel")
-                    lb.Size = UDim2.new(1, -12, 0, 18)
-                    lb.Position = UDim2.new(0, 6, 1, -24)
-                    lb.BackgroundTransparency = 1
-                    lb.Text = labelText or ""
-                    lb.Font = Enum.Font.GothamBold
-                    lb.TextSize = 11
-                    lb.TextColor3 = PALETTE.textSub
-                    lb.Parent = tile
-
-                    tile.MouseEnter:Connect(function()
-                        tween(tile, {BackgroundColor3 = PALETTE.cardHover}, 0.16)
-                        tween(st, {Color = PALETTE.borderLight, Transparency = 0.1}, 0.16)
-                        tween(ic, {ImageColor3 = PALETTE.accent}, 0.16)
-                    end)
-                    tile.MouseLeave:Connect(function()
-                        tween(tile, {BackgroundColor3 = PALETTE.card}, 0.16)
-                        tween(st, {Color = PALETTE.border, Transparency = 0.35}, 0.16)
-                        tween(ic, {ImageColor3 = PALETTE.accentMuted}, 0.16)
-                    end)
-                    if onClick then tile.MouseButton1Click:Connect(onClick) end
-                    return tile
-                end
-
-                -- 2 Ô lớn bên trái (60% chiều rộng) + 3 Ô nhỏ bên phải (38% chiều rộng) đúng Ảnh 1
-                createBentoTile(UDim2.new(0, 0, 0, 0), UDim2.new(0.60, -4, 0, 154), "monitor", config.TopLeftTitle or "Media / Preview", config.OnTopLeft)
-                createBentoTile(UDim2.new(0, 0, 0, 162), UDim2.new(0.60, -4, 0, 154), "zap", config.BottomLeftTitle or "Bắt Đầu Nhanh (Play)", config.OnBottomLeft)
-
-                createBentoTile(UDim2.new(0.60, 4, 0, 0), UDim2.new(0.40, -4, 0, 100), "box", config.Right1Title or "Kho Chứa (Storage)", config.OnRight1)
-                createBentoTile(UDim2.new(0.60, 4, 0, 108), UDim2.new(0.40, -4, 0, 100), "package", config.Right2Title or "Vật Phẩm (Items)", config.OnRight2)
-                createBentoTile(UDim2.new(0.60, 4, 0, 216), UDim2.new(0.40, -4, 0, 100), "list-ordered", config.Right3Title or "Nhật Ký (Logs)", config.OnRight3)
-
-                return bentoFrame
-            end
-
-            -- 2. CÁC HÀM CHUẨN TƯƠNG THÍCH VỚI SCRIPT CHÍNH (CreateSection, Toggle, Button, Slider, Input, Dropdown)
-            function TabObject:CreateSection(textVal)
-                local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, 0, 0, 28)
-                row.BackgroundColor3 = PALETTE.bg
-                row.Parent = page
-                makeCorner(row, 8)
-                makeStroke(row, PALETTE.border, 1, 0.5)
-
-                local lbl = Instance.new("TextLabel")
-                lbl.Size = UDim2.new(1, -20, 1, 0)
-                lbl.Position = UDim2.fromOffset(10, 0)
-                lbl.BackgroundTransparency = 1
-                lbl.Text = tostring(textVal or "")
-                lbl.Font = Enum.Font.GothamBold
-                lbl.TextSize = 11
-                lbl.TextColor3 = PALETTE.text
-                lbl.TextXAlignment = Enum.TextXAlignment.Left
-                lbl.Parent = row
-
-                return { Set = function(_, v) lbl.Text = tostring(v or "") end }
-            end
-
-            function TabObject:AddToggle(TogConfig)
-                TogConfig = TogConfig or {}
-                local titleText = TogConfig.Name or "Toggle"
-                local state = TogConfig.Default
-                if state == nil then state = TogConfig.CurrentValue end
-                state = (state == true)
-                local callback = TogConfig.Callback or function() end
-                local flag = TogConfig.Flag
-
-                local row = Instance.new("TextButton")
-                row.Size = UDim2.new(1, 0, 0, 38)
-                row.BackgroundColor3 = PALETTE.card
-                row.Text = ""
-                row.AutoButtonColor = false
-                row.Parent = page
-                makeCorner(row, 8)
-                makeStroke(row, PALETTE.border, 1, 0.4)
-
-                local lbl = Instance.new("TextLabel")
-                lbl.Size = UDim2.new(1, -68, 1, 0)
-                lbl.Position = UDim2.fromOffset(12, 0)
-                lbl.BackgroundTransparency = 1
-                lbl.Text = titleText
-                lbl.Font = Enum.Font.GothamBold
-                lbl.TextSize = 12
-                lbl.TextColor3 = PALETTE.text
-                lbl.TextXAlignment = Enum.TextXAlignment.Left
-                lbl.Parent = row
-
-                local track = Instance.new("Frame")
-                track.Size = UDim2.fromOffset(40, 20)
-                track.Position = UDim2.new(1, -50, 0.5, -10)
-                track.BackgroundColor3 = state and PALETTE.accent or PALETTE.bg
-                track.Parent = row
-                makeCorner(track, 10)
-
-                local knob = Instance.new("Frame")
-                knob.Size = UDim2.fromOffset(14, 14)
-                knob.Position = UDim2.new(0, state and 23 or 3, 0.5, -7)
-                knob.BackgroundColor3 = state and PALETTE.textDark or PALETTE.text
-                knob.Parent = track
-                makeCorner(knob, 7)
-
-                local function applyToggle(val)
-                    state = (val == true)
-                    tween(track, {BackgroundColor3 = state and PALETTE.accent or PALETTE.bg}, 0.2)
-                    tween(knob, {
-                        Position = UDim2.new(0, state and 23 or 3, 0.5, -7),
-                        BackgroundColor3 = state and PALETTE.textDark or PALETTE.text
-                    }, 0.2, Enum.EasingStyle.Back)
-                    if flag then Library._compat.flags[flag] = state end
-                    pcall(callback, state)
-                end
-
-                if flag then Library:_bindFlag(flag, state, applyToggle) end
-                row.MouseButton1Click:Connect(function() applyToggle(not state) end)
-                if state then pcall(callback, state) end
-                return { Set = function(_, v) applyToggle(v) end }
-            end
-
-            function TabObject:AddButton(BtnConfig)
-                BtnConfig = BtnConfig or {}
-                local btnText = BtnConfig.Name or "Button"
-                local callback = BtnConfig.Callback or function() end
-
-                local btn = Instance.new("TextButton")
-                btn.Size = UDim2.new(1, 0, 0, 36)
-                btn.BackgroundColor3 = PALETTE.card
-                btn.Text = "   " .. btnText
-                btn.Font = Enum.Font.GothamBold
-                btn.TextSize = 12
-                btn.TextColor3 = PALETTE.text
-                btn.TextXAlignment = Enum.TextXAlignment.Left
-                btn.AutoButtonColor = false
-                btn.Parent = page
-                makeCorner(btn, 8)
-                makeStroke(btn, PALETTE.border, 1, 0.4)
-
-                btn.MouseEnter:Connect(function() tween(btn, {BackgroundColor3 = PALETTE.cardHover}, 0.15) end)
-                btn.MouseLeave:Connect(function() tween(btn, {BackgroundColor3 = PALETTE.card}, 0.15) end)
-                btn.MouseButton1Click:Connect(function() pcall(callback) end)
-                return btn
-            end
-
-            function TabObject:AddSlider(SliderConfig)
-                SliderConfig = SliderConfig or {}
-                local sText = SliderConfig.Name or "Slider"
-                local range = SliderConfig.Range
-                local min = SliderConfig.Min or (type(range) == "table" and range[1]) or 0
-                local max = SliderConfig.Max or (type(range) == "table" and range[2]) or 100
-                local inc = SliderConfig.Increment or 1
-                local suf = SliderConfig.Suffix or ""
-                local cur = SliderConfig.Default or SliderConfig.CurrentValue or min
-                local callback = SliderConfig.Callback or function() end
-                local flag = SliderConfig.Flag
-
-                local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, 0, 0, 44)
-                row.BackgroundColor3 = PALETTE.card
-                row.Parent = page
-                makeCorner(row, 8)
-                makeStroke(row, PALETTE.border, 1, 0.4)
-
-                local lbl = Instance.new("TextLabel")
-                lbl.Size = UDim2.new(0.38, 0, 1, 0)
-                lbl.Position = UDim2.fromOffset(12, 0)
-                lbl.BackgroundTransparency = 1
-                lbl.Text = sText
-                lbl.Font = Enum.Font.GothamBold
-                lbl.TextSize = 12
-                lbl.TextColor3 = PALETTE.text
-                lbl.TextXAlignment = Enum.TextXAlignment.Left
-                lbl.Parent = row
-
-                local valLbl = Instance.new("TextLabel")
-                valLbl.Size = UDim2.fromOffset(60, 20)
-                valLbl.Position = UDim2.new(1, -68, 0.5, -10)
-                valLbl.BackgroundTransparency = 1
-                valLbl.Font = Enum.Font.GothamBlack
-                valLbl.TextSize = 11
-                valLbl.TextColor3 = PALETTE.accent
-                valLbl.TextXAlignment = Enum.TextXAlignment.Right
-                valLbl.Parent = row
-
-                local track = Instance.new("Frame")
-                track.Size = UDim2.new(0.42, 0, 0, 6)
-                track.Position = UDim2.new(0.40, 0, 0.5, -3)
-                track.BackgroundColor3 = PALETTE.bg
-                track.Parent = row
-                makeCorner(track, 3)
-
-                local fill = Instance.new("Frame")
-                fill.Size = UDim2.new(0, 0, 1, 0)
-                fill.BackgroundColor3 = PALETTE.accent
-                fill.Parent = track
-                makeCorner(fill, 3)
-
-                local hit = Instance.new("TextButton")
-                hit.Size = UDim2.new(1, 0, 1, 14)
-                hit.Position = UDim2.fromOffset(0, -7)
-                hit.BackgroundTransparency = 1
-                hit.Text = ""
-                hit.Parent = track
-
-                local sliding = false
-                local function setVal(v)
-                    v = math.clamp(tonumber(v) or min, min, max)
-                    local step = min + math.floor(((v - min) / inc) + 0.5) * inc
-                    step = math.clamp(step, min, max)
-                    local pct = (max == min) and 0 or ((step - min) / (max - min))
-                    fill.Size = UDim2.new(pct, 0, 1, 0)
-                    valLbl.Text = tostring(step) .. suf
-                    if flag then Library._compat.flags[flag] = step end
-                    pcall(callback, step)
-                end
-
-                local function updateFromX(x)
-                    local pct = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
-                    setVal(min + (max - min) * pct)
-                end
-
-                hit.InputBegan:Connect(function(inp)
-                    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-                        sliding = true
-                        updateFromX(inp.Position.X)
-                    end
-                end)
-                connect(UserInputService.InputChanged, function(inp)
-                    if sliding and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then
-                        updateFromX(inp.Position.X)
-                    end
-                end)
-                connect(UserInputService.InputEnded, function(inp)
-                    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-                        sliding = false
-                    end
-                end)
-
-                if flag then Library:_bindFlag(flag, cur, setVal) end
-                setVal(cur)
-                return { Set = function(_, v) setVal(v) end }
-            end
-
-            function TabObject:CreateInput(InputConfig)
-                InputConfig = InputConfig or {}
-                local titleText = InputConfig.Name or "Input"
-                local cur = tostring(InputConfig.CurrentValue or "")
-                local callback = InputConfig.Callback or function() end
-                local flag = InputConfig.Flag
-
-                local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, 0, 0, 38)
-                row.BackgroundColor3 = PALETTE.card
-                row.Parent = page
-                makeCorner(row, 8)
-                makeStroke(row, PALETTE.border, 1, 0.4)
-
-                local lbl = Instance.new("TextLabel")
-                lbl.Size = UDim2.new(0.36, -8, 1, 0)
-                lbl.Position = UDim2.fromOffset(12, 0)
-                lbl.BackgroundTransparency = 1
-                lbl.Text = titleText
-                lbl.Font = Enum.Font.GothamBold
-                lbl.TextSize = 12
-                lbl.TextColor3 = PALETTE.text
-                lbl.TextXAlignment = Enum.TextXAlignment.Left
-                lbl.Parent = row
-
-                local box = Instance.new("TextBox")
-                box.Size = UDim2.new(0.62, -12, 0, 24)
-                box.Position = UDim2.new(0.38, 0, 0.5, -12)
-                box.BackgroundColor3 = PALETTE.bg
-                box.Text = cur
-                box.PlaceholderText = tostring(InputConfig.PlaceholderText or "")
-                box.ClearTextOnFocus = false
-                box.Font = Enum.Font.Gotham
-                box.TextSize = 11
-                box.TextColor3 = PALETTE.text
-                box.PlaceholderColor3 = PALETTE.textSub
-                box.Parent = row
-                makeCorner(box, 6)
-
-                local function applyTxt(v)
-                    cur = tostring(v or "")
-                    box.Text = cur
-                    if flag then Library._compat.flags[flag] = cur end
-                    pcall(callback, cur)
-                end
-                if flag then Library:_bindFlag(flag, cur, applyTxt) end
-                box.FocusLost:Connect(function() applyTxt(box.Text) end)
-                return { Set = function(_, v) applyTxt(v) end }
-            end
-
-            function TabObject:CreateDropdown(DropConfig)
-                DropConfig = DropConfig or {}
-                local titleText = DropConfig.Name or "Dropdown"
-                local options = cloneArray(DropConfig.Options)
-                local current = cloneArray(DropConfig.CurrentOption)
-                local multiple = (DropConfig.MultipleOptions == true)
-                local callback = DropConfig.Callback or function() end
-                local flag = DropConfig.Flag
-
-                local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, 0, 0, 38)
-                row.BackgroundColor3 = PALETTE.card
-                row.Parent = page
-                makeCorner(row, 8)
-                makeStroke(row, PALETTE.border, 1, 0.4)
-
-                local lbl = Instance.new("TextLabel")
-                lbl.Size = UDim2.new(0.36, -8, 1, 0)
-                lbl.Position = UDim2.fromOffset(12, 0)
-                lbl.BackgroundTransparency = 1
-                lbl.Text = titleText
-                lbl.Font = Enum.Font.GothamBold
-                lbl.TextSize = 12
-                lbl.TextColor3 = PALETTE.text
-                lbl.TextXAlignment = Enum.TextXAlignment.Left
-                lbl.Parent = row
-
-                local selBtn = Instance.new("TextButton")
-                selBtn.Size = UDim2.new(0.62, -12, 0, 24)
-                selBtn.Position = UDim2.new(0.38, 0, 0.5, -12)
-                selBtn.BackgroundColor3 = PALETTE.bg
-                selBtn.Font = Enum.Font.GothamBold
-                selBtn.TextSize = 11
-                selBtn.TextColor3 = PALETTE.text
-                selBtn.TextXAlignment = Enum.TextXAlignment.Left
-                selBtn.TextTruncate = Enum.TextTruncate.AtEnd
-                selBtn.AutoButtonColor = false
-                selBtn.Parent = row
-                makeCorner(selBtn, 6)
-
-                local function updateText()
-                    selBtn.Text = "  " .. (#current > 0 and table.concat(current, ", ") or "Chọn...")
-                end
-                local function applySel(nextList)
-                    current = cloneArray(nextList)
-                    if flag then Library._compat.flags[flag] = cloneArray(current) end
-                    updateText()
-                    pcall(callback, cloneArray(current))
-                end
-
-                selBtn.MouseButton1Click:Connect(function()
-                    if #options == 0 then return end
-                    local idx = 1
-                    for i, v in ipairs(options) do
-                        if v == current[1] then idx = (i % #options) + 1; break end
-                    end
-                    if multiple then
-                        local found = nil
-                        for i, v in ipairs(current) do
-                            if v == options[idx] then found = i; break end
-                        end
-                        local nextSel = cloneArray(current)
-                        if found then table.remove(nextSel, found) else table.insert(nextSel, options[idx]) end
-                        applySel(nextSel)
-                    else
-                        applySel({options[idx]})
-                    end
-                end)
 
                 if flag then
-                    Library:_bindFlag(flag, current, function(v)
-                        applySel(type(v) == "table" and v or {v})
-                    end)
+                    Library._compat.flags[flag] = on
                 end
-                updateText()
-                return {
-                    Refresh = function(_, newOpts) options = cloneArray(newOpts); updateText() end,
-                    Set = function(_, v) applySel(type(v) == "table" and v or {v}) end
-                }
+                pcall(callback, on)
             end
 
-            TabObject.CreateToggle = TabObject.AddToggle
-            TabObject.CreateButton = TabObject.AddButton
-            TabObject.CreateSlider = TabObject.AddSlider
-            TabObject.AddInput = TabObject.CreateInput
-            TabObject.AddDropdown = TabObject.CreateDropdown
+            if flag then
+                Library:_bindFlag(flag, on, function(value)
+                    applyToggle(value, true)
+                end)
+            end
 
-            return TabObject
-        end
+            row.MouseButton1Click:Connect(function()
+                applyToggle(not on, false)
+            end)
 
-        function WindowObject:CreateTab(TabName, Icon)
-            return self:MakeTab({Name = TabName, Icon = Icon})
-        end
+            if on then
+                pcall(callback, on)
+            end
 
-        return WindowObject
-    end
-
-    function Library:CreateWindow(Config)
-        local configSaving = Config and Config.ConfigurationSaving
-        if type(configSaving) == "table" and configSaving.Enabled then
-            self._compat.config = {
-                FolderName = configSaving.FolderName or "LunaHub_SUR",
-                FileName = configSaving.FileName or "LunaHub_Settings"
+            return {
+                Set = function(_, value)
+                    applyToggle(value, true)
+                end
             }
         end
-        return self:MakeWindow(Config)
-    end
 
-    function Library:SaveConfiguration()
-        local cfg = self._compat.config
-        if not cfg or type(writefile) ~= "function" then return true end
-        local ok, err = pcall(function()
-            if type(isfolder) == "function" and not isfolder(cfg.FolderName) then
-                makefolder(cfg.FolderName)
+        -- 2. NÚT BẤM LỆNH BÀI THỦY MẶC (INK-JADE COMMAND PLATE)
+        function TabObject:AddButton(BtnConfig)
+            local btnText = BtnConfig.Name or "Button"
+            local callback = BtnConfig.Callback or function() end
+            local lowerButtonText = string.lower(btnText)
+            local isPrimary = string.find(lowerButtonText, "start", 1, true) ~= nil
+                or string.find(lowerButtonText, "add target", 1, true) ~= nil
+                or string.find(lowerButtonText, "save", 1, true) ~= nil
+
+            local btnUI = Instance.new("TextButton")
+            btnUI.Name = "HacBach_Button"
+            btnUI.Size = UDim2.new(1, 0, 0, 36)
+            btnUI.BackgroundColor3 = isPrimary and Color3.fromRGB(244, 244, 250) or Library.COLORS.card
+            btnUI.BackgroundTransparency = isPrimary and 0 or 0.06
+            btnUI.Text = "   " .. btnText
+            btnUI.Font = Enum.Font.GothamBold
+            btnUI.TextSize = 12
+            btnUI.TextColor3 = isPrimary and Color3.fromRGB(10, 10, 13) or Library.COLORS.text
+            btnUI.TextXAlignment = Enum.TextXAlignment.Left
+            btnUI.TextTruncate = Enum.TextTruncate.AtEnd
+            btnUI.AutoButtonColor = false
+            btnUI.ClipsDescendants = true
+            btnUI.Parent = page
+            corner(6).Parent = btnUI
+            attachCornerBrackets(btnUI, 6, 1, isPrimary and Color3.fromRGB(15, 15, 20) or Color3.fromRGB(235, 235, 245), 0.45, 2)
+            registerSearchTarget(btnUI, btnText)
+
+            local pad = Instance.new("UIPadding", btnUI)
+            pad.PaddingLeft = UDim.new(0, 12)
+
+            local bStroke = Instance.new("UIStroke", btnUI)
+            bStroke.Color = isPrimary and Color3.fromRGB(255, 255, 255) or Library.COLORS.border
+            bStroke.Transparency = isPrimary and 0.15 or 0.35
+
+            local rightGlyph = Instance.new("TextLabel")
+            rightGlyph.Size = UDim2.fromOffset(24, 36)
+            rightGlyph.Position = UDim2.new(1, -28, 0, 0)
+            rightGlyph.BackgroundTransparency = 1
+            rightGlyph.Text = "◈"
+            rightGlyph.Font = Enum.Font.GothamBold
+            rightGlyph.TextSize = 11
+            rightGlyph.TextColor3 = isPrimary and Color3.fromRGB(12, 12, 16) or Library.COLORS.textSub
+            rightGlyph.Parent = btnUI
+
+            btnUI.MouseEnter:Connect(function()
+                tween(btnUI, {BackgroundColor3 = isPrimary and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(30, 30, 38)}, 0.16)
+                tween(bStroke, {Color = Color3.fromRGB(246, 246, 250), Transparency = 0.1}, 0.16)
+                tween(pad, {PaddingLeft = UDim.new(0, 16)}, 0.16)
+            end)
+            btnUI.MouseLeave:Connect(function()
+                tween(btnUI, {BackgroundColor3 = isPrimary and Color3.fromRGB(244, 244, 250) or Library.COLORS.card}, 0.16)
+                tween(bStroke, {Color = isPrimary and Color3.fromRGB(255, 255, 255) or Library.COLORS.border, Transparency = isPrimary and 0.15 or 0.35}, 0.16)
+                tween(pad, {PaddingLeft = UDim.new(0, 12)}, 0.16)
+            end)
+
+            btnUI.MouseButton1Click:Connect(function()
+                createRipple(btnUI, Mouse.X, Mouse.Y)
+                pcall(callback)
+            end)
+        end
+
+        -- 3. THANH TRƯỢT THƯỚC CÀN KHÔN (CELESTIAL GAUGE SLIDER)
+        function TabObject:AddSlider(SliderConfig)
+            local sliderText = SliderConfig.Name or "Slider"
+            local sliderRange = SliderConfig.Range
+            local min = SliderConfig.Min or (type(sliderRange) == "table" and sliderRange[1]) or 0
+            local max = SliderConfig.Max or (type(sliderRange) == "table" and sliderRange[2]) or 100
+            local increment = SliderConfig.Increment or 1
+            local suffix = SliderConfig.Suffix or ""
+            local default = SliderConfig.Default
+            if default == nil then default = SliderConfig.CurrentValue end
+            default = default or min
+            local callback = SliderConfig.Callback or function() end
+            local flag = SliderConfig.Flag
+
+            local row = Instance.new("Frame")
+            row.Name = "HacBach_Slider"
+            row.Size = UDim2.new(1, 0, 0, 46)
+            row.BackgroundColor3 = Library.COLORS.card
+            row.BackgroundTransparency = 0.06
+            row.Parent = page
+            corner(6).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.border
+            rStroke.Transparency = 0.35
+            attachCornerBrackets(row, 6, 1, Color3.fromRGB(220, 220, 230), 0.55, 2)
+            registerSearchTarget(row, sliderText)
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.36, 0, 1, 0)
+            lbl.Position = UDim2.new(0, 12, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = sliderText
+            lbl.Font = Enum.Font.GothamBold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+
+            local valBadge = Instance.new("Frame")
+            valBadge.Size = UDim2.fromOffset(58, 22)
+            valBadge.Position = UDim2.new(1, -66, 0.5, -11)
+            valBadge.BackgroundColor3 = Color3.fromRGB(246, 246, 250)
+            valBadge.BorderSizePixel = 0
+            valBadge.Parent = row
+            corner(5).Parent = valBadge
+
+            local valLbl = Instance.new("TextLabel")
+            valLbl.Size = UDim2.new(1, 0, 1, 0)
+            valLbl.BackgroundTransparency = 1
+            valLbl.Text = tostring(default)
+            valLbl.Font = Enum.Font.GothamBlack
+            valLbl.TextSize = 10
+            valLbl.TextColor3 = Color3.fromRGB(10, 10, 13)
+            valLbl.Parent = valBadge
+
+            local track = Instance.new("Frame")
+            track.Size = UDim2.new(0.46, -12, 0, 6)
+            track.Position = UDim2.new(0.38, 0, 0.5, -3)
+            track.BackgroundColor3 = Color3.fromRGB(10, 10, 13)
+            track.Parent = row
+            corner(3).Parent = track
+            local tStroke = Instance.new("UIStroke", track)
+            tStroke.Color = Color3.fromRGB(65, 65, 75)
+            tStroke.Transparency = 0.4
+
+            local fill = Instance.new("Frame")
+            local startPct = math.clamp((default - min) / math.max(1, max - min), 0, 1)
+            fill.Size = UDim2.new(startPct, 0, 1, 0)
+            fill.BackgroundColor3 = Color3.fromRGB(246, 246, 250)
+            fill.Parent = track
+            corner(3).Parent = fill
+
+            local dragBtn = Instance.new("TextButton")
+            dragBtn.Size = UDim2.new(1, 0, 1, 16)
+            dragBtn.Position = UDim2.new(0, 0, 0, -8)
+            dragBtn.BackgroundTransparency = 1
+            dragBtn.Text = ""
+            dragBtn.Parent = track
+
+            local dragging = false
+            local currentValue = default
+
+            local function normalizeValue(value)
+                value = math.clamp(tonumber(value) or min, min, max)
+                local stepped = min + math.floor(((value - min) / increment) + 0.5) * increment
+                return math.clamp(stepped, min, max)
             end
-            writefile(cfg.FolderName .. "/" .. cfg.FileName .. ".json", HttpService:JSONEncode({flags = self._compat.flags}))
-        end)
-        return ok, err
-    end
 
-    function Library:LoadConfiguration()
-        local cfg = self._compat.config
-        if not cfg or type(readfile) ~= "function" or type(isfile) ~= "function" then return true end
-        local path = cfg.FolderName .. "/" .. cfg.FileName .. ".json"
-        if isfile(path) then
-            local ok, err = pcall(function()
-                local data = HttpService:JSONDecode(readfile(path))
-                if type(data) == "table" and type(data.flags) == "table" then
-                    for k, v in pairs(data.flags) do self:_setFlag(k, v, true) end
+            local function applyValue(value)
+                currentValue = normalizeValue(value)
+                local percent = (max == min) and 0 or ((currentValue - min) / (max - min))
+                tween(fill, {Size = UDim2.new(percent, 0, 1, 0)}, 0.1)
+                valLbl.Text = tostring(currentValue) .. suffix
+                if flag then Library._compat.flags[flag] = currentValue end
+                pcall(callback, currentValue)
+            end
+
+            local function updateSlider(input)
+                local posX = math.clamp(input.Position.X - track.AbsolutePosition.X, 0, math.max(1, track.AbsoluteSize.X))
+                local percent = posX / math.max(1, track.AbsoluteSize.X)
+                applyValue(min + ((max - min) * percent))
+            end
+
+            dragBtn.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = true
+                    updateSlider(input)
                 end
             end)
-            return ok, err
+            connect(UserInputService.InputChanged, function(input)
+                if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    updateSlider(input)
+                end
+            end)
+            connect(UserInputService.InputEnded, function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    dragging = false
+                end
+            end)
+
+            if flag then
+                Library:_bindFlag(flag, currentValue, function(value) applyValue(value) end)
+            end
+            applyValue(default)
+
+            return { Set = function(_, value) applyValue(value) end }
         end
-        return true
+
+        -- 4. THANH PHÂN ĐOẠN CỔ PHONG (SECTION DIVIDER)
+        function TabObject:CreateSection(text)
+            local initialText = tostring(text or "")
+            local row = Instance.new("Frame")
+            row.Name = "HacBach_Section"
+            row.Size = UDim2.new(1, 0, 0, 28)
+            row.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+            row.BackgroundTransparency = 0.08
+            row.Parent = page
+            corner(6).Parent = row
+            local line = Instance.new("UIStroke", row)
+            line.Color = Color3.fromRGB(70, 70, 82)
+            line.Transparency = 0.45
+            local searchEntry = registerSearchTarget(row, text)
+
+            local jadeMark = Instance.new("Frame")
+            jadeMark.Size = UDim2.new(0, 3, 0, 14)
+            jadeMark.Position = UDim2.new(0, 7, 0.5, -7)
+            jadeMark.BackgroundColor3 = Color3.fromRGB(246, 246, 250)
+            jadeMark.BorderSizePixel = 0
+            jadeMark.Parent = row
+            corner(2).Parent = jadeMark
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(1, -24, 1, 0)
+            label.Position = UDim2.new(0, 16, 0, 0)
+            label.BackgroundTransparency = 1
+            label.Text = initialText
+            label.Font = Enum.Font.GothamBold
+            label.TextSize = 11
+            label.TextColor3 = Library.COLORS.text
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Parent = row
+
+            return {
+                Set = function(_, newText)
+                    label.Text = tostring(newText or "")
+                    updateSearchTarget(searchEntry, newText)
+                end
+            }
+        end
+
+        -- 5. Ô NHẬP LIỆU HẮC NGỌC (INPUT FIELD)
+        function TabObject:CreateInput(InputConfig)
+            local titleText = InputConfig.Name or "Input"
+            local current = tostring(InputConfig.CurrentValue or "")
+            local callback = InputConfig.Callback or function() end
+            local flag = InputConfig.Flag
+
+            local row = Instance.new("Frame")
+            row.Name = "HacBach_Input"
+            row.Size = UDim2.new(1, 0, 0, 38)
+            row.BackgroundColor3 = Library.COLORS.card
+            row.BackgroundTransparency = 0.06
+            row.Parent = page
+            corner(6).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.border
+            rStroke.Transparency = 0.35
+            attachCornerBrackets(row, 6, 1, Color3.fromRGB(220, 220, 230), 0.55, 2)
+            registerSearchTarget(row, titleText)
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.34, -6, 1, 0)
+            lbl.Position = UDim2.new(0, 12, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = titleText
+            lbl.Font = Enum.Font.GothamBold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+
+            local input = Instance.new("TextBox")
+            input.Size = UDim2.new(0.62, -12, 0, 24)
+            input.Position = UDim2.new(0.36, 0, 0.5, -12)
+            input.BackgroundColor3 = Color3.fromRGB(10, 10, 13)
+            input.BorderSizePixel = 0
+            input.Text = current
+            input.PlaceholderText = tostring(InputConfig.PlaceholderText or "")
+            input.ClearTextOnFocus = false
+            input.Font = Enum.Font.Gotham
+            input.TextSize = 11
+            input.TextColor3 = Library.COLORS.text
+            input.PlaceholderColor3 = Library.COLORS.muted
+            input.Parent = row
+            corner(5).Parent = input
+            local iStroke = Instance.new("UIStroke", input)
+            iStroke.Color = Color3.fromRGB(68, 68, 78)
+            iStroke.Transparency = 0.4
+
+            local function applyText(value)
+                current = tostring(value or "")
+                input.Text = current
+                if flag then Library._compat.flags[flag] = current end
+                pcall(callback, current)
+            end
+
+            if flag then
+                Library:_bindFlag(flag, current, function(value) applyText(value) end)
+            end
+
+            input.FocusLost:Connect(function()
+                local finalValue = input.Text
+                if InputConfig.RemoveTextAfterFocusLost then
+                    input.Text = ""
+                end
+                applyText(finalValue)
+            end)
+
+            return { Set = function(_, value) applyText(value) end }
+        end
+
+        -- 6. BẢNG CHỌN TÀNG KINH CÁC (SCROLL DROPDOWN SELECTOR)
+        function TabObject:CreateDropdown(DropConfig)
+            local titleText = DropConfig.Name or "Dropdown"
+            local options = cloneArray(DropConfig.Options)
+            local current = cloneArray(DropConfig.CurrentOption)
+            local multiple = DropConfig.MultipleOptions == true
+            local callback = DropConfig.Callback or function() end
+            local flag = DropConfig.Flag
+            local open = false
+            local searchText = ""
+
+            local row = Instance.new("Frame")
+            row.Name = "HacBach_Dropdown"
+            row.Size = UDim2.new(1, 0, 0, 38)
+            row.BackgroundColor3 = Library.COLORS.card
+            row.BackgroundTransparency = 0.06
+            row.Parent = page
+            corner(6).Parent = row
+            local rStroke = Instance.new("UIStroke", row)
+            rStroke.Color = Library.COLORS.border
+            rStroke.Transparency = 0.35
+            attachCornerBrackets(row, 6, 1, Color3.fromRGB(220, 220, 230), 0.55, 2)
+            local dropdownSearchEntry = registerSearchTarget(row, titleText, options)
+
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.new(0.34, -6, 1, 0)
+            lbl.Position = UDim2.new(0, 12, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = titleText
+            lbl.Font = Enum.Font.GothamBold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Library.COLORS.text
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.TextTruncate = Enum.TextTruncate.AtEnd
+            lbl.Parent = row
+
+            local selector = Instance.new("TextButton")
+            selector.Size = UDim2.new(0.62, -12, 0, 24)
+            selector.Position = UDim2.new(0.36, 0, 0.5, -12)
+            selector.BackgroundColor3 = Color3.fromRGB(11, 11, 14)
+            selector.BorderSizePixel = 0
+            selector.TextXAlignment = Enum.TextXAlignment.Left
+            selector.Font = Enum.Font.GothamBold
+            selector.TextSize = 11
+            selector.TextColor3 = Library.COLORS.text
+            selector.TextTruncate = Enum.TextTruncate.AtEnd
+            selector.AutoButtonColor = false
+            selector.Parent = row
+            corner(5).Parent = selector
+            local sStroke = Instance.new("UIStroke", selector)
+            sStroke.Color = Color3.fromRGB(78, 78, 88)
+            sStroke.Transparency = 0.35
+
+            local menu = Instance.new("Frame")
+            menu.Name = "HacBach_DropdownModal"
+            menu.Size = UDim2.fromOffset(0, 0)
+            menu.BackgroundColor3 = Color3.fromRGB(10, 10, 13)
+            menu.BorderSizePixel = 0
+            menu.Visible = false
+            menu.ClipsDescendants = true
+            menu.ZIndex = 45
+            menu.Parent = content
+            corner(7).Parent = menu
+            local menuStroke = Instance.new("UIStroke", menu)
+            menuStroke.Color = Color3.fromRGB(220, 220, 230)
+            menuStroke.Transparency = 0.2
+
+            local searchBox = Instance.new("TextBox")
+            searchBox.Size = UDim2.new(1, -12, 0, 26)
+            searchBox.Position = UDim2.new(0, 6, 0, 6)
+            searchBox.BackgroundColor3 = Color3.fromRGB(18, 18, 23)
+            searchBox.BorderSizePixel = 0
+            searchBox.PlaceholderText = "Tìm kiếm..."
+            searchBox.ClearTextOnFocus = false
+            searchBox.Text = ""
+            searchBox.Font = Enum.Font.Gotham
+            searchBox.TextSize = 11
+            searchBox.TextColor3 = Library.COLORS.text
+            searchBox.PlaceholderColor3 = Library.COLORS.muted
+            searchBox.Visible = false
+            searchBox.ZIndex = 46
+            searchBox.Parent = menu
+            corner(5).Parent = searchBox
+
+            local menuScroll = Instance.new("ScrollingFrame")
+            menuScroll.Size = UDim2.new(1, -12, 0, 0)
+            menuScroll.Position = UDim2.new(0, 6, 0, 38)
+            menuScroll.BackgroundTransparency = 1
+            menuScroll.BorderSizePixel = 0
+            menuScroll.ScrollBarThickness = 2
+            menuScroll.ScrollBarImageColor3 = Library.COLORS.accent1
+            menuScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+            menuScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            menuScroll.Visible = false
+            menuScroll.ZIndex = 46
+            menuScroll.Parent = menu
+
+            local menuLayout = Instance.new("UIListLayout", menuScroll)
+            menuLayout.Padding = UDim.new(0, 4)
+
+            local function updateSummary()
+                if #current == 0 then
+                    selector.Text = "  Chọn mục..."
+                else
+                    local summary = table.concat(current, ", ")
+                    if #summary > 28 then
+                        summary = string.sub(summary, 1, 25) .. "..."
+                    end
+                    selector.Text = "  " .. summary
+                end
+            end
+
+            local function applySelection(nextSelection)
+                current = cloneArray(nextSelection)
+                if flag then
+                    Library._compat.flags[flag] = cloneArray(current)
+                end
+                updateSummary()
+                pcall(callback, cloneArray(current))
+            end
+
+            local function positionPopup(totalHeight)
+                local menuWidth = math.max(120, math.min(row.AbsoluteSize.X / fitScale, content.AbsoluteSize.X / fitScale - 12))
+                local relX = (row.AbsolutePosition.X - content.AbsolutePosition.X) / fitScale
+                local relY = (row.AbsolutePosition.Y - content.AbsolutePosition.Y) / fitScale
+                local maxX = math.max(layout.contentInset, content.AbsoluteSize.X / fitScale - menuWidth - layout.contentInset)
+                local finalX = math.clamp(relX, layout.contentInset, maxX)
+                local openAbove = (relY + row.AbsoluteSize.Y / fitScale + totalHeight > content.AbsoluteSize.Y / fitScale - layout.contentInset) and (relY > totalHeight)
+                local finalY = openAbove and (relY - totalHeight - 6) or (relY + row.AbsoluteSize.Y / fitScale + 6)
+                menu.Position = UDim2.fromOffset(finalX, finalY)
+                tween(menu, {Size = UDim2.fromOffset(menuWidth, totalHeight)}, 0.18, Enum.EasingStyle.Exponential)
+            end
+
+            local setOpen
+            local closeDropdown
+
+            local function rebuildOptions()
+                for _, child in ipairs(menuScroll:GetChildren()) do
+                    if child:IsA("TextButton") then child:Destroy() end
+                end
+                for _, optionValue in ipairs(options) do
+                    local optionText = tostring(optionValue)
+                    if searchText ~= "" and not string.find(string.lower(optionText), string.lower(searchText), 1, true) then
+                        continue
+                    end
+                    local isSelected = false
+                    for _, sel in ipairs(current) do
+                        if sel == optionValue then isSelected = true; break end
+                    end
+
+                    local optionBtn = Instance.new("TextButton")
+                    optionBtn.Size = UDim2.new(1, 0, 0, 26)
+                    optionBtn.BackgroundColor3 = isSelected and Color3.fromRGB(242, 242, 248) or Color3.fromRGB(18, 18, 22)
+                    optionBtn.BorderSizePixel = 0
+                    optionBtn.Text = (isSelected and "  ◈  " or "  •  ") .. optionText
+                    optionBtn.TextXAlignment = Enum.TextXAlignment.Left
+                    optionBtn.Font = isSelected and Enum.Font.GothamBold or Enum.Font.Gotham
+                    optionBtn.TextSize = 11
+                    optionBtn.TextColor3 = isSelected and Color3.fromRGB(10, 10, 13) or Library.COLORS.text
+                    optionBtn.TextTruncate = Enum.TextTruncate.AtEnd
+                    optionBtn.AutoButtonColor = false
+                    optionBtn.ZIndex = 47
+                    optionBtn.Parent = menuScroll
+                    corner(5).Parent = optionBtn
+
+                    optionBtn.MouseEnter:Connect(function()
+                        if not isSelected then
+                            tween(optionBtn, {BackgroundColor3 = Color3.fromRGB(34, 34, 42)}, 0.12)
+                        end
+                    end)
+                    optionBtn.MouseLeave:Connect(function()
+                        if not isSelected then
+                            tween(optionBtn, {BackgroundColor3 = Color3.fromRGB(18, 18, 22)}, 0.12)
+                        end
+                    end)
+
+                    optionBtn.MouseButton1Click:Connect(function()
+                        if multiple then
+                            local nextSelection = cloneArray(current)
+                            local existingIndex = nil
+                            for index, existing in ipairs(nextSelection) do
+                                if existing == optionValue then existingIndex = index; break end
+                            end
+                            if existingIndex then
+                                table.remove(nextSelection, existingIndex)
+                            else
+                                table.insert(nextSelection, optionValue)
+                            end
+                            applySelection(nextSelection)
+                            rebuildOptions()
+                        else
+                            applySelection({optionValue})
+                            setOpen(false)
+                        end
+                    end)
+                end
+            end
+
+            searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                searchText = searchBox.Text or ""
+                rebuildOptions()
+            end)
+
+            setOpen = function(state)
+                open = state
+                if open then
+                    menu.Visible = true
+                    searchBox.Visible = true
+                    menuScroll.Visible = true
+                    rebuildOptions()
+                    local visibleCount = 0
+                    for _, child in ipairs(menuScroll:GetChildren()) do
+                        if child:IsA("TextButton") then visibleCount = visibleCount + 1 end
+                    end
+                    local listHeight = math.max(30, math.min(visibleCount, 6) * 30)
+                    local totalHeight = 44 + listHeight + 8
+                    menuScroll.Position = UDim2.new(0, 6, 0, 38)
+                    menuScroll.Size = UDim2.new(1, -12, 0, listHeight)
+                    positionPopup(totalHeight)
+                else
+                    searchBox.Visible = false
+                    menuScroll.Visible = false
+                    searchBox.Text = ""
+                    searchText = ""
+                    menu.Size = UDim2.fromOffset(0, 0)
+                    menu.Visible = false
+                end
+            end
+
+            closeDropdown = function()
+                if open then setOpen(false) end
+            end
+            table.insert(dropdownClosers, closeDropdown)
+
+            page:GetPropertyChangedSignal("CanvasPosition"):Connect(closeDropdown)
+            page:GetPropertyChangedSignal("Visible"):Connect(function()
+                if not page.Visible then closeDropdown() end
+            end)
+
+            selector.MouseButton1Click:Connect(function()
+                if open then
+                    setOpen(false)
+                else
+                    closeAllDropdowns(closeDropdown)
+                    setOpen(true)
+                end
+            end)
+
+            connect(UserInputService.InputBegan, function(input, gp)
+                if gp or not open then return end
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+                local inputPos = Vector2.new(input.Position.X, input.Position.Y)
+                local function isInside(guiObject)
+                    local absPos, absSize = guiObject.AbsolutePosition, guiObject.AbsoluteSize
+                    return inputPos.X >= absPos.X and inputPos.X <= absPos.X + absSize.X
+                        and inputPos.Y >= absPos.Y and inputPos.Y <= absPos.Y + absSize.Y
+                end
+                if not isInside(menu) and not isInside(selector) then
+                    setOpen(false)
+                end
+            end)
+
+            if flag then
+                Library:_bindFlag(flag, current, function(value)
+                    if type(value) == "table" then applySelection(value)
+                    elseif value == nil then applySelection({})
+                    else applySelection({value}) end
+                end)
+            end
+
+            rebuildOptions()
+            updateSummary()
+
+            return {
+                Refresh = function(_, newOptions)
+                    options = cloneArray(newOptions)
+                    updateSearchTarget(dropdownSearchEntry, titleText, options)
+                    rebuildOptions()
+                    setOpen(false)
+                end,
+                Set = function(_, value)
+                    if type(value) == "table" then applySelection(value)
+                    elseif value == nil then applySelection({})
+                    else applySelection({value}) end
+                end
+            }
+        end
+
+        TabObject.CreateToggle = TabObject.AddToggle
+        TabObject.CreateButton = TabObject.AddButton
+        TabObject.CreateSlider = TabObject.AddSlider
+        TabObject.AddInput = TabObject.CreateInput
+        TabObject.AddDropdown = TabObject.CreateDropdown
+
+        TabObject._page = page
+        TabObject._searchEntries = pageSearchEntries
+        TabObject.Select = function()
+            setActiveTab(TabName)
+        end
+        return TabObject
     end
 
-    return Library
+    function WindowObject:CreateTab(TabName, Icon)
+        return self:MakeTab({Name = TabName, Icon = Icon})
+    end
+
+    Library:ApplyHacBach(screenGui)
+    return WindowObject
 end
+
+function Library:ApplyHacBach(gui)
+    connect(gui.DescendantAdded,function(inst)
+        task.defer(function()
+            if gui.Parent and inst.Parent then reworkWorkspaceInstance(inst) end
+        end)
+    end)
+    for _,inst in ipairs(gui:GetDescendants()) do reworkWorkspaceInstance(inst) end
+end
+
+function Library:CreateWindow(Config)
+    local configSaving = Config and Config.ConfigurationSaving
+    if type(configSaving) == "table" and configSaving.Enabled then
+        self._compat.config = {
+            FolderName = configSaving.FolderName or "LunaHub_SUR",
+            FileName = configSaving.FileName or "LunaHub_Settings"
+        }
+    else
+        self._compat.config = nil
+    end
+
+    return self:MakeWindow({
+        Name = "HẮC BẠCH VÔ THƯỜNG",
+        Subtitle = "THÁI CỰC SONG ĐIỆN  •  STAND UPRIGHT REBOOTED",
+        LogoID = (Config and Config.LogoID)
+            or ((Config and Config.Icon and Config.Icon ~= 0) and tostring(Config.Icon))
+            or UI_CONFIG.LogoID,
+        StartHidden = false,
+        ToggleKeybind = (Config and Config.ToggleUIKeybind) or "K",
+    })
+end
+
+function Library:SaveConfiguration()
+    local cfg = self._compat.config
+    if not cfg then return true end
+    if type(writefile) ~= "function" then
+        return false, "Configuration saver is unavailable."
+    end
+    if type(isfolder) == "function" and type(makefolder) == "function" then
+        local exists = false
+        local ok = pcall(function() exists = isfolder(cfg.FolderName) end)
+        if ok and not exists then pcall(makefolder, cfg.FolderName) end
+    end
+    local flagsToSave = {}
+    for flag, value in pairs(self._compat.flags) do
+        if flag ~= "WebhookMentionsEnabled" and flag ~= "WebhookTagAtts" then
+            flagsToSave[flag] = value
+        end
+    end
+    local okEncode, encoded = pcall(function()
+        return HttpService:JSONEncode({ flags = flagsToSave })
+    end)
+    if not okEncode then return false, encoded end
+    local okWrite, err = pcall(function()
+        writefile(cfg.FolderName .. "/" .. cfg.FileName .. ".json", encoded)
+    end)
+    if not okWrite then return false, err end
+    return true
+end
+
+function Library:LoadConfiguration()
+    local cfg = self._compat.config
+    if not cfg then return true end
+    if type(readfile) ~= "function" or type(isfile) ~= "function" then
+        return false, "Configuration loader is unavailable."
+    end
+    local path = cfg.FolderName .. "/" .. cfg.FileName .. ".json"
+    local exists = false
+    local okExists = pcall(function() exists = isfile(path) end)
+    if not okExists or not exists then return true end
+    local okRead, raw = pcall(function() return readfile(path) end)
+    if not okRead then return false, raw end
+    local okDecode, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if not okDecode then return false, data end
+    if type(data) ~= "table" or type(data.flags) ~= "table" then return true end
+    for flag, value in pairs(data.flags) do
+        if flag ~= "WebhookMentionsEnabled" and flag ~= "WebhookTagAtts" then
+            self:_setFlag(flag, value, true)
+        end
+    end
+    return true
+end
+
+return Library
+end
+
 
 return createEmbeddedLunaUI()
