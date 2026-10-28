@@ -3305,6 +3305,8 @@ local SURControls = {
         Options = { Name = "Convert to Display Name", CurrentValue = true, Flag = "ConvToName" },
     },
 }
+SURControls["Lair_Slider_1"] = { Tab="Lair", Kind="Slider", Options={ Name = "Nhịp Kill Aura (giây)", Range = { 0.1, 30 }, Increment = 0.1, Suffix = " s", CurrentValue = 3, Flag = "LairAuraIntervalSeconds" } }
+SURControls["Lair_Slider_2"] = { Tab="Lair", Kind="Slider", Options={ Name = "Khoảng cách bám boss (stud)", Range = { 1, 30 }, Increment = 0.5, Suffix = " stud", CurrentValue = 7, Flag = "LairBossDistanceStuds" } }
 local function copySURValue(value)
     if type(value) ~= "table" then
         return value
@@ -3555,12 +3557,15 @@ local ActionNames={
 ["Settings_Toggle_5"]="AntiRagdoll",
 ["Settings_Toggle_6"]="PopupOnMatch",
 ["Settings_Toggle_7"]="DisplayNames",
+["Lair_Slider_1"]="AuraInterval",
+["Lair_Slider_2"]="BossDistance",
 }
-local ControlOrder={"Farm_Section_1","Farm_Label_1","Farm_Label_2","Farm_Label_3","Farm_Section_2","Farm_Label_4","Farm_Button_1","Targets_Section_1","Targets_Dropdown_1","Targets_Input_1","Targets_Section_2","Targets_Dropdown_2","Targets_Dropdown_3","Targets_Section_3","Targets_Button_1","Targets_Button_2","Targets_Section_4","Targets_Section_5","Targets_Section_6","Targets_Section_7","Targets_Input_2","Targets_Dropdown_4","Targets_Button_3","Targets_Button_4","Dashboard_Section_1","Dashboard_Section_2","Dashboard_Section_3","Dashboard_Section_4","Dashboard_Section_5","Dashboard_Section_6","Dashboard_Section_7","Dashboard_Section_8","Dashboard_Section_9","Dashboard_Section_10","Farm_Section_3","Farm_Section_4","Farm_Dropdown_1","Storage_Section_1","Storage_Section_2","Storage_Section_3","Storage_Section_4","Storage_Section_5","Storage_Toggle_1","Storage_Button_1","Storage_Section_6","Storage_Section_7","Storage_Section_8","Storage_Toggle_2","Utilities_Section_1","Utilities_Button_1","Utilities_Button_2","Utilities_Section_2","Utilities_Toggle_1","Farm_Section_5","Farm_Toggle_1","Settings_Section_1","Settings_Input_1","Settings_Toggle_1","Settings_Toggle_2","Settings_Section_2","Lair_Section_1","Lair_Dropdown_1","Lair_Toggle_1","Lair_Section_2","Lair_Toggle_2","Lair_Toggle_3","Utilities_Section_3","Utilities_Slider_1","Utilities_Section_4","Utilities_Button_3","Utilities_Button_4","Settings_Section_3","Settings_Button_1","Settings_Button_2","Settings_Button_3","Settings_Section_4","Settings_Toggle_3","Settings_Section_5","Settings_Toggle_4","Settings_Toggle_5","Settings_Section_6","Settings_Toggle_6","Settings_Toggle_7"}
+local ControlOrder={"Farm_Section_1","Farm_Label_1","Farm_Label_2","Farm_Label_3","Farm_Section_2","Farm_Label_4","Farm_Button_1","Targets_Section_1","Targets_Dropdown_1","Targets_Input_1","Targets_Section_2","Targets_Dropdown_2","Targets_Dropdown_3","Targets_Section_3","Targets_Button_1","Targets_Button_2","Targets_Section_4","Targets_Section_5","Targets_Section_6","Targets_Section_7","Targets_Input_2","Targets_Dropdown_4","Targets_Button_3","Targets_Button_4","Dashboard_Section_1","Dashboard_Section_2","Dashboard_Section_3","Dashboard_Section_4","Dashboard_Section_5","Dashboard_Section_6","Dashboard_Section_7","Dashboard_Section_8","Dashboard_Section_9","Dashboard_Section_10","Farm_Section_3","Farm_Section_4","Farm_Dropdown_1","Storage_Section_1","Storage_Section_2","Storage_Section_3","Storage_Section_4","Storage_Section_5","Storage_Toggle_1","Storage_Button_1","Storage_Section_6","Storage_Section_7","Storage_Section_8","Storage_Toggle_2","Utilities_Section_1","Utilities_Button_1","Utilities_Button_2","Utilities_Section_2","Utilities_Toggle_1","Farm_Section_5","Farm_Toggle_1","Settings_Section_1","Settings_Input_1","Settings_Toggle_1","Settings_Toggle_2","Settings_Section_2","Lair_Section_1","Lair_Dropdown_1","Lair_Toggle_1","Lair_Section_2","Lair_Toggle_2","Lair_Slider_1","Lair_Slider_2","Lair_Toggle_3","Utilities_Section_3","Utilities_Slider_1","Utilities_Section_4","Utilities_Button_3","Utilities_Button_4","Settings_Section_3","Settings_Button_1","Settings_Button_2","Settings_Button_3","Settings_Section_4","Settings_Toggle_3","Settings_Section_5","Settings_Toggle_4","Settings_Toggle_5","Settings_Section_6","Settings_Toggle_6","Settings_Toggle_7"}
 
-local Interface={Version=1}
+local Interface={Version=1,LairOptionsVersion=1}
 function Interface.Mount(api)
     assert(type(api)=="table" and api.Version==1 and type(api.GetSnapshot)=="function" and api:IsRunning(),"[Luna UI] Incompatible or stopped feature session")
+    assert(api.Parameters.AuraInterval and api.Parameters.BossDistance,"[Luna UI] Update LunaHub_Features.lua to use the new Lair settings")
     local Rayfield,Window,bootstrap
     local ok,result=pcall(function()
         Rayfield=createLunaInterface()
