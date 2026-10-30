@@ -1,5 +1,5 @@
--- Luna Hub UI: seven tabs and the existing feature API.
--- Lightweight Luna UI renderer. Gameplay remains in LunaHub_Features.lua.
+-- Luna Hub UI: compact, event-driven renderer with a Sleek-style palette.
+-- This implementation is original; gameplay remains in LunaHub_Features.lua.
 local palette
 
 local function make(className, parent, properties)
@@ -71,12 +71,12 @@ local function createLunaInterface()
     local UserInputService = game:GetService("UserInputService")
     local TweenService = game:GetService("TweenService")
     palette = {
-        background = Color3.fromRGB(14, 16, 27),
-        panel = Color3.fromRGB(24, 27, 43),
-        control = Color3.fromRGB(32, 36, 57),
-        accent = Color3.fromRGB(169, 119, 255),
-        text = Color3.fromRGB(244, 240, 255),
-        muted = Color3.fromRGB(177, 174, 197),
+        background = Color3.fromRGB(20, 21, 28),
+        panel = Color3.fromRGB(27, 29, 38),
+        control = Color3.fromRGB(36, 39, 50),
+        accent = Color3.fromRGB(154, 105, 237),
+        text = Color3.fromRGB(240, 240, 246),
+        muted = Color3.fromRGB(170, 171, 186),
     }
     local library = { NativeRayfield = nil, _surTabs = nil }
     library.NativeRayfield = library
@@ -125,6 +125,7 @@ local function createLunaInterface()
         local title = label(main, "LUNA HUB", 21, palette.text)
         title.Position = UDim2.fromOffset(18, 9)
         title.Size = UDim2.new(1, -74, 0, 37)
+        title.Active = true
         local close = button(main, "×", 32)
         close.Size = UDim2.fromOffset(32, 32)
         close.Position = UDim2.new(1, -45, 0, 13)
@@ -176,6 +177,27 @@ local function createLunaInterface()
             end
         end
 
+        local pointerStart, frameStart
+        window:Connect(title.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                pointerStart, frameStart = input.Position, main.Position
+            end
+        end)
+        window:Connect(UserInputService.InputChanged, function(input)
+            if not pointerStart or (input.UserInputType ~= Enum.UserInputType.MouseMovement
+                and input.UserInputType ~= Enum.UserInputType.Touch) then return end
+            local delta = input.Position - pointerStart
+            main.Position = UDim2.new(frameStart.X.Scale, frameStart.X.Offset + delta.X,
+                frameStart.Y.Scale, frameStart.Y.Offset + delta.Y)
+        end)
+        window:Connect(UserInputService.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                pointerStart, frameStart = nil, nil
+            end
+        end)
+
         local function toggle()
             if not window.Alive then return end
             local tween = TweenService:Create(launcher, TweenInfo.new(0.28, Enum.EasingStyle.Quad), {
@@ -210,32 +232,37 @@ local function createLunaInterface()
         windowObject:Connect(tabButton.MouseButton1Click, function() windowObject:SelectTab(index) end)
 
         function tab:CreateSection(text)
-            local frame = row(page, 29)
-            local item = label(frame, tostring(text or ""), 13, palette.accent)
-            item.Size = UDim2.fromScale(1, 1)
+            local item = label(page, tostring(text or ""), 13, palette.accent)
+            item.Size = UDim2.new(1, -12, 0, 29)
             return wrapper(item)
         end
         function tab:CreateLabel(first, second)
-            local frame = row(page, 36)
-            local item = label(frame, tostring(second or first or ""), 13, palette.muted)
-            item.Size = UDim2.fromScale(1, 1)
+            local item = label(page, tostring(second or first or ""), 13, palette.muted)
+            item.Size = UDim2.new(1, -12, 0, 36)
             return wrapper(item)
         end
         function tab:CreateButton(options)
-            local frame = row(page, 38)
-            local item = button(frame, tostring(options.Name or "Action"), 38)
+            local item = button(page, tostring(options.Name or "Action"), 38)
+            item.Size = UDim2.new(1, -12, 0, 38)
             windowObject:Connect(item.MouseButton1Click, function()
                 if options.Callback then options.Callback() end
             end)
             return { Set = function() end }
         end
         function tab:CreateToggle(options)
-            local frame = row(page, 38)
-            local item = button(frame, "", 38)
+            local item = button(page, "", 38)
+            item.Size = UDim2.new(1, -12, 0, 38)
+            item.TextXAlignment = Enum.TextXAlignment.Left
+            local indicator = make("TextLabel", item, {
+                Position = UDim2.new(1, -36, 0.5, -15), Size = UDim2.fromOffset(30, 30),
+                BackgroundTransparency = 1, Font = Enum.Font.GothamMedium,
+                TextSize = 25, TextColor3 = palette.muted,
+            })
             local value = options.CurrentValue == true
             local function render()
-                item.Text = (value and "●  " or "○  ") .. tostring(options.Name or "Toggle")
-                item.BackgroundColor3 = value and palette.accent or palette.control
+                item.Text = "   " .. tostring(options.Name or "Toggle")
+                indicator.Text = value and "●" or "○"
+                indicator.TextColor3 = value and palette.accent or palette.muted
             end
             local control = {}
             function control:Set(raw, silent)
@@ -271,11 +298,12 @@ local function createLunaInterface()
             return control
         end
         function tab:CreateDropdown(options)
-            local frame = row(page, 39)
-            local item = button(frame, "", 39)
+            local item = button(page, "", 39)
+            item.Size = UDim2.new(1, -12, 0, 39)
             local choices = cloneList(options.Options)
             local selected = cloneList(options.CurrentOption)
             local open = false
+            local optionButtons = {}
             local optionsFrame = make("Frame", page, {
                 Size = UDim2.new(1, -12, 0, 0), BackgroundTransparency = 1,
                 Visible = false, AutomaticSize = Enum.AutomaticSize.Y,
@@ -284,10 +312,12 @@ local function createLunaInterface()
             local function render()
                 item.Text = tostring(options.Name or "Select") .. ": " .. (#selected > 0 and table.concat(selected, ", ") or "—")
             end
+            local updateOptions
             local control = {}
             function control:Set(raw, silent)
                 selected = cloneList(raw)
                 render()
+                if open then updateOptions() end
                 if not silent and options.Callback then options.Callback(cloneList(selected)) end
             end
             function control:Refresh(raw)
@@ -300,39 +330,47 @@ local function createLunaInterface()
                     if same then return end
                 end
                 choices = nextChoices
-                if open then self:Open() end
+                if open then updateOptions() end
             end
-            function control:Open()
-                for _, child in ipairs(optionsFrame:GetChildren()) do
-                    if child:IsA("TextButton") then child:Destroy() end
-                end
-                for _, choice in ipairs(choices) do
-                    local option = button(optionsFrame, (listContains(selected, choice) and "✓  " or "   ") .. choice, 32)
-                    option.MouseButton1Click:Connect(function()
-                        if options.MultipleOptions then
-                            local nextValues = cloneList(selected)
-                            local existing = table.find(nextValues, choice)
-                            if existing then table.remove(nextValues, existing) else
-                                if listContains(options.ExclusiveOptions or {}, choice) then
-                                    nextValues = { choice }
-                                else
-                                    for _, exclusive in ipairs(options.ExclusiveOptions or {}) do
-                                        local index = table.find(nextValues, exclusive)
-                                        if index then table.remove(nextValues, index) end
+            updateOptions = function()
+                for index, choice in ipairs(choices) do
+                    local option = optionButtons[index]
+                    if not option then
+                        option = button(optionsFrame, "", 32)
+                        optionButtons[index] = option
+                        option.MouseButton1Click:Connect(function()
+                            local chosen = choices[index]
+                            if not chosen then return end
+                            if options.MultipleOptions then
+                                local nextValues = cloneList(selected)
+                                local existing = table.find(nextValues, chosen)
+                                if existing then table.remove(nextValues, existing) else
+                                    if listContains(options.ExclusiveOptions or {}, chosen) then
+                                        nextValues = { chosen }
+                                    else
+                                        for _, exclusive in ipairs(options.ExclusiveOptions or {}) do
+                                            local selectedIndex = table.find(nextValues, exclusive)
+                                            if selectedIndex then table.remove(nextValues, selectedIndex) end
+                                        end
+                                        nextValues[#nextValues + 1] = chosen
                                     end
-                                    nextValues[#nextValues + 1] = choice
                                 end
+                                control:Set(nextValues)
+                            else
+                                control:Set({ chosen })
+                                open = false
+                                optionsFrame.Visible = false
                             end
-                            self:Set(nextValues)
-                            self:Open()
-                        else
-                            self:Set({ choice })
-                            open = false
-                            optionsFrame.Visible = false
-                        end
-                    end)
+                        end)
+                    end
+                    option.Text = (listContains(selected, choice) and "✓  " or "   ") .. choice
+                end
+                for index = #optionButtons, #choices + 1, -1 do
+                    optionButtons[index]:Destroy()
+                    optionButtons[index] = nil
                 end
             end
+            function control:Open() updateOptions() end
             windowObject:Connect(item.MouseButton1Click, function()
                 open = not open
                 optionsFrame.Visible = open
