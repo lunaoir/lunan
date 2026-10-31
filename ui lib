@@ -2,7 +2,7 @@
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, Design = "Luna-05", Build = "2026-10-31.2"}
+local Library = {Version = 1, FeaturesVersion = 2, Design = "Luna-05", Build = "2026-11-01.2"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -798,11 +798,18 @@ function Library.Mount(api)
 	end
 	local stand = window:Tab({Name="Auto Stand", ShortName="Stand", Icon="stand", Description="Quay Stand theo mục tiêu đã lưu."})
 	stand:Section("VẬT PHẨM")
-	bind(stand,"Dropdown","RollItem",{Name="Vật phẩm",Options={"Stand Arrow","Charged Arrow","Kars Mask"}})
+	bind(stand,"Dropdown","RollItem",{Name="Vật phẩm",Options={"Stand Arrow","Locked Stand Arrow","Charged Arrow","Kars Mask"}})
+	if api.Parameters.RokaItem then
+		bind(stand,"Dropdown","RokaItem",{Name="Rokakaka",Options={"Rokakaka","Locked Rokakaka"}})
+	end
 	bind(stand,"Toggle","StandFarm",{Name="Auto Stand",Hint="Dừng khi trúng mục tiêu hoặc cần kiểm tra kho."})
 	local currentStand = stand:Label("")
 	local currentAttribute = stand:Label("")
 	local farmState = stand:Label("")
+	if api.Parameters.AntiAFK then
+		stand:Section("PHIÊN CHƠI")
+		bind(stand,"Toggle","AntiAFK",{Name="Anti AFK",Hint="Mô phỏng thao tác khi Roblox báo không hoạt động."})
+	end
 	local targets = window:Tab({Name="Targets",Icon="targets",Description="Chọn Stand và thuộc tính muốn giữ."})
 	targets:Section("TẠO MỤC TIÊU")
 	bind(targets,"Dropdown","TargetMatchMode",{Name="Cách so khớp",Options={"Stand + Attribute","Stand Only","Attribute Only"}})
