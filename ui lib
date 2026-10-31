@@ -2,7 +2,7 @@
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, Design = "Luna-05", Build = "2026-11-01.2"}
+local Library = {Version = 1, FeaturesVersion = 2, Design = "Luna-05", Build = "2026-11-01.3"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -806,6 +806,12 @@ function Library.Mount(api)
 	local currentStand = stand:Label("")
 	local currentAttribute = stand:Label("")
 	local farmState = stand:Label("")
+	local orbStatus
+	if api.Parameters.AutoOrb then
+		stand:Section("2X ORB")
+		bind(stand,"Toggle","AutoOrb",{Name="Auto x2 Orb",Hint="Dùng khi farm Arrow; chờ xác nhận trước khi dùng lại."})
+		orbStatus = stand:Label("")
+	end
 	if api.Parameters.AntiAFK then
 		stand:Section("PHIÊN CHƠI")
 		bind(stand,"Toggle","AntiAFK",{Name="Anti AFK",Hint="Mô phỏng thao tác khi Roblox báo không hoạt động."})
@@ -866,6 +872,7 @@ function Library.Mount(api)
 			currentStand:Set("Stand: "..state.Stand)
 			currentAttribute:Set("Thuộc tính: "..state.Attribute)
 			farmState:Set("Auto Stand: "..(state.Farming and "Bật" or "Tắt"))
+			if orbStatus then orbStatus:Set(state.OrbStatus or "2x Orb: Chưa có dữ liệu") end
 			selectedLabel:Set("Đã chọn: "..state.SelectedStand)
 			targetCount:Set(tostring(#state.Targets).." mục tiêu đã lưu")
 			local options, map = {placeholder}, {}
