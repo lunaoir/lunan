@@ -1,29 +1,885 @@
--- Run this local preview with Luna_UI_Library.lua in the executor workspace.
--- This displays controls only. It does not join, teleport, farm or attack.
-assert(type(readfile) == "function" and type(loadstring) == "function", "Preview requires readfile and loadstring")
-local chunk, compileError = loadstring(readfile("Luna_UI_Library.lua"), "@Luna_UI_Library.lua")
-assert(chunk, compileError)
-local UI = chunk()
-local window = UI.CreateWindow({
-	Title = "LUNA", Subtitle = "Stand Upright Rebooted",
-	Footer = "BẢN XEM TRƯỚC · CHƯA KẾT NỐI GAME",
-})
-local stand = window:Tab({Name = "Stand", Icon = "stand", Description = "Mẫu ô chọn và công tắc."})
-stand:Section("ĐIỀU KHIỂN MẪU")
-stand:Dropdown({Name = "Vật phẩm", Options = {"Stand Arrow", "Charged Arrow", "Kars Mask"}, Default = "Stand Arrow"})
-stand:Toggle({Name = "Stand Farm", Default = false})
-local lair = window:Tab({Name = "Lair", Icon = "lair", Description = "Các điều khiển cùng một chỗ."})
-lair:Section("VÀO PHÒNG")
-lair:Dropdown({Name = "Cấp độ", Options = {"Lv. 200"}, Default = "Lv. 200"})
-lair:Toggle({Name = "Join Lair", Hint = "Giữ bật cho đến khi anh tắt.", Default = false})
-lair:Section("BÁM MỤC TIÊU")
-lair:Toggle({Name = "TP / Lock Boss", Hint = "Mẫu hiển thị trạng thái bật.", Default = true})
-lair:Slider({Name = "Khoảng cách", Min = 1, Max = 30, Step = .5, Default = 7, Unit = "stud"})
-lair:Slider({Name = "Nhịp Kill Aura", Min = .1, Max = 30, Step = .1, Default = 3, Unit = "giây"})
-local settings = window:Tab({Name = "Thiết lập", Icon = "settings", Description = "Mẫu trạng thái và cách hiển thị."})
-settings:Section("THƯ VIỆN LUNA")
-settings:Label("Bảng màu: than / trắng ngà / cát")
-settings:Label("Phím K hoặc nút mèo để thu / mở menu")
-settings:Button({Name = "Đóng bản xem trước", Callback = function() window:Destroy() end})
-lair:Select()
-return window
+-- LUNA_UI_DESIGN05_FEATURES_V2
+-- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
+-- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
+-- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
+local Library = {Version = 1, FeaturesVersion = 2, Design = "Luna-05", Build = "2026-10-31.2"}
+
+local C = {
+	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
+	Line = Color3.fromRGB(52, 54, 54), Text = Color3.fromRGB(231, 228, 221),
+	Muted = Color3.fromRGB(160, 159, 153), Accent = Color3.fromRGB(211, 179, 137),
+	Input = Color3.fromRGB(22, 24, 25), Selected = Color3.fromRGB(47, 46, 41),
+}
+
+local function make(class, properties, parent)
+	local object = Instance.new(class)
+	if object:IsA("GuiObject") then object.BorderSizePixel = 0 end
+	for key, value in pairs(properties) do object[key] = value end
+	object.Parent = parent
+	return object
+end
+
+local function corner(parent, radius)
+	return make("UICorner", {CornerRadius = UDim.new(0, radius or 3)}, parent)
+end
+
+local function stroke(parent, color)
+	return make("UIStroke", {Color = color or C.Line, Thickness = 1}, parent)
+end
+
+local function text(parent, value, size, position, dimensions, color, mono)
+	return make("TextLabel", {
+		BackgroundTransparency = 1, Text = value, TextSize = size or 12,
+		TextColor3 = color or C.Text, Font = mono and Enum.Font.Code or Enum.Font.Gotham,
+		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
+		Position = position or UDim2.fromOffset(0, 0), Size = dimensions or UDim2.fromScale(1, 1),
+	}, parent)
+end
+
+local function line(parent, x1, y1, x2, y2, color, thickness)
+	local dx, dy = x2 - x1, y2 - y1
+	return make("Frame", {
+		AnchorPoint = Vector2.new(.5, .5), BackgroundColor3 = color or C.Muted,
+		Position = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2),
+		Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), thickness or 1.4),
+		Rotation = math.deg(math.atan2(dy, dx)),
+	}, parent)
+end
+
+local function path(parent, points, color, thickness)
+	for index = 1, #points - 1 do
+		local a, b = points[index], points[index + 1]
+		line(parent, a[1], a[2], b[1], b[2], color, thickness)
+	end
+end
+
+local function icon(parent, name, position, size, color)
+	local frame = make("Frame", {BackgroundTransparency = 1, Position = position, Size = UDim2.fromOffset(size, size)}, parent)
+	local drawing = make("Frame", {BackgroundTransparency = 1, Size = UDim2.fromOffset(16, 16)}, frame)
+	make("UIScale", {Scale = size / 16}, drawing)
+	if name == "cat" then
+		path(drawing, {{1,11},{1,8},{5,8},{7,6},{7,2},{10,5},{12,5},{14,2},{14,9},{15,10},{15,14},{5,14},{4,11},{1,11}}, color, .9)
+		line(drawing, 8, 10, 9, 10, color, .9)
+		line(drawing, 12, 10, 13, 10, color, .9)
+	elseif name == "lair" then
+		path(drawing, {{3,14},{3,7},{4,4},{6,2},{10,2},{12,4},{13,7},{13,14}}, color)
+		path(drawing, {{6,14},{6,8},{7,6},{9,6},{10,8},{10,14}}, color)
+		line(drawing, 2, 14, 14, 14, color)
+	elseif name == "settings" then
+		line(drawing, 2, 4, 14, 4, color)
+		line(drawing, 2, 12, 14, 12, color)
+		line(drawing, 5, 1, 5, 7, color, 2)
+		line(drawing, 10, 9, 10, 15, color, 2)
+	elseif name == "targets" then
+		path(drawing, {{5,2},{2,2},{2,5}}, color)
+		path(drawing, {{11,2},{14,2},{14,5}}, color)
+		path(drawing, {{2,11},{2,14},{5,14}}, color)
+		path(drawing, {{14,11},{14,14},{11,14}}, color)
+		line(drawing, 5, 8, 11, 8, color); line(drawing, 8, 5, 8, 11, color)
+	elseif name == "storage" then
+		path(drawing, {{2,5},{8,2},{14,5},{14,12},{8,15},{2,12},{2,5},{8,8},{14,5}}, color)
+		line(drawing, 8, 8, 8, 15, color)
+	elseif name == "safe" then
+		path(drawing, {{8,1},{14,4},{13,10},{8,15},{3,10},{2,4},{8,1}}, color)
+		path(drawing, {{5,8},{7,10},{11,6}}, color)
+	else
+		path(drawing, {{8,1},{10,6},{15,8},{10,10},{8,15},{6,10},{1,8},{6,6},{8,1}}, color)
+	end
+	return frame
+end
+
+local function finite(value)
+	return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function callback(fn, value)
+	if type(fn) ~= "function" then return end
+	local ok, message = pcall(fn, value)
+	if not ok then warn("[Luna UI] callback: " .. tostring(message)) end
+end
+
+function Library.CreateWindow(options)
+	options = options or {}
+	local Players = game:GetService("Players")
+	local Input = game:GetService("UserInputService")
+	local Tweens = game:GetService("TweenService")
+	local host = options.Parent
+	if not host then
+		local player = Players.LocalPlayer
+		assert(player, "Luna UI requires a client or an explicit Parent")
+		host = player:WaitForChild("PlayerGui")
+	end
+	local identity = options.Id or "LunaUI_05"
+	for _, child in ipairs(host:GetChildren()) do
+		if child:IsA("ScreenGui") and child.Name == identity and child:GetAttribute("LunaUIOwner") == "Design05" then child:Destroy() end
+	end
+	local gui = make("ScreenGui", {
+		Name = identity, ResetOnSpawn = false, IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = options.DisplayOrder or 50,
+	}, host)
+	gui:SetAttribute("LunaUIOwner", "Design05")
+	local window = {Gui = gui, Tabs = {}, Open = true, Destroyed = false}
+	local connections, pending, running, destroyHandlers = {}, {}, {}, {}
+	local currentTab = nil :: any
+	local dragging = nil :: any
+	local scrubbing = nil :: any
+	local popup = nil :: any
+	local viewportConnection: RBXScriptConnection? = nil
+	local sequence, tabSequence = 0, 0
+	local width, height, navWidth = 716, 544, 144
+	local mobile, compact = false, false
+	local closePopup
+	local responsive = {}
+	local camera = workspace.CurrentCamera
+
+	-- Only service connections need explicit ownership; GUI events die with their Instances.
+	local function own(signal, fn)
+		local connection = signal:Connect(fn)
+		table.insert(connections, connection)
+		return connection
+	end
+
+	local function later(seconds, fn)
+		local thread
+		thread = task.delay(options.ReducedMotion and 0 or seconds, function()
+			pending[thread] = nil
+			if not window.Destroyed then fn() end
+		end)
+		pending[thread] = true
+		return thread
+	end
+
+	local function animate(object, properties, duration, finished, style)
+		local previous = running[object]
+		if previous then previous:Cancel() end
+		if window.Destroyed then return end
+		if options.ReducedMotion then
+			for key, value in pairs(properties) do object[key] = value end
+			if finished then finished() end
+			return
+		end
+		local tween = Tweens:Create(object, TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out), properties)
+		running[object] = tween
+		local connection
+		connection = tween.Completed:Connect(function(status)
+			connection:Disconnect()
+			if running[object] == tween then running[object] = nil end
+			if status == Enum.PlaybackState.Completed and not window.Destroyed and finished then finished() end
+		end)
+		tween:Play()
+	end
+
+	local root = make("CanvasGroup", {
+		Name = "Window", Size = UDim2.fromOffset(width, height), BackgroundColor3 = C.Background,
+		GroupTransparency = 1, ClipsDescendants = true, ZIndex = 2,
+	}, gui)
+	corner(root, 8)
+	stroke(root, Color3.fromRGB(73, 74, 71))
+	local titlebar = make("TextButton", {
+		Name = "Titlebar", Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
+		Size = UDim2.new(1, -80, 0, 47),
+	}, root)
+	local moon = make("Frame", {Position = UDim2.fromOffset(19, 15), Size = UDim2.fromOffset(16, 16), BackgroundColor3 = C.Text}, titlebar)
+	corner(moon, 16)
+	local moonMask = make("Frame", {Position = UDim2.fromOffset(5, -3), Size = UDim2.fromOffset(16, 16), BackgroundColor3 = C.Background}, moon)
+	corner(moonMask, 16)
+	line(titlebar, 39, 12, 39, 17, C.Accent, 1)
+	line(titlebar, 36.5, 14.5, 41.5, 14.5, C.Accent, 1)
+	text(titlebar, options.Title or "LUNA", 13, UDim2.fromOffset(51, 0), UDim2.fromOffset(69, 47))
+	local subtitle = text(titlebar, options.Subtitle or "", 10, UDim2.fromOffset(126, 0), UDim2.new(1, -140, 1, 0), C.Muted)
+	for index = 0, 7 do
+		make("Frame", {BackgroundColor3 = C.Muted, BackgroundTransparency = .55, Position = UDim2.new(.5, 30 + (index % 4) * 5, 0, 20 + math.floor(index / 4) * 5), Size = UDim2.fromOffset(2, 2)}, titlebar)
+	end
+	make("Frame", {BackgroundColor3 = C.Line, Position = UDim2.fromOffset(0, 46), Size = UDim2.new(1, 0, 0, 1)}, root)
+	local minimize = make("TextButton", {Text = "−", TextColor3 = C.Muted, Font = Enum.Font.Gotham, TextSize = 18, BackgroundTransparency = 1, AutoButtonColor = false, Position = UDim2.new(1, -75, 0, 10), Size = UDim2.fromOffset(28, 28)}, root)
+	local hide = make("TextButton", {Text = "×", TextColor3 = C.Muted, Font = Enum.Font.Gotham, TextSize = 18, BackgroundTransparency = 1, AutoButtonColor = false, Position = UDim2.new(1, -43, 0, 10), Size = UDim2.fromOffset(28, 28)}, root)
+	local sidebar = make("Frame", {BackgroundColor3 = C.Sidebar, Position = UDim2.fromOffset(0, 47), Size = UDim2.new(0, navWidth, 1, -76)}, root)
+	text(sidebar, "KHÔNG GIAN", 8, UDim2.fromOffset(20, 20), UDim2.fromOffset(110, 16), C.Muted, true)
+	local navigation = make("ScrollingFrame", {Name = "Navigation", BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 49), Size = UDim2.new(1, 0, 1, -154), CanvasSize = UDim2.fromOffset(0, 0), CanvasPosition = Vector2.new(0, 0), ScrollBarThickness = 0}, sidebar)
+	local marker = make("Frame", {BackgroundColor3 = C.Selected, Position = UDim2.fromOffset(10, 0), Size = UDim2.fromOffset(navWidth - 20, 36), Visible = false}, navigation)
+	corner(marker)
+	make("Frame", {BackgroundColor3 = C.Accent, Size = UDim2.fromOffset(2, 36)}, marker)
+	local sidebarCat = icon(sidebar, "cat", UDim2.new(0, 20, 1, -88), 36, C.Muted)
+	local sidebarBrand = text(sidebar, "L U N A", 8, UDim2.new(0, 20, 1, -44), UDim2.fromOffset(70, 14), C.Accent, true)
+	local sidebarKey = text(sidebar, "K  Ẩn / hiện", 9, UDim2.new(0, 20, 1, -26), UDim2.fromOffset(110, 18), C.Muted)
+	local content = make("Frame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(navWidth, 47), Size = UDim2.new(1, -navWidth, 1, -76)}, root)
+	local footer = make("Frame", {BackgroundTransparency = 1, Position = UDim2.new(0, 0, 1, -29), Size = UDim2.new(1, 0, 0, 29)}, root)
+	make("Frame", {BackgroundColor3 = C.Line, Size = UDim2.new(1, 0, 0, 1)}, footer)
+	text(footer, options.Footer or "LUNA · UI", 9, UDim2.fromOffset(14, 0), UDim2.new(1, -160, 1, 0), C.Muted)
+	local footerIndex = text(footer, "DESIGN 05", 9, UDim2.new(1, -130, 0, 0), UDim2.fromOffset(116, 29), C.Muted, true)
+	footerIndex.TextXAlignment = Enum.TextXAlignment.Right
+	local blocker = make("TextButton", {Text = "", BackgroundTransparency = 1, AutoButtonColor = false, Size = UDim2.fromScale(1, 1), ZIndex = 100, Visible = false}, root)
+	local launcher = make("TextButton", {Name = "Launcher", Text = "", AutoButtonColor = false, BackgroundColor3 = C.Sidebar, Size = UDim2.fromOffset(48, 43), ZIndex = 6}, gui)
+	corner(launcher, 6)
+	local launcherStroke = stroke(launcher, Color3.fromRGB(85, 88, 77))
+	local cat = icon(launcher, "cat", UDim2.fromOffset(10, 7), 28, C.Text)
+	local shell = make("Frame", {Name = "TransitionShell", BackgroundColor3 = C.Background, Visible = false, ZIndex = 4}, gui)
+	corner(shell, 8)
+	stroke(shell, C.Line)
+	local tooltip = make("TextLabel", {Text = "", Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = C.Text, BackgroundColor3 = C.Sidebar, Size = UDim2.fromOffset(122, 27), Visible = false, ZIndex = 30}, gui)
+	corner(tooltip)
+	stroke(tooltip)
+	local tipSequence = 0
+	local function tip(button, message)
+		button.MouseEnter:Connect(function()
+			tipSequence += 1
+			local ticket = tipSequence
+			later(.3, function()
+				if ticket ~= tipSequence or not button.Visible then return end
+				tooltip.Text = message
+				local point = button.AbsolutePosition
+				local view = camera and camera.ViewportSize or Vector2.new(800, 600)
+				tooltip.Position = UDim2.fromOffset(math.clamp(point.X, 4, math.max(4, view.X - 126)), math.max(4, point.Y - 33))
+				tooltip.Visible = true
+			end)
+		end)
+		button.MouseLeave:Connect(function() tipSequence += 1; tooltip.Visible = false end)
+	end
+	tip(launcher, "Luna · K để thu / mở")
+	tip(minimize, "Thu menu · K")
+	tip(hide, "Ẩn menu · K")
+
+	local function viewport()
+		return camera and camera.ViewportSize or Vector2.new(800, 600)
+	end
+	local noticeGroup = nil :: any
+	local noticeTimer = nil :: any
+	local noticeTitle, noticeBody
+	function window:Notify(title, message)
+		if self.Destroyed then return end
+		if noticeTimer and pending[noticeTimer] then task.cancel(noticeTimer); pending[noticeTimer] = nil end
+		local view = viewport()
+		if not noticeGroup then
+			noticeGroup = make("CanvasGroup", {Name="Notice", BackgroundColor3=C.Sidebar, GroupTransparency=1, ZIndex=40}, gui)
+			corner(noticeGroup, 5); stroke(noticeGroup, C.Accent)
+			noticeTitle = text(noticeGroup, "", 11, UDim2.fromOffset(12, 8), UDim2.new(1, -24, 0, 20), C.Accent)
+			noticeBody = text(noticeGroup, "", 10, UDim2.fromOffset(12, 30), UDim2.new(1, -24, 0, 44))
+			noticeBody.TextWrapped = true
+		end
+		local noticeWidth = math.max(160, math.min(400, view.X - 24))
+		noticeGroup.Size = UDim2.fromOffset(noticeWidth, 82)
+		noticeGroup.Position = UDim2.fromOffset(math.max(0, (view.X-noticeWidth)/2), math.max(0, view.Y-94))
+		noticeTitle.Text, noticeBody.Text = tostring(title), tostring(message or "")
+		noticeGroup.Visible = true
+		animate(noticeGroup, {GroupTransparency=0}, .18)
+		noticeTimer = later(5, function()
+			animate(noticeGroup, {GroupTransparency=1}, .18, function() noticeGroup.Visible=false end)
+		end)
+	end
+	local function revealNavigation(tab)
+		local top = (tab.Index - 1) * 40
+		local available = math.max(1, height - 76 - (height >= 400 and 154 or 49))
+		if top < navigation.CanvasPosition.Y then navigation.CanvasPosition = Vector2.new(0, top)
+		elseif top + 36 > navigation.CanvasPosition.Y + available then navigation.CanvasPosition = Vector2.new(0, math.max(0, top + 36 - available)) end
+	end
+	local function layout(initial)
+		local view = viewport()
+		width, height = math.max(240, math.min(716, view.X - 24)), math.max(160, math.min(544, view.Y - 120))
+		mobile = width < 600
+		compact = height < 520
+		navWidth = mobile and 100 or 144
+		root.Size = UDim2.fromOffset(width, height)
+		if initial then root.Position = UDim2.fromOffset(math.max(0, (view.X - width) / 2), math.max(math.min(64, math.max(0, view.Y - height)), (view.Y - height - 55) / 2)) end
+		root.Position = UDim2.fromOffset(math.clamp(root.Position.X.Offset, 0, math.max(0, view.X - width)), math.clamp(root.Position.Y.Offset, 0, math.max(0, view.Y - 47)))
+		launcher.Position = UDim2.fromOffset(root.Position.X.Offset, math.clamp(root.Position.Y.Offset + height + 8, 0, math.max(0, view.Y - 43)))
+		sidebar.Size = UDim2.new(0, navWidth, 1, -76)
+		local showMark = height >= 400
+		sidebarCat.Visible, sidebarBrand.Visible, sidebarKey.Visible = showMark, showMark, showMark
+		navigation.Size = UDim2.new(1, 0, 1, showMark and -154 or -49)
+		if currentTab then revealNavigation(currentTab) end
+		content.Position, content.Size = UDim2.fromOffset(navWidth, 47), UDim2.new(1, -navWidth, 1, -76)
+		marker.Size = UDim2.fromOffset(navWidth - 20, 36)
+		subtitle.Visible = not mobile
+		if shell.Visible then
+			sequence += 1
+			if running[shell] then running[shell]:Cancel() end
+			if running[root] then running[root]:Cancel() end
+			shell.Visible, root.Visible = false, window.Open
+			root.GroupTransparency = window.Open and 0 or 1
+		end
+		for _, refresh in ipairs(responsive) do refresh() end
+		if closePopup then closePopup() end
+	end
+	layout(true)
+
+	closePopup = function()
+		if not popup then return end
+		local old = popup
+		popup = nil
+		old.Control.Arrow.Text = "⌄"
+		animate(old.Group, {GroupTransparency = 1}, .1, function() old.Group:Destroy() end)
+	end
+
+	function window:SetOpen(value)
+		if self.Destroyed or self.Open == (value == true) then return end
+		self.Open = value == true
+		sequence += 1
+		local ticket = sequence
+		closePopup()
+		dragging = nil
+		if scrubbing then scrubbing.Bubble.Visible = false; scrubbing = nil end
+		tipSequence += 1
+		tooltip.Visible = false
+		root.Visible, blocker.Visible = true, not self.Open
+		if not shell.Visible then shell.Position, shell.Size = self.Open and launcher.Position or root.Position, self.Open and launcher.Size or root.Size end
+		shell.Visible = true
+		if self.Open then
+			animate(shell, {Position = root.Position, Size = root.Size, BackgroundTransparency = 0}, .32, function()
+				if ticket ~= sequence then return end
+				animate(shell, {BackgroundTransparency = 1}, .12, function() if ticket == sequence then shell.Visible = false end end)
+			end)
+			later(.18, function() if ticket == sequence then animate(root, {GroupTransparency = 0}, .2) end end)
+		else
+			animate(root, {GroupTransparency = 1}, .09)
+			shell.BackgroundTransparency = 0
+			animate(shell, {Position = launcher.Position, Size = launcher.Size, BackgroundTransparency = 1}, .33, function()
+				if ticket == sequence then shell.Visible, root.Visible = false, false end
+			end)
+		end
+	end
+
+	function window:Toggle()
+		self:SetOpen(not self.Open)
+	end
+	function window:Destroy()
+		if self.Destroyed then return end
+		self.Destroyed = true
+		for _, fn in ipairs(destroyHandlers) do callback(fn) end
+		table.clear(destroyHandlers)
+		sequence += 1
+		tabSequence += 1
+		if viewportConnection then viewportConnection:Disconnect() end
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		for thread in pairs(pending) do task.cancel(thread) end
+		for _, tween in pairs(running) do tween:Cancel() end
+		table.clear(connections); table.clear(pending); table.clear(running)
+		table.clear(responsive); table.clear(self.Tabs)
+		dragging, scrubbing, popup = nil, nil, nil
+		gui:Destroy()
+	end
+	gui.Destroying:Connect(function() window:Destroy() end)
+	minimize.Activated:Connect(function() window:Toggle() end)
+	hide.Activated:Connect(function() window:Toggle() end)
+	launcher.Activated:Connect(function()
+		animate(cat, {Rotation = cat.Rotation + 360}, .52)
+		window:Toggle()
+	end)
+	launcher.MouseEnter:Connect(function() animate(launcherStroke, {Color = C.Accent}, .14) end)
+	launcher.MouseLeave:Connect(function() animate(launcherStroke, {Color = Color3.fromRGB(85, 88, 77)}, .14) end)
+
+	local function setTab(tab)
+		if window.Destroyed or currentTab == tab then return end
+		tabSequence += 1
+		local ticket = tabSequence
+		closePopup()
+		currentTab = tab
+		marker.Visible = true
+		local tabTop = (tab.Index - 1) * 40
+		animate(marker, {Position = UDim2.fromOffset(10, tabTop)}, .3)
+		revealNavigation(tab)
+		for _, other in ipairs(window.Tabs) do
+			other.NavLabel.TextColor3 = other == tab and C.Accent or C.Muted
+			if other ~= tab then animate(other.Page, {GroupTransparency = 1}, .09) end
+		end
+		later(.09, function()
+			if ticket ~= tabSequence then return end
+			for _, other in ipairs(window.Tabs) do other.Page.Visible = other == tab end
+			tab.Page.Visible = true
+			tab.Page.GroupTransparency = 1
+			animate(tab.Page, {GroupTransparency = 0}, .28)
+			tab.Heading.Position = UDim2.fromOffset(10, 0)
+			animate(tab.Heading, {Position = UDim2.fromOffset(0, 0)}, .32)
+		end)
+	end
+	function window:OnDestroy(fn)
+		assert(type(fn) == "function", "Destroy handler must be a function")
+		if self.Destroyed then callback(fn) else table.insert(destroyHandlers, fn) end
+	end
+
+	function window:Tab(settings)
+		assert(not self.Destroyed, "Luna UI window was destroyed")
+		if type(settings) == "string" then settings = {Name = settings} end
+		settings = settings or {}
+		local index = #self.Tabs + 1
+		local tab = {Index = index, Controls = {}, Sections = 0, Rows = 0}
+		local button = make("TextButton", {Text = "", BackgroundTransparency = 1, AutoButtonColor = false, Position = UDim2.fromOffset(10, (index - 1) * 40), Size = UDim2.fromOffset(navWidth - 20, 36)}, navigation)
+		navigation.CanvasSize = UDim2.fromOffset(0, index * 40)
+		icon(button, settings.Icon or "stand", UDim2.fromOffset(9, 11), 14, C.Muted)
+		local number = text(button, string.format("%02d", index), 8, UDim2.fromOffset(29, 0), UDim2.fromOffset(17, 36), C.Muted, true)
+		local navLabel = text(button, settings.ShortName or settings.Name or "Tab", 11, UDim2.fromOffset(48, 0), UDim2.new(1, -50, 1, 0), C.Muted)
+		navLabel.TextWrapped = true
+		local page = make("CanvasGroup", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false, GroupTransparency = 1}, content)
+		local scroll = make("ScrollingFrame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), CanvasSize = UDim2.fromOffset(0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3, ScrollBarImageColor3 = C.Muted, BorderSizePixel = 0}, page)
+		local padding = make("UIPadding", {PaddingLeft = UDim.new(0, 28), PaddingRight = UDim.new(0, 28), PaddingTop = UDim.new(0, 25), PaddingBottom = UDim.new(0, 22)}, scroll)
+		make("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder}, scroll)
+		local headingRow = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 64), LayoutOrder = 0}, scroll)
+		local heading = make("Frame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1)}, headingRow)
+		text(heading, settings.Name or "Tab", 22, UDim2.fromOffset(0, 0), UDim2.new(1, -72, 0, 28))
+		text(heading, settings.Description or "", 10, UDim2.fromOffset(0, 31), UDim2.new(1, -10, 0, 20), C.Muted)
+		local pageIndex = text(headingRow, tostring(index), 10, UDim2.new(1, -66, 0, 3), UDim2.fromOffset(66, 20), C.Muted, true)
+		pageIndex.TextXAlignment = Enum.TextXAlignment.Right
+		local steps = make("Frame", {BackgroundTransparency = 1, Position = UDim2.new(1, -66, 0, 28), Size = UDim2.fromOffset(66, 2)}, headingRow)
+		tab.Page, tab.Heading, tab.NavLabel, tab.PageIndex, tab.Steps = page, heading, navLabel, pageIndex, steps
+		table.insert(self.Tabs, tab)
+		for _, other in ipairs(self.Tabs) do
+			other.PageIndex.Text = string.format("%02d — %02d", other.Index, #self.Tabs)
+			for _, child in ipairs(other.Steps:GetChildren()) do child:Destroy() end
+			local interval = math.min(14, 66 / #self.Tabs)
+			local markWidth = interval * .7
+			for position = 1, #self.Tabs do
+				make("Frame", {BackgroundColor3 = position == other.Index and C.Accent or C.Line, Position = UDim2.new(1, -(#self.Tabs - position + 1) * interval, 0, 0), Size = UDim2.fromOffset(markWidth, 2)}, other.Steps)
+			end
+		end
+		button.Activated:Connect(function() setTab(tab) end)
+		scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function() if popup and popup.Tab == tab then closePopup() end end)
+		table.insert(responsive, function()
+			button.Size = UDim2.fromOffset(navWidth - 20, 36)
+			number.Visible = not mobile
+			navLabel.Position = UDim2.fromOffset(mobile and 29 or 48, 0)
+			navLabel.Size = UDim2.new(1, mobile and -30 or -50, 1, 0)
+			padding.PaddingLeft, padding.PaddingRight = UDim.new(0, mobile and 14 or 28), UDim.new(0, mobile and 14 or 28)
+			padding.PaddingTop, padding.PaddingBottom = UDim.new(0, compact and 21 or 25), UDim.new(0, compact and 16 or 22)
+			headingRow.Size = UDim2.new(1, 0, 0, compact and 58 or 64)
+		end)
+
+		local function row(label, hint)
+			tab.Rows += 1
+			local frame = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 59), LayoutOrder = tab.Rows}, scroll)
+			make("Frame", {BackgroundColor3 = C.Line, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, frame)
+			local labelNode = text(frame, label, 12, UDim2.fromOffset(0, hint and 10 or 0), UDim2.new(1, -100, 0, hint and 22 or 59))
+			labelNode.TextWrapped = true
+			local hintNode
+			if hint then
+				hintNode = text(frame, hint, 9, UDim2.fromOffset(0, 31), UDim2.new(1, -76, 0, 23), C.Muted)
+				hintNode.TextWrapped = true
+			end
+			local function refreshRow()
+				local rowHeight = compact and 50 or 59
+				frame.Size = UDim2.new(1, 0, 0, rowHeight)
+				labelNode.Position = UDim2.fromOffset(0, hint and (compact and 6 or 10) or 0)
+				labelNode.Size = UDim2.new(labelNode.Size.X.Scale, labelNode.Size.X.Offset, 0, hint and 22 or rowHeight)
+				if hintNode then
+					hintNode.Position = UDim2.fromOffset(0, compact and 26 or 31)
+					hintNode.Size = UDim2.new(1, -76, 0, compact and 21 or 23)
+				end
+			end
+			table.insert(responsive, refreshRow); refreshRow()
+			return frame, labelNode, hintNode
+		end
+		local function register(control)
+			table.insert(tab.Controls, control)
+			return control
+		end
+		function tab:Select() setTab(self) end
+		function tab:Section(label)
+			self.Rows += 1; self.Sections += 1
+			local frame = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = self.Rows}, scroll)
+			text(frame, string.format("%02d", self.Sections), 8, UDim2.fromOffset(0, 0), UDim2.fromOffset(20, 26), C.Accent, true)
+			local headingText = text(frame, label, 10, UDim2.fromOffset(23, 0), UDim2.new(1, -23, 1, 0), C.Muted)
+			local divider = make("Frame", {BackgroundColor3 = C.Line, Position = UDim2.new(1, 0, 0, 13), Size = UDim2.fromOffset(0, 1)}, frame)
+			headingText:GetPropertyChangedSignal("TextBounds"):Connect(function()
+				local start = 33 + headingText.TextBounds.X
+				divider.Position, divider.Size = UDim2.fromOffset(start, 13), UDim2.new(1, -start, 0, 1)
+			end)
+			return self
+		end
+		function tab:Label(value)
+			local frame, labelNode = row(value)
+			labelNode.Size = UDim2.fromScale(1, 1)
+			return register({Element = frame, Set = function(_, new) if not window.Destroyed then labelNode.Text = tostring(new) end end})
+		end
+		function tab:Toggle(settings)
+			local frame = row(settings.Name, settings.Hint)
+			local stateLabel = text(frame, "", 8, UDim2.new(1, -63, 0, 0), UDim2.new(0, 24, 1, 0), C.Muted, true)
+			local buttonNode = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = C.Line, Position = UDim2.new(1, -32, .5, -9), Size = UDim2.fromOffset(32, 18)}, frame)
+			corner(buttonNode, 10)
+			local thumb = make("Frame", {BackgroundColor3 = C.Text, Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(12, 12)}, buttonNode)
+			corner(thumb, 12)
+			local value = settings.Default == true
+			local control = {Element = frame}
+			local function paint(animated)
+				stateLabel.Text, stateLabel.TextColor3 = value and "BẬT" or "TẮT", value and C.Accent or C.Muted
+				if animated then
+					animate(buttonNode, {BackgroundColor3 = value and C.Accent or C.Line}, .18)
+					animate(thumb, {Position = UDim2.fromOffset(value and 17 or 3, 3), BackgroundColor3 = value and C.Sidebar or C.Text}, .24)
+				else
+					buttonNode.BackgroundColor3 = value and C.Accent or C.Line
+					thumb.Position, thumb.BackgroundColor3 = UDim2.fromOffset(value and 17 or 3, 3), value and C.Sidebar or C.Text
+				end
+			end
+			function control:Get() return value end
+			function control:Set(new, silent)
+				if window.Destroyed or type(new) ~= "boolean" or new == value then return false end
+				value = new; paint(true)
+				if not silent then callback(settings.Callback, value) end
+				return true
+			end
+			buttonNode.Activated:Connect(function() control:Set(not value) end)
+			paint(false)
+			return register(control)
+		end
+		function tab:Slider(settings)
+			local minimum, maximum, step = settings.Min or 0, settings.Max or 100, settings.Step or 1
+			assert(finite(minimum) and finite(maximum) and maximum > minimum and finite(step) and step > 0, "Invalid slider range")
+			local frame, labelNode = row(settings.Name)
+			local trackWidth = mobile and 54 or 100
+			local track = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = Color3.fromRGB(84, 86, 78), Size = UDim2.fromOffset(trackWidth, 3), Position = UDim2.new(1, -trackWidth - 90, .5, -1)}, frame)
+			local hit = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), Position = UDim2.fromOffset(0, -12)}, track)
+			local fill = make("Frame", {BackgroundColor3 = C.Accent, Size = UDim2.fromScale(0, 1)}, track)
+			local thumb = make("Frame", {AnchorPoint = Vector2.new(.5, .5), BackgroundColor3 = C.Accent, Size = UDim2.fromOffset(12, 12), Position = UDim2.fromScale(0, .5)}, track)
+			corner(thumb, 12)
+			for mark = 0, 4 do make("Frame", {BackgroundColor3 = C.Muted, BackgroundTransparency = .4, Size = UDim2.fromOffset(1, mark % 4 == 0 and 5 or 3), Position = UDim2.new(mark / 4, 0, 0, 13)}, track) end
+			local box = make("TextBox", {BackgroundColor3 = C.Input, TextColor3 = C.Text, Font = Enum.Font.Code, TextSize = 11, ClearTextOnFocus = false, Position = UDim2.new(1, -78, .5, -14), Size = UDim2.fromOffset(48, 28)}, frame)
+			corner(box); stroke(box)
+			text(frame, settings.Unit or "", 9, UDim2.new(1, -23, 0, 0), UDim2.new(0, 23, 1, 0), C.Muted, true)
+			local bubble = text(track, "", 10, UDim2.fromOffset(0, -30), UDim2.fromOffset(34, 22), C.Sidebar, true)
+			bubble.AnchorPoint, bubble.BackgroundColor3, bubble.BackgroundTransparency = Vector2.new(.5, 0), C.Accent, 0
+			bubble.TextXAlignment, bubble.Visible = Enum.TextXAlignment.Center, false
+			corner(bubble)
+			local value = minimum
+			local control = {Element = frame}
+			local function snap(new)
+				return math.clamp(minimum + math.floor((new - minimum) / step + .5) * step, minimum, maximum)
+			end
+			local function paint()
+				local fraction = (value - minimum) / (maximum - minimum)
+				fill.Size, thumb.Position = UDim2.fromScale(fraction, 1), UDim2.fromScale(fraction, .5)
+				bubble.Position = UDim2.new(fraction, 0, 0, -30)
+				box.Text = string.format("%.6g", value); bubble.Text = box.Text
+			end
+			function control:Get() return value end
+			function control:Set(new, silent)
+				if window.Destroyed or not finite(new) then return false end
+				new = snap(new)
+				if math.abs(new - value) <= step * 1e-7 then paint(); return false end
+				value = new; paint()
+				if not silent then callback(settings.Callback, value) end
+				return true
+			end
+			local function point(x)
+				local actualWidth = track.AbsoluteSize.X
+				if actualWidth > 0 then control:Set(minimum + math.clamp((x - track.AbsolutePosition.X) / actualWidth, 0, 1) * (maximum - minimum)) end
+			end
+			hit.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					scrubbing = {Input = input, Update = point, Bubble = bubble}
+					bubble.Visible = true; point(input.Position.X)
+				end
+			end)
+			box.FocusLost:Connect(function() local new = tonumber(box.Text); if finite(new) then control:Set(new) end; paint() end)
+			local function refreshSlider()
+				trackWidth = mobile and 54 or 100
+				track.Size, track.Position = UDim2.fromOffset(trackWidth, 3), UDim2.new(1, -trackWidth - 90, .5, -1)
+				labelNode.Size = UDim2.new(1, -trackWidth - 98, 1, 0)
+			end
+			table.insert(responsive, refreshSlider)
+			refreshSlider()
+			value = finite(settings.Default) and snap(settings.Default) or minimum
+			paint()
+			return register(control)
+		end
+		function tab:Dropdown(settings)
+			local frame, labelNode = row(settings.Name)
+			labelNode.Size = UDim2.new(1, -128, 1, 0)
+			local buttonNode = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = C.Input, Position = UDim2.new(1, -112, .5, -14), Size = UDim2.fromOffset(112, 28)}, frame)
+			corner(buttonNode); stroke(buttonNode)
+			local selected = text(buttonNode, "", 10, UDim2.fromOffset(8, 0), UDim2.new(1, -25, 1, 0))
+			selected.TextTruncate = Enum.TextTruncate.AtEnd
+			local arrow = text(buttonNode, "⌄", 12, UDim2.new(1, -20, 0, 0), UDim2.fromOffset(16, 28), C.Muted)
+			local multiple = settings.Multiple == true
+			local choices, value = {}, multiple and {} or nil
+			local control = {Element = frame, Arrow = arrow}
+			local function equal(a, b)
+				if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+				if #a ~= #b then return false end
+				for index, entry in ipairs(a) do if b[index] ~= entry then return false end end
+				return true
+			end
+			local function paint()
+				selected.Text = multiple and (#value > 0 and table.concat(value, ", ") or "—") or (value or "—")
+				if popup and popup.Control == control and popup.Paint then popup.Paint() end
+			end
+			function control:Get() return multiple and table.clone(value) or value end
+			function control:Set(new, silent)
+				if window.Destroyed then return false end
+				if multiple then
+					if type(new) ~= "table" then return false end
+					local normalized = {}
+					for _, entry in ipairs(new) do
+						if not table.find(choices, entry) then return false end
+						if not table.find(normalized, entry) then table.insert(normalized, entry) end
+					end
+					for _, exclusive in ipairs(settings.Exclusive or {}) do
+						local index = table.find(normalized, exclusive)
+						if index and #normalized > 1 then
+							if table.find(value, exclusive) then table.remove(normalized, index) else normalized = {exclusive} end
+						end
+					end
+					new = normalized
+				elseif not table.find(choices, new) then return false end
+				if equal(value, new) then return false end
+				value = new; paint()
+				if not silent then callback(settings.Callback, self:Get()) end
+				return true
+			end
+			function control:SetOptions(new, silent)
+				if window.Destroyed then return end
+				local normalized, seen = {}, {}
+				for _, entry in ipairs(new) do
+					assert(type(entry) == "string", "Dropdown choices must be strings")
+					if not seen[entry] then seen[entry] = true; table.insert(normalized, entry) end
+				end
+				if equal(choices, normalized) then return end
+				if popup and popup.Control == self then closePopup() end
+				choices = normalized
+				local previous = value
+				if multiple then
+					value = {}
+					for _, entry in ipairs(previous) do if table.find(choices, entry) then table.insert(value, entry) end end
+				elseif not table.find(choices, value) then value = choices[1] end
+				paint()
+				if not silent and not equal(previous, value) then callback(settings.Callback, self:Get()) end
+			end
+			local function isSelected(entry)
+				if multiple then return table.find(value, entry) ~= nil end
+				return value == entry
+			end
+			local function choose(entry)
+				if multiple then
+					local next = table.clone(value)
+					local index = table.find(next, entry)
+					if index then table.remove(next, index) else table.insert(next, entry) end
+					control:Set(next)
+				else control:Set(entry); closePopup() end
+			end
+			control:SetOptions(settings.Options or {}, true)
+			if settings.Default then control:Set(settings.Default, true) end
+			paint()
+			buttonNode.Activated:Connect(function()
+				if popup and popup.Control == control then closePopup(); return end
+				closePopup()
+				if #choices == 0 then return end
+				local view, position = viewport(), buttonNode.AbsolutePosition
+				local menuWidth, menuHeight = math.min(210, view.X - 16), math.min(#choices * 29 + 8, math.max(40, view.Y - 24), 280)
+				local x = math.clamp(position.X, 8, math.max(8, view.X - menuWidth - 8))
+				local y = position.Y + 33
+				if y + menuHeight > view.Y - 8 then y = math.max(8, position.Y - menuHeight - 5) end
+				local group = make("CanvasGroup", {BackgroundColor3 = C.Background, Position = UDim2.fromOffset(x, y - 4), Size = UDim2.fromOffset(menuWidth, menuHeight), GroupTransparency = 1, ZIndex = 20}, gui)
+				corner(group); stroke(group)
+				local items = make("ScrollingFrame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(4, 4), Size = UDim2.new(1, -8, 1, -8), ScrollBarThickness = 3, CanvasSize = UDim2.fromOffset(0, #choices * 29)}, group)
+				local rows = {}
+				for itemIndex, entry in ipairs(choices) do
+					local option = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = C.Selected, BackgroundTransparency = 1, Position = UDim2.fromOffset(0, (itemIndex - 1) * 29), Size = UDim2.new(1, -3, 0, 29)}, items)
+					local labelNode = text(option, entry, 10, UDim2.fromOffset(8, 0), UDim2.new(1, -28, 1, 0))
+					local check = text(option, "✓", 11, UDim2.new(1, -20, 0, 0), UDim2.fromOffset(15, 29), C.Accent)
+					table.insert(rows, {Entry=entry, Button=option, Label=labelNode, Check=check})
+					option.Activated:Connect(function()
+						if window.Destroyed or not popup or popup.Group ~= group then return end
+						choose(entry)
+					end)
+				end
+				local function paintOptions()
+					for _, item in ipairs(rows) do
+						local enabled = isSelected(item.Entry)
+						item.Button.BackgroundTransparency, item.Check.Visible = enabled and 0 or 1, enabled
+						item.Label.TextColor3 = enabled and C.Accent or C.Text
+					end
+				end
+				popup = {Control = control, Group = group, Button = buttonNode, Tab = tab, Paint = paintOptions}
+				paintOptions()
+				arrow.Text = "⌃"
+				animate(group, {Position = UDim2.fromOffset(x, y), GroupTransparency = 0}, .22)
+			end)
+			return register(control)
+		end
+		function tab:Input(settings)
+			local frame, labelNode = row(settings.Name)
+			labelNode.Size = UDim2.new(1, -148, 1, 0)
+			local box = make("TextBox", {Text = tostring(settings.Default or ""), PlaceholderText = settings.Placeholder or "", PlaceholderColor3 = C.Muted, ClearTextOnFocus = false, BackgroundColor3 = C.Input, TextColor3 = C.Text, Font = Enum.Font.Gotham, TextSize = 11, Position = UDim2.new(1, -132, .5, -14), Size = UDim2.fromOffset(132, 28)}, frame)
+			corner(box); stroke(box)
+			local value = box.Text
+			local control = {Element = frame}
+			function control:Get() return value end
+			function control:Set(new, silent)
+				if window.Destroyed or type(new) ~= "string" or new == value then return false end
+				value = new; box.Text = value
+				if not silent then callback(settings.Callback, value) end
+				return true
+			end
+			box.FocusLost:Connect(function() control:Set(box.Text) end)
+			return register(control)
+		end
+		function tab:Button(settings)
+			local frame = row("")
+			local buttonNode = make("TextButton", {Text = settings.Name, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.Text, BackgroundColor3 = C.Input, AutoButtonColor = false, Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 38)}, frame)
+			corner(buttonNode); stroke(buttonNode)
+			buttonNode.Activated:Connect(function() if not window.Destroyed then callback(settings.Callback) end end)
+			return register({Element = frame})
+		end
+		layout(false)
+		if not currentTab then setTab(tab) end
+		return tab
+	end
+
+	local function contains(object, position)
+		local p, s = object.AbsolutePosition, object.AbsoluteSize
+		return position.X >= p.X and position.Y >= p.Y and position.X <= p.X + s.X and position.Y <= p.Y + s.Y
+	end
+	titlebar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = {Input = input, Start = input.Position, Origin = root.Position}
+			closePopup()
+		end
+	end)
+	own(Input.InputBegan, function(input, processed)
+		if popup and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			if not contains(popup.Group, input.Position) and not contains(popup.Button, input.Position) then closePopup() end
+		end
+		if processed or Input:GetFocusedTextBox() then return end
+		if input.KeyCode == Enum.KeyCode.K then window:Toggle()
+		elseif input.KeyCode == Enum.KeyCode.Escape then closePopup() end
+	end)
+	own(Input.InputChanged, function(input)
+		local mouse = input.UserInputType == Enum.UserInputType.MouseMovement
+		if scrubbing and (input == scrubbing.Input or (mouse and scrubbing.Input.UserInputType == Enum.UserInputType.MouseButton1)) then scrubbing.Update(input.Position.X) end
+		if dragging and (input == dragging.Input or (mouse and dragging.Input.UserInputType == Enum.UserInputType.MouseButton1)) then
+			local view = viewport()
+			root.Position = UDim2.fromOffset(math.clamp(dragging.Origin.X.Offset + input.Position.X - dragging.Start.X, 0, math.max(0, view.X - width)), math.clamp(dragging.Origin.Y.Offset + input.Position.Y - dragging.Start.Y, 0, math.max(0, view.Y - 47)))
+		end
+	end)
+	own(Input.InputEnded, function(input)
+		local mouseEnded = input.UserInputType == Enum.UserInputType.MouseButton1
+		if scrubbing and (input == scrubbing.Input or (mouseEnded and scrubbing.Input.UserInputType == Enum.UserInputType.MouseButton1)) then scrubbing.Bubble.Visible = false; scrubbing = nil end
+		if dragging and (input == dragging.Input or (mouseEnded and dragging.Input.UserInputType == Enum.UserInputType.MouseButton1)) then dragging = nil end
+	end)
+	local function bindCamera()
+		if viewportConnection then viewportConnection:Disconnect(); viewportConnection = nil end
+		camera = workspace.CurrentCamera
+		if camera then viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function() layout(false) end) end
+		layout(false)
+	end
+	own(workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
+	bindCamera()
+	animate(root, {GroupTransparency = 0}, .4)
+	return window
+end
+
+-- Presentation and feature bindings belong here; commands/data belong to Features.
+function Library.Mount(api)
+	assert(type(api)=="table" and type(api.GetSnapshot)=="function", "Feature engine is incompatible")
+	local window = Library.CreateWindow({Title="LUNA", Subtitle="Stand Upright Rebooted", Footer="LUNA · SUR"})
+	local alive, refreshing = true, false
+	local changed, notices
+	window:OnDestroy(function()
+		alive = false
+		if changed then changed:Disconnect() end
+		if notices then notices:Disconnect() end
+		api:Destroy()
+	end)
+	api:OnStop(function() window:Destroy() end)
+	local bindings, snapshot = {}, api:GetSnapshot()
+	local refresh
+	local function invoke(name, value)
+		if not alive or refreshing then return end
+		local ok, err = pcall(api.Call, api, name, value)
+		if not ok then window:Notify("Không thực hiện được", tostring(err)); if refresh then refresh() end end
+	end
+	local function bind(tab, kind, name, settings)
+		local schema = assert(api.Parameters[name], "Missing feature parameter: "..name)
+		local value = api:Get(name)
+		if schema.Type == "selection" then
+			settings.Multiple, settings.Exclusive = schema.Multiple == true, schema.Exclusive
+			settings.Default = schema.Multiple and value or value[1]
+		else settings.Default = value end
+		settings.Callback = function(new) invoke(name, new) end
+		local control = tab[kind](tab, settings)
+		bindings[name] = control
+		return control
+	end
+	local stand = window:Tab({Name="Auto Stand", ShortName="Stand", Icon="stand", Description="Quay Stand theo mục tiêu đã lưu."})
+	stand:Section("VẬT PHẨM")
+	bind(stand,"Dropdown","RollItem",{Name="Vật phẩm",Options={"Stand Arrow","Charged Arrow","Kars Mask"}})
+	bind(stand,"Toggle","StandFarm",{Name="Auto Stand",Hint="Dừng khi trúng mục tiêu hoặc cần kiểm tra kho."})
+	local currentStand = stand:Label("")
+	local currentAttribute = stand:Label("")
+	local farmState = stand:Label("")
+	local targets = window:Tab({Name="Targets",Icon="targets",Description="Chọn Stand và thuộc tính muốn giữ."})
+	targets:Section("TẠO MỤC TIÊU")
+	bind(targets,"Dropdown","TargetMatchMode",{Name="Cách so khớp",Options={"Stand + Attribute","Stand Only","Attribute Only"}})
+	bind(targets,"Input","StandSearch",{Name="Tìm Stand",Placeholder="Tên / viết tắt / ID"})
+	local standChoice = bind(targets,"Dropdown","SelectedStand",{Name="Stand",Options=snapshot.StandChoices})
+	local selectedLabel = targets:Label("")
+	local attributes = bind(targets,"Dropdown","SelectedAttributes",{Name="Thuộc tính",Options=snapshot.Attributes})
+	targets:Button({Name="Thêm mục tiêu",Callback=function() invoke("AddTarget") end})
+	targets:Button({Name="Làm mới danh sách Stand",Callback=function() invoke("RefreshCatalog") end})
+	targets:Section("MỤC TIÊU ĐÃ LƯU")
+	local targetCount = targets:Label("")
+	local placeholder = "— Chọn mục tiêu —"
+	local saved = targets:Dropdown({Name="Mục tiêu",Options={placeholder},Default=placeholder,Callback=function(value)
+		invoke("SelectTarget", tonumber(value:match("^%[(%d+)%]")))
+	end})
+	targets:Button({Name="Xóa mục tiêu đã chọn",Callback=function() invoke("RemoveTarget") end})
+	targets:Button({Name="Xóa toàn bộ mục tiêu",Callback=function() invoke("ClearTargets") end})
+	local lair = window:Tab({Name="Auto Lair",ShortName="Lair",Icon="lair",Description="Cơ chế từ bản 0071."})
+	lair:Section("VÀO LAIR")
+	bind(lair,"Dropdown","LairLevel",{Name="Cấp độ",Options={"Lv 200"}})
+	bind(lair,"Toggle","JoinLair",{Name="Join Lair",Hint="Duy trì bật cho đến khi anh tắt."})
+	lair:Section("BÁM BOSS · 0071")
+	bind(lair,"Toggle","BossLockAura",{Name="TP / Lock + Aura",Hint="Giữ cơ chế của mốc 0071."})
+	bind(lair,"Slider","BossDistance",{Name="Khoảng cách",Min=1,Max=30,Step=.5,Unit="stud"})
+	bind(lair,"Slider","AuraInterval",{Name="Nhịp Kill Aura",Min=.1,Max=30,Step=.1,Unit="giây"})
+	bind(lair,"Toggle","AutoM1",{Name="Auto M1",Hint="Công tắc riêng; đánh tại vị trí bám boss."})
+	local storage = window:Tab({Name="Stand Storage",ShortName="Storage",Icon="storage",Description="Cất Stand trúng mục tiêu vào slot 1, 2, 4."})
+	storage:Section("KHO STAND")
+	bind(storage,"Toggle","AutoStore",{Name="Tự cất Stand",Hint="Giữ Stand khớp mục tiêu trong kho."})
+	storage:Button({Name="Mở Stand Storage",Callback=function() invoke("OpenStandStorage") end})
+	local storageState = storage:Label("")
+	local storageRows = {}
+	for index=1,#snapshot.Storage do storageRows[index]=storage:Label("") end
+	storage:Button({Name="Xóa chờ xác nhận sau khi kiểm tra kho",Callback=function() invoke("ResetStoragePending") end})
+	local safe = window:Tab({Name="Safe Zone",Icon="safe",Description="Di chuyển tới vị trí Safe Zone đã lưu."})
+	safe:Section("DI CHUYỂN")
+	safe:Button({Name="Đến Safe Zone",Callback=function() invoke("TeleportSafeZone") end})
+	local previousError
+	refresh = function()
+		if not alive or refreshing then return end
+		refreshing = true
+		local ok, err = pcall(function()
+			local state = api:GetSnapshot()
+			local choices = {}
+			for _, name in ipairs(state.StandChoices) do if name~="-- No matches --" then table.insert(choices,name) end end
+			if not table.find(choices,state.SelectedStand) then table.insert(choices,1,state.SelectedStand) end
+			standChoice:SetOptions(choices,true)
+			attributes:SetOptions(state.Attributes,true)
+			for name, control in pairs(bindings) do
+				local schema, value = api.Parameters[name], api:Get(name)
+				if schema.Type=="selection" and not schema.Multiple then value=value[1] end
+				control:Set(value,true)
+			end
+			currentStand:Set("Stand: "..state.Stand)
+			currentAttribute:Set("Thuộc tính: "..state.Attribute)
+			farmState:Set("Auto Stand: "..(state.Farming and "Bật" or "Tắt"))
+			selectedLabel:Set("Đã chọn: "..state.SelectedStand)
+			targetCount:Set(tostring(#state.Targets).." mục tiêu đã lưu")
+			local options, map = {placeholder}, {}
+			for _, target in ipairs(state.Targets) do local title="["..target.Index.."] "..target.Description;table.insert(options,title);map[target.Index]=title end
+			saved:SetOptions(options,true)
+			saved:Set(map[state.SelectedTargetIndex] or placeholder,true)
+			storageState:Set("Kho: "..state.StorageMessage)
+			for index, record in ipairs(state.Storage) do
+				storageRows[index]:Set(record.Label..": "..(record.Stand and (record.Stand.." / "..tostring(record.Attribute)..(record.Protected and " · GIỮ" or "")) or "Chưa đọc được"))
+			end
+		end)
+		refreshing = false
+		if not ok and previousError~=tostring(err) then window:Notify("Cập nhật giao diện",tostring(err)) end
+		previousError = not ok and tostring(err) or nil
+	end
+	changed = api:Subscribe("Changed", refresh)
+	notices = api:Subscribe("Notice", function(notice) if alive then window:Notify(notice.Title,notice.Content) end end)
+	refresh()
+	stand:Select()
+	api:FlushNotices()
+	return window
+end
+
+return Library
