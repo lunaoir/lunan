@@ -1,8 +1,9 @@
 -- LUNA_UI_DESIGN05_FEATURES_V2
+-- LUNA_UI_HALLOWEEN_TAP_V1
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, Design = "Luna-05", Build = "2026-11-01.3"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, Design = "Luna-05", Build = "2026-11-01.4"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -842,6 +843,11 @@ function Library.Mount(api)
 	bind(lair,"Slider","BossDistance",{Name="Khoảng cách",Min=1,Max=30,Step=.5,Unit="stud"})
 	bind(lair,"Slider","AuraInterval",{Name="Nhịp Kill Aura",Min=.1,Max=30,Step=.1,Unit="giây"})
 	bind(lair,"Toggle","AutoM1",{Name="Auto M1",Hint="Công tắc riêng; đánh tại vị trí bám boss."})
+	if api.Parameters.HalloweenTapE then
+		local halloween = window:Tab({Name="Halloween",Icon="lair",Description="Tương tác cửa nhà trong sự kiện."})
+		halloween:Section("CỬA NHÀ")
+		bind(halloween,"Toggle","HalloweenTapE",{Name="Nhấn E một lần",Hint="Đứng trong tầm cửa đang hoạt động rồi bấm E."})
+	end
 	local storage = window:Tab({Name="Stand Storage",ShortName="Storage",Icon="storage",Description="Cất Stand trúng mục tiêu vào slot 1, 2, 4."})
 	storage:Section("KHO STAND")
 	bind(storage,"Toggle","AutoStore",{Name="Tự cất Stand",Hint="Giữ Stand khớp mục tiêu trong kho."})
