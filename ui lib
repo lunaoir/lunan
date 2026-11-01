@@ -8,10 +8,11 @@
 -- LUNA_UI_REJOIN_MENU_V2
 -- LUNA_UI_HALLOWEEN_PULL_E_V2
 -- LUNA_UI_START_CLOSED_V1
+-- LUNA_UI_ACTIVITY_INTENT_V1
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, HalloweenStorageVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, Design = "Luna-05", Build = "2026-11-01.14"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, HalloweenStorageVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, ActivityIntentVersion = 1, Design = "Luna-05", Build = "2026-11-01.15"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -796,6 +797,7 @@ function Library.Mount(api)
 	local function bind(tab, kind, name, settings)
 		local schema = assert(api.Parameters[name], "Missing feature parameter: "..name)
 		local value = api:Get(name)
+		if snapshot.RequestedControls and snapshot.RequestedControls[name]~=nil then value=snapshot.RequestedControls[name] end
 		if schema.Type == "selection" then
 			settings.Multiple, settings.Exclusive = schema.Multiple == true, schema.Exclusive
 			settings.Default = schema.Multiple and value or value[1]
@@ -852,6 +854,7 @@ function Library.Mount(api)
 	bind(lair,"Slider","BossDistance",{Name="Khoảng cách",Min=1,Max=30,Step=.5,Unit="stud"})
 	bind(lair,"Slider","AuraInterval",{Name="Nhịp Kill Aura",Min=.1,Max=30,Step=.1,Unit="giây"})
 	bind(lair,"Toggle","AutoM1",{Name="Auto M1",Hint="Công tắc riêng; đánh tại vị trí bám boss."})
+	local lairState=lair:Label("")
 	local halloweenStatus
 	if api.Parameters.HalloweenTapE then
 		local halloween = window:Tab({Name="Halloween",Icon="lair",Description="Tương tác cửa nhà trong sự kiện."})
@@ -894,12 +897,17 @@ function Library.Mount(api)
 			attributes:SetOptions(state.Attributes,true)
 			for name, control in pairs(bindings) do
 				local schema, value = api.Parameters[name], api:Get(name)
+				if state.RequestedControls and state.RequestedControls[name]~=nil then value=state.RequestedControls[name] end
 				if schema.Type=="selection" and not schema.Multiple then value=value[1] end
 				control:Set(value,true)
 			end
 			currentStand:Set("Stand: "..state.Stand)
 			currentAttribute:Set("Thuộc tính: "..state.Attribute)
-			farmState:Set("Auto Stand: "..(state.Farming and "Bật" or "Tắt"))
+			local requests=state.RequestedControls or {}
+			farmState:Set("Auto Stand: "..(state.ActivityPauseReason and requests.StandFarm
+				and ("Đã bật · Chờ: "..state.ActivityPauseReason) or (state.Farming and "Đang chạy" or "Tắt")))
+			lairState:Set("Auto Lair: "..(state.ActivityPauseReason and (requests.JoinLair or requests.BossLockAura or requests.AutoM1)
+				and ("Đã bật · Chờ: "..state.ActivityPauseReason) or ((requests.JoinLair or requests.BossLockAura or requests.AutoM1) and "Theo công tắc đã bật" or "Tắt")))
 			if orbStatus then orbStatus:Set(state.OrbStatus or "2x Orb: Chưa có dữ liệu") end
 			if halloweenStatus then halloweenStatus:Set(state.HalloweenStatus or "Đã tắt") end
 			selectedLabel:Set("Đã chọn: "..state.SelectedStand)
