@@ -2,10 +2,11 @@
 -- LUNA_UI_HALLOWEEN_TAP_V1
 -- LUNA_UI_HALLOWEEN_AUTO_V1
 -- LUNA_UI_HALLOWEEN_ROUTE_V2
+-- LUNA_UI_HALLOWEEN_SCHEDULE_V3
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 2, Design = "Luna-05", Build = "2026-11-01.6"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, Design = "Luna-05", Build = "2026-11-01.7"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -853,6 +854,8 @@ function Library.Mount(api)
 		if api.Parameters.HalloweenAutoDoor then
 			bind(halloween,"Toggle","HalloweenAutoDoor",{Name="Auto Door",Hint="TP lần lượt các cửa; chuyển nhanh sang nhà khác."})
 			bind(halloween,"Toggle","HalloweenAutoMob",{Name="Auto Mob · M1",Hint="Quét xa, TP dưới chân Evil Bandit / Headless Horseman để đánh."})
+			bind(halloween,"Slider","HalloweenMobDistance",{Name="Khoảng cách dưới quái",Min=6,Max=8,Step=.5,Unit="stud"})
+			halloween:Label("Đêm: ưu tiên Halloween. Sáng: khôi phục Lair / Stand Farm đã bật.")
 			halloweenStatus=halloween:Label("")
 		end
 	end
