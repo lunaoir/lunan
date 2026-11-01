@@ -4,15 +4,15 @@
 -- LUNA_UI_HALLOWEEN_ROUTE_V2
 -- LUNA_UI_HALLOWEEN_SCHEDULE_V3
 -- LUNA_UI_LAIR_POSES_V1
--- LUNA_UI_HALLOWEEN_STORAGE_V1
+-- LUNA_UI_INDEPENDENT_V1
 -- LUNA_UI_REJOIN_MENU_V2
 -- LUNA_UI_HALLOWEEN_PULL_E_V2
 -- LUNA_UI_START_CLOSED_V1
--- LUNA_UI_ACTIVITY_INTENT_V1
+-- LUNA_UI_SETTINGS_V1
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, HalloweenStorageVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, ActivityIntentVersion = 1, Design = "Luna-05", Build = "2026-11-01.16"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, IndependentVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, SettingsVersion = 1, Design = "Luna-05", Build = "2026-11-01.17"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -797,7 +797,6 @@ function Library.Mount(api)
 	local function bind(tab, kind, name, settings)
 		local schema = assert(api.Parameters[name], "Missing feature parameter: "..name)
 		local value = api:Get(name)
-		if snapshot.RequestedControls and snapshot.RequestedControls[name]~=nil then value=snapshot.RequestedControls[name] end
 		if schema.Type == "selection" then
 			settings.Multiple, settings.Exclusive = schema.Multiple == true, schema.Exclusive
 			settings.Default = schema.Multiple and value or value[1]
@@ -861,12 +860,11 @@ function Library.Mount(api)
 		halloween:Section("CỬA NHÀ")
 		bind(halloween,"Toggle","HalloweenTapE",{Name="Nhấn E một lần",Hint="Đứng trong tầm cửa đang hoạt động rồi bấm E."})
 		if api.Parameters.HalloweenAutoDoor then
-			bind(halloween,"Dropdown","HalloweenStandSlot",{Name="Slot Stand Halloween",Options={"Không đổi","Slot 1","Slot 2","Slot 4"},Hint="Đêm lấy Stand từ slot này; sáng trả lại rồi tiếp tục farm. Slot được dành riêng."})
 			bind(halloween,"Toggle","HalloweenAutoDoor",{Name="Auto Door",Hint="Tương tác lần lượt các cửa; bật Kéo E để đứng bên dưới từng cửa."})
 			bind(halloween,"Toggle","HalloweenPullE",{Name="Kéo E tới mình",Hint="TP đứng thẳng dưới từng cửa, kéo E xuống cạnh nhân vật để mở rồi chuyển qua cửa tiếp theo."})
 			bind(halloween,"Toggle","HalloweenAutoMob",{Name="Auto Mob · M1",Hint="TP dưới chân Evil Bandit, Headless Horseman, Vampiric Descendant, Bandit Leader; đánh bằng M1."})
 			bind(halloween,"Slider","HalloweenMobDistance",{Name="Khoảng cách dưới quái",Min=6,Max=8,Step=.5,Unit="stud"})
-			halloween:Label("Đêm: ưu tiên Halloween. Sáng: khôi phục Lair / Stand Farm đã bật.")
+			halloween:Label("Halloween chạy riêng; không tự đổi Stand hoặc bật/tắt tính năng ở tab khác.")
 			bind(halloween,"Toggle","AutoHalloweenRejoin",{Name="Rejoin khi hết lượt",Hint="Giữ Stand đang dùng rồi rejoin. Anh tự lưu / chạy lại script ở phiên mới."})
 			halloween:Button({Name="Rejoin",Callback=function() invoke("RejoinGame") end})
 			halloween:Button({Name="Hủy chờ rejoin",Callback=function() invoke("CancelRejoin") end})
@@ -884,6 +882,13 @@ function Library.Mount(api)
 	local safe = window:Tab({Name="Safe Zone",Icon="safe",Description="Di chuyển tới vị trí Safe Zone đã lưu."})
 	safe:Section("DI CHUYỂN")
 	safe:Button({Name="Đến Safe Zone",Callback=function() invoke("TeleportSafeZone") end})
+	local settings=window:Tab({Name="Settings",Icon="storage",Description="Sao lưu và khôi phục cài đặt."})
+	settings:Section("CÀI ĐẶT")
+	settings:Label("Lưu công tắc và tham số. Mục tiêu được lưu riêng; không tự tải khi mở script.")
+	settings:Button({Name="Lưu cài đặt",Callback=function() invoke("SaveSettings") end})
+	settings:Button({Name="Tải cài đặt",Callback=function() invoke("LoadSettings") end})
+	settings:Button({Name="Khôi phục mặc định",Callback=function() invoke("ResetSettings") end})
+	settings:Label("Khôi phục mặc định tắt các chế độ tự chạy; giữ mục tiêu, kho và bản sao đã lưu.")
 	local previousError
 	refresh = function()
 		if not alive or refreshing then return end
@@ -897,17 +902,13 @@ function Library.Mount(api)
 			attributes:SetOptions(state.Attributes,true)
 			for name, control in pairs(bindings) do
 				local schema, value = api.Parameters[name], api:Get(name)
-				if state.RequestedControls and state.RequestedControls[name]~=nil then value=state.RequestedControls[name] end
 				if schema.Type=="selection" and not schema.Multiple then value=value[1] end
 				control:Set(value,true)
 			end
 			currentStand:Set("Stand: "..state.Stand)
 			currentAttribute:Set("Thuộc tính: "..state.Attribute)
-			local requests=state.RequestedControls or {}
-			farmState:Set("Auto Stand: "..(state.ActivityPauseReason and requests.StandFarm
-				and ("Đã bật · Chờ: "..state.ActivityPauseReason) or (state.Farming and "Đang chạy" or "Tắt")))
-			lairState:Set("Auto Lair: "..(state.ActivityPauseReason and (requests.JoinLair or requests.BossLockAura or requests.AutoM1)
-				and ("Đã bật · Chờ: "..state.ActivityPauseReason) or ((requests.JoinLair or requests.BossLockAura or requests.AutoM1) and "Theo công tắc đã bật" or "Tắt")))
+			farmState:Set("Auto Stand: "..(state.Farming and "Đang chạy" or "Tắt"))
+			lairState:Set("Auto Lair: "..((api:Get("JoinLair") or api:Get("BossLockAura") or api:Get("AutoM1")) and "Theo công tắc đã bật" or "Tắt"))
 			if orbStatus then orbStatus:Set(state.OrbStatus or "2x Orb: Chưa có dữ liệu") end
 			if halloweenStatus then halloweenStatus:Set(state.HalloweenStatus or "Đã tắt") end
 			selectedLabel:Set("Đã chọn: "..state.SelectedStand)
@@ -918,7 +919,7 @@ function Library.Mount(api)
 			saved:Set(map[state.SelectedTargetIndex] or placeholder,true)
 			storageState:Set("Kho: "..state.StorageMessage)
 			for index, record in ipairs(state.Storage) do
-				storageRows[index]:Set(record.Label..": "..(record.Stand and (record.Stand.." / "..tostring(record.Attribute)..(record.Protected and " · GIỮ" or "")) or "Chưa đọc được")..(record.Reserved and " · HALLOWEEN" or ""))
+				storageRows[index]:Set(record.Label..": "..(record.Stand and (record.Stand.." / "..tostring(record.Attribute)..(record.Protected and " · GIỮ" or "")) or "Chưa đọc được"))
 			end
 		end)
 		refreshing = false
