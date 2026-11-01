@@ -1,905 +1,2618 @@
--- LUNA_UI_DESIGN05_FEATURES_V2
--- LUNA_UI_HALLOWEEN_TAP_V1
--- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
--- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
--- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, Design = "Luna-05", Build = "2026-11-01.4"}
+-- Luna rebuild: Auto Stand, Targets, Auto Lair (snapshot 0071), Storage, Safe Zone.
+-- UI construction belongs to the separately hosted Luna_UI_Library.lua.
+local Features = {Version=2}
+-- LUNA_FEATURE_ENGINE_BEGIN
+local function newFeatureEngine()
+    local engine = {Version=1, Values={}, Parameters={}, Commands={}, Flags={}, FlagNames={}, Listeners={}, StopHandlers={}, Alive=true}
+    local function copy(value)
+        if type(value) ~= "table" then return value end
+        local result={}
+        for key,item in pairs(value) do result[key]=copy(item) end
+        return result
+    end
+    function engine:IsRunning()
+        return self.Alive and (not self.SessionToken or getgenv().SURFarmSession == self.SessionToken)
+    end
+    function engine:Emit(event, data)
+        if not self.Alive then return end
+        for _,entry in ipairs(self.Listeners[event] or {}) do
+            if entry.Connected then
+                local ok,err=pcall(entry.Callback,copy(data))
+                if not ok then warn("[Luna Features] Observer: "..tostring(err)) end
+            end
+        end
+    end
+    function engine:Subscribe(event, callback)
+        assert(type(callback)=="function","Observer must be a function")
+        local entry={Connected=true,Callback=callback}
+        function entry:Disconnect() self.Connected=false end
+        self.Listeners[event]=self.Listeners[event] or {}
+        table.insert(self.Listeners[event],entry)
+        return entry
+    end
+    function engine:OnStop(callback) table.insert(self.StopHandlers,callback) end
+    function engine:Destroy()
+        if not self.Alive or self.Stopping then return end
+        self.Stopping=true
+        for _,callback in ipairs(self.StopHandlers) do
+            local ok,err=pcall(callback)
+            if not ok then warn("[Luna Features] Stop: "..tostring(err)) end
+        end
+        self.Alive=false
+        table.clear(self.Listeners)
+        table.clear(self.StopHandlers)
+        if getgenv().LunaFeatureSession==self then getgenv().LunaFeatureSession=nil end
+    end
+    function engine:Notify(title, content)
+        self.PendingNotifications=self.PendingNotifications or {}
+        local data={Title=tostring(title),Content=tostring(content or title)}
+        if #(self.Listeners.Notice or {})==0 then
+            table.insert(self.PendingNotifications,data)
+            if #self.PendingNotifications>50 then table.remove(self.PendingNotifications,1) end
+        else self:Emit("Notice",data) end
+    end
+    function engine:FlushNotices()
+        local pending=self.PendingNotifications or {}
+        self.PendingNotifications={}
+        for _,data in ipairs(pending) do self:Emit("Notice",data) end
+    end
+    function engine:SetPromptHandler(callback) self.PromptHandler=callback end
+    function engine:Ask(text,title,style)
+        if self.PromptHandler then return self.PromptHandler(text,title,style) end
+        self:Notify(title or "SUR",text)
+    end
+    local function normalize(schema, raw, previous)
+        if schema.Type=="boolean" then
+            assert(type(raw)=="boolean","Expected boolean")
+        elseif schema.Type=="number" then
+            raw=tonumber(raw)
+            assert(raw and raw==raw and math.abs(raw)~=math.huge,"Expected finite number")
+            local range=schema.Range or {0,100};local step=schema.Increment or 1
+            raw=math.clamp(range[1]+math.floor((raw-range[1])/step+0.5)*step,range[1],range[2])
+        elseif schema.Type=="string" then
+            assert(type(raw)=="string","Expected string")
+        elseif schema.Type=="selection" then
+            if type(raw)=="string" then raw={raw} end
+            assert(type(raw)=="table","Expected selected values")
+            local values,seen={},{}
+            for _,item in ipairs(raw) do
+                assert(type(item)=="string","Expected option names")
+                if not seen[item] then table.insert(values,item);seen[item]=true end
+                if not schema.Multiple then break end
+            end
+            for _,exclusive in ipairs(schema.Exclusive or {}) do
+                if seen[exclusive] and #values>1 then
+                    if type(previous)=="table" and table.find(previous,exclusive) then
+                        table.remove(values,table.find(values,exclusive))
+                    else values={exclusive} end
+                end
+            end
+            raw=values
+        end
+        return copy(raw)
+    end
+    function engine:Register(name, callback)
+        assert(not self.Commands[name],"Duplicate command: "..name)
+        self.Commands[name]=callback
+    end
+    function engine:Define(name,schema,initial,callback)
+        self.Parameters[name]=schema
+        self:Register(name,callback)
+        self.Values[name]=normalize(schema,initial)
+        if schema.Flag then self.FlagNames[schema.Flag]=name;self.Flags[schema.Flag]=copy(self.Values[name]) end
+    end
+    function engine:Get(name) return copy(self.Values[name]) end
+    function engine:Set(name,value,silent)
+        assert(self.Alive,"Feature session has stopped")
+        local schema=assert(self.Parameters[name],"Unknown parameter: "..tostring(name))
+        value=normalize(schema,value,self.Values[name]);self.Values[name]=value
+        if schema.Flag then self.Flags[schema.Flag]=copy(value) end
+        if not silent then self.Commands[name](copy(value)) end
+        if schema.Flag then self.Flags[schema.Flag]=copy(self.Values[name]) end
+        self:Emit("Changed")
+        return self:Get(name)
+    end
+    function engine:Call(name,...)
+        if not self.Alive then return false,"Feature session has stopped" end
+        if self.Parameters[name] then return self:Set(name,...) end
+        local command=assert(self.Commands[name],"Unknown command: "..tostring(name))
+        local results=table.pack(command(...))
+        self:Emit("Changed")
+        return table.unpack(results,1,results.n)
+    end
+    return engine
+end
+-- LUNA_FEATURE_ENGINE_END
 
-local C = {
-	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
-	Line = Color3.fromRGB(52, 54, 54), Text = Color3.fromRGB(231, 228, 221),
-	Muted = Color3.fromRGB(160, 159, 153), Accent = Color3.fromRGB(211, 179, 137),
-	Input = Color3.fromRGB(22, 24, 25), Selected = Color3.fromRGB(47, 46, 41),
+function Features.Start()
+    local previous=getgenv().LunaFeatureSession
+    if previous then previous:Destroy() end
+    local engine=newFeatureEngine()
+    getgenv().LunaFeatureSession=engine
+    local ok,err=pcall(function()
+--================== SETTINGS ==================--
+--================== SETTINGS ==================--
+
+--================== VARIABLES ==================--
+getgenv().farmstands = false
+
+local localplr = game.Players.LocalPlayer
+if not localplr then
+    error("Feature module requires a client player.", 0)
+end
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local hubSession = {}
+engine.SessionToken = hubSession
+getgenv().SURFarmSession = hubSession
+-- Retire connections belonging to previous builds before installing this session.
+getgenv().G = false
+getgenv().Creator = nil
+getgenv().SURLairSession = nil
+local previousLairConnection = getgenv().SURLairLoopConnection
+if typeof(previousLairConnection) == "RBXScriptConnection" then
+    pcall(function()
+        previousLairConnection:Disconnect()
+    end)
+end
+getgenv().SURLairLoopConnection = nil
+local previousAntiAfkConnection = getgenv().SURAntiAfkConnection
+if typeof(previousAntiAfkConnection) == "RBXScriptConnection" then
+    pcall(function()
+        previousAntiAfkConnection:Disconnect()
+    end)
+end
+getgenv().SURAntiAfkConnection = nil
+local httpservice = game:GetService("HttpService")
+local jsonservice = httpservice
+local selectedRollItem = "Stand Arrow"
+local selectedRokaItem = "Rokakaka"
+local autoUseOrb = true
+local selectedStandForSlot = "Any"
+local selectedAttsForSlot = { "Any" }
+local selectedRemoveIndex = nil
+local featureState = {
+    selectedTargetMode = "Stand + Attribute",
+    recentStandSelections = {},
+    targetsChanged = function() engine:Emit("Changed") end,
+    catalogChanged = function() engine:Emit("Changed") end,
+}
+local extrasConnection: RBXScriptConnection? = nil
+local respawnConnection: RBXScriptConnection? = nil
+
+-- One idle listener per session; no polling worker or held mouse input.
+do
+    local connection: RBXScriptConnection? = nil
+    local function stopAntiAFK()
+        if connection then
+            connection:Disconnect()
+            if getgenv().SURAntiAfkConnection == connection then
+                getgenv().SURAntiAfkConnection = nil
+            end
+            connection = nil
+        end
+    end
+    local function reportFailure(err)
+        stopAntiAFK()
+        engine.Values.AntiAFK = false
+        engine:Emit("Changed")
+        engine:Notify("Anti AFK", "Khong the mo phong thao tac: "..tostring(err))
+    end
+    engine:Define("AntiAFK", {Type="boolean"}, false, function(enabled)
+        stopAntiAFK()
+        if not enabled then return end
+        local ok, err = pcall(function()
+            local virtualUser = game:GetService("VirtualUser")
+            connection = localplr.Idled:Connect(function()
+                if not engine:IsRunning() then stopAntiAFK(); return end
+                local camera = workspace.CurrentCamera
+                if not camera then return end
+                local sent, inputError = pcall(function()
+                    virtualUser:ClickButton2(Vector2.new(0, 0), camera.CFrame)
+                end)
+                if not sent then reportFailure(inputError) end
+            end)
+            getgenv().SURAntiAfkConnection = connection
+        end)
+        if not ok then reportFailure(err) end
+    end)
+    engine:OnStop(stopAntiAFK)
+end
+
+-- Feature lifecycle state
+do
+    local records = {}
+    local added: RBXScriptConnection? = nil
+    local enabled = false
+    local function stopTapE()
+        enabled = false
+        if added then added:Disconnect(); added = nil end
+        for prompt, record in pairs(records) do
+            record.Changed:Disconnect()
+            record.Destroying:Disconnect()
+            if prompt.Parent then prompt.HoldDuration = record.Duration end
+        end
+        table.clear(records)
+    end
+    local function applyTapE(prompt)
+        if not enabled or not engine:IsRunning() or records[prompt] then return end
+        if not prompt:IsA("ProximityPrompt") or prompt.Name ~= "Knock" then return end
+        local map = workspace:FindFirstChild("Map")
+        local base = map and map:FindFirstChild("BaseMap")
+        local doors = base and base:FindFirstChild("Doors")
+        if not doors or not prompt:IsDescendantOf(doors) then return end
+        local holder = prompt.Parent
+        if not holder or holder.Name ~= "TrickOrTreatKnock" then return end
+        local record = {Duration=prompt.HoldDuration}
+        records[prompt] = record
+        record.Changed = prompt:GetPropertyChangedSignal("HoldDuration"):Connect(function()
+            if not enabled or records[prompt] ~= record or not engine:IsRunning() then return end
+            if prompt.HoldDuration ~= 0 then
+                record.Duration = prompt.HoldDuration
+                prompt.HoldDuration = 0
+            end
+        end)
+        record.Destroying = prompt.Destroying:Connect(function()
+            record.Changed:Disconnect()
+            record.Destroying:Disconnect()
+            records[prompt] = nil
+        end)
+        prompt.HoldDuration = 0
+    end
+    engine:Define("HalloweenTapE", {Type="boolean"}, false, function(value)
+        stopTapE()
+        if not value then return end
+        enabled = true
+        added = workspace.DescendantAdded:Connect(applyTapE)
+        for _, object in ipairs(workspace:GetDescendants()) do applyTapE(object) end
+    end)
+    engine:OnStop(stopTapE)
+end
+
+-- Halloween owns its movement, prompt hold and paired M1 input independently.
+do
+    local autoDoor, autoMob = false, false
+    local heartbeat: RBXScriptConnection? = nil
+    local added: RBXScriptConnection? = nil
+    local prompts, mobs = {}, {}
+    local chosenDoor, doorPoint
+    local heldPrompt, promptEndAt
+    local m1Input, m1EndAt
+    local movedHumanoid, movedRoot
+    local nextDoorAt, nextM1At, nextScanAt, elapsed = 0, 0, 0, 0
+    featureState.halloweenStatus = "Đã tắt"
+    local function setStatus(text) featureState.halloweenStatus = text end
+    local function releasePrompt()
+        if heldPrompt then
+            local prompt = heldPrompt
+            heldPrompt, promptEndAt = nil, nil
+            local ok, err = pcall(function() prompt:InputHoldEnd() end)
+            if not ok then warn("[Halloween] End prompt: "..tostring(err)) end
+        end
+    end
+    local function releaseM1()
+        if m1Input then
+            local remote = m1Input
+            m1Input, m1EndAt = nil, nil
+            local ok, err = pcall(function() remote:FireServer("MouseButton1", "End", nil) end)
+            if not ok then warn("[Halloween] End M1: "..tostring(err)) end
+        end
+    end
+    local function stopMovement()
+        local humanoid, root = movedHumanoid, movedRoot
+        movedHumanoid, movedRoot = nil, nil
+        if humanoid and humanoid.Parent and root and root.Parent then humanoid:MoveTo(root.Position) end
+    end
+    local function releaseActions()
+        releasePrompt(); releaseM1(); stopMovement()
+    end
+    local function doorFolder()
+        local map = workspace:FindFirstChild("Map")
+        local base = map and map:FindFirstChild("BaseMap")
+        return base and base:FindFirstChild("Doors")
+    end
+    local function validDoor(prompt)
+        local doors = doorFolder()
+        return doors and prompt.Parent and prompt:IsDescendantOf(doors)
+            and prompt:IsA("ProximityPrompt") and prompt.Name=="Knock"
+            and prompt.Parent.Name=="TrickOrTreatKnock"
+    end
+    local function promptPoint(prompt)
+        local parent = prompt.Parent
+        if parent and parent:IsA("Attachment") then return parent.WorldPosition end
+        if parent and parent:IsA("BasePart") then return parent.Position end
+    end
+    local function indexObject(object)
+        if object:IsA("ProximityPrompt") and validDoor(object) then prompts[object] = true end
+        local model = object
+        while model and model~=workspace do
+            if model:IsA("Model") and (model.Name=="Evil Bandit" or model.Name=="Headless Horseman") then
+                if not mobs[model] then mobs[model]=os.clock() end
+                break
+            end
+            model=model.Parent
+        end
+    end
+    local function rescan(now)
+        local foundPrompts, foundMobs = {}, {}
+        for _, object in ipairs(workspace:GetDescendants()) do
+            indexObject(object)
+            if prompts[object] then foundPrompts[object]=true end
+            if mobs[object] then foundMobs[object]=mobs[object] end
+        end
+        prompts, mobs = foundPrompts, foundMobs
+        nextScanAt = now+3
+    end
+    local function moveTo(humanoid, root, point, standOff)
+        local delta = Vector3.new(root.Position.X-point.X, 0, root.Position.Z-point.Z)
+        local target = point
+        if delta.Magnitude>.01 then target=point+delta.Unit*standOff end
+        movedHumanoid, movedRoot = humanoid, root
+        humanoid:MoveTo(target)
+    end
+    local function selectDoor(root)
+        if chosenDoor and validDoor(chosenDoor) then
+            doorPoint=promptPoint(chosenDoor)
+            if doorPoint then return end
+        end
+        chosenDoor, doorPoint = nil, nil
+        local nearest = math.huge
+        for prompt in pairs(prompts) do
+            if validDoor(prompt) then
+                local point = promptPoint(prompt)
+                local distance = point and (point-root.Position).Magnitude or math.huge
+                if distance<nearest then chosenDoor, doorPoint, nearest=prompt,point,distance end
+            else prompts[prompt]=nil end
+        end
+    end
+    local function selectMob(root, now)
+        local selected, selectedRoot, nearest, pending = nil, nil, math.huge, false
+        local origin = doorPoint and (doorPoint-root.Position).Magnitude<=80 and doorPoint or root.Position
+        for model, seenAt in pairs(mobs) do
+            if not model.Parent or not model:IsDescendantOf(workspace)
+                or (model.Name~="Evil Bandit" and model.Name~="Headless Horseman") then mobs[model]=nil; continue end
+            local humanoid=model:FindFirstChildOfClass("Humanoid")
+            local targetRoot=model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+            if not humanoid or not targetRoot then
+                if now-seenAt<2 then pending=true end
+            elseif humanoid.Health>0 and targetRoot.Parent and (targetRoot.Position-origin).Magnitude<=60 then
+                local distance=(targetRoot.Position-root.Position).Magnitude
+                if distance<nearest then selected,selectedRoot,nearest=model,targetRoot,distance end
+            end
+        end
+        return selected, selectedRoot, nearest, pending
+    end
+    local function attack(character, now)
+        if m1Input or now<nextM1At then return true end
+        local combat=character
+        local standEvents=combat:FindFirstChild("StandEvents")
+        if not standEvents then
+            local living=workspace:FindFirstChild("Living")
+            combat=living and living:FindFirstChild(localplr.Name)
+            standEvents=combat and combat:FindFirstChild("StandEvents")
+        end
+        local remote=standEvents and standEvents:FindFirstChild("M1")
+        local events=ReplicatedStorage:FindFirstChild("Events")
+        local input=events and events:FindFirstChild("AbilityInput")
+        if not remote or not remote:IsA("RemoteEvent") or not input or not input:IsA("RemoteEvent") then return false end
+        nextM1At=now+.25
+        m1Input, m1EndAt=input,now+.08
+        input:FireServer("MouseButton1", "Begin", nil)
+        if not autoMob or not engine:IsRunning() or localplr.Character~=character then releaseM1();return true end
+        remote:FireServer()
+        return true
+    end
+    local function tick(now)
+        if now>=nextScanAt then rescan(now) end
+        if engine:Get("StandFarm") or engine:Get("JoinLair") or engine:Get("BossLockAura") then
+            releaseActions();setStatus("Tạm chờ Stand Farm / Auto Lair dừng");return
+        end
+        local character=localplr.Character
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        if not humanoid or humanoid.Health<=0 or not root then
+            releaseActions();setStatus("Chờ nhân vật hồi sinh");return
+        end
+        selectDoor(root)
+        local mob, targetRoot, distance, pending=selectMob(root,now)
+        if mob then
+            releasePrompt()
+            nextDoorAt=now+.8
+            if not autoMob then stopMovement();setStatus("Có quái quanh cửa — bật Auto Mob để đánh");return end
+            if distance>4.5 then
+                releaseM1();moveTo(humanoid,root,targetRoot.Position,3.5)
+                setStatus("Đang đến "..mob.Name);return
+            end
+            stopMovement()
+            local look=Vector3.new(targetRoot.Position.X,root.Position.Y,targetRoot.Position.Z)
+            if (look-root.Position).Magnitude>.01 then root.CFrame=CFrame.lookAt(root.Position,look) end
+            if attack(character,now) then setStatus("Đang đánh "..mob.Name.." bằng M1")
+            else setStatus("Chờ Stand / remote M1 sẵn sàng") end
+            return
+        end
+        releaseM1()
+        if pending then releasePrompt();stopMovement();setStatus("Chờ quái tải đủ bộ phận");return end
+        if not autoDoor then releasePrompt();stopMovement();setStatus("Chờ quái quanh cửa");return end
+        if not chosenDoor then releaseActions();setStatus("Chưa tải được cửa Halloween");return end
+        if not chosenDoor.Enabled then releaseActions();setStatus("Chờ cửa hoạt động / ban đêm");return end
+        local doorDistance=(doorPoint-root.Position).Magnitude
+        if doorDistance>math.max(0,chosenDoor.MaxActivationDistance-.5) then
+            releasePrompt();moveTo(humanoid,root,doorPoint,math.max(0,chosenDoor.MaxActivationDistance*.6))
+            setStatus("Đang đến cửa đã chọn");return
+        end
+        stopMovement()
+        if heldPrompt then
+            if now>=promptEndAt then releasePrompt();nextDoorAt=now+.8 end
+            setStatus("Đang tương tác cửa");return
+        end
+        if now<nextDoorAt then setStatus("Chờ kết quả cửa");return end
+        heldPrompt, promptEndAt=chosenDoor,now+chosenDoor.HoldDuration+.05
+        nextDoorAt=promptEndAt+.8
+        chosenDoor:InputHoldBegin()
+        setStatus("Đang tương tác cửa")
+    end
+    local function stop()
+        if heartbeat then heartbeat:Disconnect();heartbeat=nil end
+        if added then added:Disconnect();added=nil end
+        releaseActions()
+        prompts,mobs={},{}
+        chosenDoor,doorPoint=nil,nil
+        nextDoorAt,nextM1At,nextScanAt,elapsed=0,0,0,0
+    end
+    local function update()
+        stop()
+        if not autoDoor and not autoMob then setStatus("Đã tắt");return end
+        setStatus("Đang tìm cửa / quái")
+        added=workspace.DescendantAdded:Connect(indexObject)
+        heartbeat=game:GetService("RunService").Heartbeat:Connect(function(dt)
+            if not engine:IsRunning() then stop();return end
+            local now=os.clock()
+            if m1Input and now>=m1EndAt then releaseM1() end
+            elapsed+=dt
+            if elapsed<.1 then return end
+            elapsed=0
+            local ok,err=pcall(tick,now)
+            if not ok then
+                autoDoor,autoMob=false,false
+                stop()
+                engine.Values.HalloweenAutoDoor,engine.Values.HalloweenAutoMob=false,false
+                setStatus("Lỗi: "..tostring(err))
+                engine:Emit("Changed")
+                engine:Notify("Halloween",featureState.halloweenStatus)
+            end
+        end)
+    end
+    engine:Define("HalloweenAutoDoor",{Type="boolean"},false,function(value) autoDoor=value;update() end)
+    engine:Define("HalloweenAutoMob",{Type="boolean"},false,function(value) autoMob=value;update() end)
+    engine:OnStop(function() autoDoor,autoMob=false,false;stop() end)
+end
+
+local startStandFarm, stopStandFarm
+local autoStoreMatches = true
+
+-- Dynamic slots
+local farmSlots = {}
+
+-- Used only when StandNameConvert is missing, empty or unreadable.
+local fallbackStandNames = {
+    "Cream",
+    "Hierophant Green",
+    "Killer Queen",
+    "Silver Chariot",
+    "Star Platinum",
+    "Sticky Fingers",
+    "Star Platinum: Stone Ocean",
+    "Crazy Diamond",
+    "Aerosmith",
+    "Stone Free",
+    "The Emperor",
+    "The Hand",
+    "Soft And Wet",
+    "Magicians Red",
+    "Diver Down",
+    "Purple Smoke",
+    "White Snake",
+    "The World",
+    "Weather Report",
+    "D4C",
+    "Golden Experience",
+    "King Crimson",
+    "Premier Macho",
+    "Silver Chariot OVA",
+    "The World OVA",
+    "Jotaro's Star Platinum",
+    "Star Platinum OVA",
+    "Putrid Whine",
+    "Tusk Act 1",
+    "The World: Alternative Universe",
+    "Dio's The World",
 }
 
-local function make(class, properties, parent)
-	local object = Instance.new(class)
-	if object:IsA("GuiObject") then object.BorderSizePixel = 0 end
-	for key, value in pairs(properties) do object[key] = value end
-	object.Parent = parent
-	return object
+local allAttributes = {
+    "Any",
+    "Strong",
+    "Powerful",
+    "Manic",
+    "Tough",
+    "Enrage",
+    "Sloppy",
+    "Lethargic",
+    "Godly",
+    "Daemon",
+    "Glass Cannon",
+    "Invincible",
+    "Scourge",
+    "Tragic",
+    "Hacker",
+    "Legendary",
+}
+
+-- Catalog stores real names; the GUI never stores a formatted "ID -> Name" string.
+local displayById = {}
+local idsByDisplay = {}
+local standOptions = { "Any" }
+local catalogSource = "fallback"
+local catalogBusy = false
+
+local function cleanText(value)
+    return type(value) == "string" and value:match("^%s*(.-)%s*$") or ""
 end
 
-local function corner(parent, radius)
-	return make("UICorner", {CornerRadius = UDim.new(0, radius or 3)}, parent)
+local function nameKey(value)
+    return cleanText(value):lower()
 end
 
-local function stroke(parent, color)
-	return make("UIStroke", {Color = color or C.Line, Thickness = 1}, parent)
+local function firstOption(options, default)
+    local value = type(options) == "table" and options[1] or options
+    value = cleanText(value)
+    return value ~= "" and value or default
 end
 
-local function text(parent, value, size, position, dimensions, color, mono)
-	return make("TextLabel", {
-		BackgroundTransparency = 1, Text = value, TextSize = size or 12,
-		TextColor3 = color or C.Text, Font = mono and Enum.Font.Code or Enum.Font.Gotham,
-		TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
-		Position = position or UDim2.fromOffset(0, 0), Size = dimensions or UDim2.fromScale(1, 1),
-	}, parent)
+local function normalizeAttributes(values)
+    if type(values) == "string" then
+        values = { values }
+    end
+    local result, seen = {}, {}
+    if type(values) == "table" then
+        for _, value in ipairs(values) do
+            value = cleanText(value)
+            if value == "Any" then
+                return { "Any" }
+            end
+            if value ~= "" and not seen[value] then
+                seen[value] = true
+                table.insert(result, value)
+            end
+        end
+    end
+    return #result > 0 and result or { "Any" }
 end
 
-local function line(parent, x1, y1, x2, y2, color, thickness)
-	local dx, dy = x2 - x1, y2 - y1
-	return make("Frame", {
-		AnchorPoint = Vector2.new(.5, .5), BackgroundColor3 = color or C.Muted,
-		Position = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2),
-		Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), thickness or 1.4),
-		Rotation = math.deg(math.atan2(dy, dx)),
-	}, parent)
+local function rebuildStandOptions()
+    local names, seen = {}, { any = true, none = true }
+    local function add(name)
+        local key = nameKey(name)
+        if key ~= "" and not seen[key] then
+            seen[key] = true
+            table.insert(names, name)
+        end
+    end
+    if catalogSource == "live" then
+        for _, display in pairs(displayById) do
+            add(display)
+        end
+    else
+        for _, name in ipairs(fallbackStandNames) do
+            add(name)
+        end
+    end
+    add("Kars")
+    table.sort(names, function(a, b)
+        local ka, kb = nameKey(a), nameKey(b)
+        return ka == kb and a < b or ka < kb
+    end)
+    standOptions = { "Any" }
+    for _, name in ipairs(names) do
+        table.insert(standOptions, name)
+    end
 end
 
-local function path(parent, points, color, thickness)
-	for index = 1, #points - 1 do
-		local a, b = points[index], points[index + 1]
-		line(parent, a[1], a[2], b[1], b[2], color, thickness)
-	end
+local function scanStandCatalog(timeout)
+    if catalogBusy then
+        return false, "A scan is already running."
+    end
+    catalogBusy = true
+    local ok, scanOk, detail = pcall(function()
+        local deadline = os.clock() + (timeout or 5)
+        local target
+        repeat
+            target = ReplicatedStorage:FindFirstChild("StandNameConvert", true)
+            if target then
+                break
+            end
+            task.wait(0.1)
+        until os.clock() >= deadline
+        if not target then
+            return false, "StandNameConvert was not found."
+        end
+        local newMap, newReverse = {}, {}
+        local function add(internal, display)
+            internal, display = cleanText(internal), cleanText(display)
+            if
+                internal == ""
+                or nameKey(internal) == "none"
+                or nameKey(internal) == "any"
+                or internal == "PackageLink"
+            then
+                return
+            end
+            if display == "" then
+                display = internal
+            end
+            if nameKey(display) == "none" or nameKey(display) == "any" then
+                return
+            end
+            newMap[internal] = display
+        end
+        if target:IsA("ModuleScript") then
+            local done, required, data = false, false, nil
+            local worker = task.spawn(function()
+                required, data = pcall(require, target)
+                done = true
+            end)
+            local moduleDeadline = os.clock() + 5
+            while not done and os.clock() < moduleDeadline do
+                task.wait(0.05)
+            end
+            if not done then
+                pcall(task.cancel, worker)
+                return false, "StandNameConvert module timed out."
+            end
+            if not required or type(data) ~= "table" then
+                return false, "StandNameConvert did not return a readable table."
+            end
+            for internal, display in pairs(data) do
+                if type(internal) == "string" and type(display) == "string" then
+                    add(internal, display)
+                elseif type(internal) == "number" and type(display) == "string" then
+                    add(display, display)
+                end
+            end
+        else
+            -- Give replicated children a bounded opportunity to arrive.
+            repeat
+                for _, item in ipairs(target:GetChildren()) do
+                    if item.Name ~= "PackageLink" and not item:IsA("PackageLink") then
+                        if item:IsA("StringValue") then
+                            add(item.Name, item.Value)
+                        else
+                            add(item.Name, item.Name)
+                        end
+                    end
+                end
+                if next(newMap) then
+                    break
+                end
+                task.wait(0.1)
+            until os.clock() >= deadline
+        end
+        if not next(newMap) then
+            return false, "StandNameConvert has no usable stand names."
+        end
+        for internal, display in pairs(newMap) do
+            local key = nameKey(display)
+            newReverse[key] = newReverse[key] or {}
+            table.insert(newReverse[key], internal)
+        end
+        displayById, idsByDisplay = newMap, newReverse
+        catalogSource = "live"
+        rebuildStandOptions()
+        return true, tostring(#standOptions - 1) .. " stands loaded."
+    end)
+    catalogBusy = false
+    if not ok then
+        return false, tostring(scanOk)
+    end
+    return scanOk, detail
 end
 
-local function icon(parent, name, position, size, color)
-	local frame = make("Frame", {BackgroundTransparency = 1, Position = position, Size = UDim2.fromOffset(size, size)}, parent)
-	local drawing = make("Frame", {BackgroundTransparency = 1, Size = UDim2.fromOffset(16, 16)}, frame)
-	make("UIScale", {Scale = size / 16}, drawing)
-	if name == "cat" then
-		path(drawing, {{1,11},{1,8},{5,8},{7,6},{7,2},{10,5},{12,5},{14,2},{14,9},{15,10},{15,14},{5,14},{4,11},{1,11}}, color, .9)
-		line(drawing, 8, 10, 9, 10, color, .9)
-		line(drawing, 12, 10, 13, 10, color, .9)
-	elseif name == "lair" then
-		path(drawing, {{3,14},{3,7},{4,4},{6,2},{10,2},{12,4},{13,7},{13,14}}, color)
-		path(drawing, {{6,14},{6,8},{7,6},{9,6},{10,8},{10,14}}, color)
-		line(drawing, 2, 14, 14, 14, color)
-	elseif name == "settings" then
-		line(drawing, 2, 4, 14, 4, color)
-		line(drawing, 2, 12, 14, 12, color)
-		line(drawing, 5, 1, 5, 7, color, 2)
-		line(drawing, 10, 9, 10, 15, color, 2)
-	elseif name == "targets" then
-		path(drawing, {{5,2},{2,2},{2,5}}, color)
-		path(drawing, {{11,2},{14,2},{14,5}}, color)
-		path(drawing, {{2,11},{2,14},{5,14}}, color)
-		path(drawing, {{14,11},{14,14},{11,14}}, color)
-		line(drawing, 5, 8, 11, 8, color); line(drawing, 8, 5, 8, 11, color)
-	elseif name == "storage" then
-		path(drawing, {{2,5},{8,2},{14,5},{14,12},{8,15},{2,12},{2,5},{8,8},{14,5}}, color)
-		line(drawing, 8, 8, 8, 15, color)
-	elseif name == "safe" then
-		path(drawing, {{8,1},{14,4},{13,10},{8,15},{3,10},{2,4},{8,1}}, color)
-		path(drawing, {{5,8},{7,10},{11,6}}, color)
-	else
-		path(drawing, {{8,1},{10,6},{15,8},{10,10},{8,15},{6,10},{1,8},{6,6},{8,1}}, color)
-	end
-	return frame
+rebuildStandOptions()
+
+local function getDisplayName(internalName)
+    local internal = cleanText(internalName)
+    if internal == "" then
+        return "Unknown"
+    end
+    if displayById[internal] then
+        return displayById[internal]
+    end
+    local target = ReplicatedStorage:FindFirstChild("StandNameConvert", true)
+    local item = target and not target:IsA("ModuleScript") and target:FindFirstChild(internal)
+    if item and item:IsA("StringValue") and cleanText(item.Value) ~= "" then
+        return cleanText(item.Value)
+    end
+    return internal
 end
 
-local function finite(value)
-	return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+local function uniqueStandId(display)
+    local ids = idsByDisplay[nameKey(display)]
+    return ids and #ids == 1 and ids[1] or nil
 end
 
-local function callback(fn, value)
-	if type(fn) ~= "function" then return end
-	local ok, message = pcall(fn, value)
-	if not ok then warn("[Luna UI] callback: " .. tostring(message)) end
+local function readStandData()
+    local data = localplr:FindFirstChild("Data")
+    local stand = data and data:FindFirstChild("Stand")
+    local att = data and data:FindFirstChild("Attri")
+    if not stand or not att then
+        return nil, nil
+    end
+    local ok, s, a = pcall(function()
+        return stand.Value, att.Value
+    end)
+    if not ok or type(s) ~= "string" or type(a) ~= "string" or s == "" then
+        return nil, nil
+    end
+    return s, a
 end
 
-function Library.CreateWindow(options)
-	options = options or {}
-	local Players = game:GetService("Players")
-	local Input = game:GetService("UserInputService")
-	local Tweens = game:GetService("TweenService")
-	local host = options.Parent
-	if not host then
-		local player = Players.LocalPlayer
-		assert(player, "Luna UI requires a client or an explicit Parent")
-		host = player:WaitForChild("PlayerGui")
-	end
-	local identity = options.Id or "LunaUI_05"
-	for _, child in ipairs(host:GetChildren()) do
-		if child:IsA("ScreenGui") and child.Name == identity and child:GetAttribute("LunaUIOwner") == "Design05" then child:Destroy() end
-	end
-	local gui = make("ScreenGui", {
-		Name = identity, ResetOnSpawn = false, IgnoreGuiInset = true,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = options.DisplayOrder or 50,
-	}, host)
-	gui:SetAttribute("LunaUIOwner", "Design05")
-	local window = {Gui = gui, Tabs = {}, Open = true, Destroyed = false}
-	local connections, pending, running, destroyHandlers = {}, {}, {}, {}
-	local currentTab = nil :: any
-	local dragging = nil :: any
-	local scrubbing = nil :: any
-	local popup = nil :: any
-	local viewportConnection: RBXScriptConnection? = nil
-	local sequence, tabSequence = 0, 0
-	local width, height, navWidth = 716, 544, 144
-	local mobile, compact = false, false
-	local closePopup
-	local responsive = {}
-	local camera = workspace.CurrentCamera
-
-	-- Only service connections need explicit ownership; GUI events die with their Instances.
-	local function own(signal, fn)
-		local connection = signal:Connect(fn)
-		table.insert(connections, connection)
-		return connection
-	end
-
-	local function later(seconds, fn)
-		local thread
-		thread = task.delay(options.ReducedMotion and 0 or seconds, function()
-			pending[thread] = nil
-			if not window.Destroyed then fn() end
-		end)
-		pending[thread] = true
-		return thread
-	end
-
-	local function animate(object, properties, duration, finished, style)
-		local previous = running[object]
-		if previous then previous:Cancel() end
-		if window.Destroyed then return end
-		if options.ReducedMotion then
-			for key, value in pairs(properties) do object[key] = value end
-			if finished then finished() end
-			return
-		end
-		local tween = Tweens:Create(object, TweenInfo.new(duration, style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out), properties)
-		running[object] = tween
-		local connection
-		connection = tween.Completed:Connect(function(status)
-			connection:Disconnect()
-			if running[object] == tween then running[object] = nil end
-			if status == Enum.PlaybackState.Completed and not window.Destroyed and finished then finished() end
-		end)
-		tween:Play()
-	end
-
-	local root = make("CanvasGroup", {
-		Name = "Window", Size = UDim2.fromOffset(width, height), BackgroundColor3 = C.Background,
-		GroupTransparency = 1, ClipsDescendants = true, ZIndex = 2,
-	}, gui)
-	corner(root, 8)
-	stroke(root, Color3.fromRGB(73, 74, 71))
-	local titlebar = make("TextButton", {
-		Name = "Titlebar", Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
-		Size = UDim2.new(1, -80, 0, 47),
-	}, root)
-	local moon = make("Frame", {Position = UDim2.fromOffset(19, 15), Size = UDim2.fromOffset(16, 16), BackgroundColor3 = C.Text}, titlebar)
-	corner(moon, 16)
-	local moonMask = make("Frame", {Position = UDim2.fromOffset(5, -3), Size = UDim2.fromOffset(16, 16), BackgroundColor3 = C.Background}, moon)
-	corner(moonMask, 16)
-	line(titlebar, 39, 12, 39, 17, C.Accent, 1)
-	line(titlebar, 36.5, 14.5, 41.5, 14.5, C.Accent, 1)
-	text(titlebar, options.Title or "LUNA", 13, UDim2.fromOffset(51, 0), UDim2.fromOffset(69, 47))
-	local subtitle = text(titlebar, options.Subtitle or "", 10, UDim2.fromOffset(126, 0), UDim2.new(1, -140, 1, 0), C.Muted)
-	for index = 0, 7 do
-		make("Frame", {BackgroundColor3 = C.Muted, BackgroundTransparency = .55, Position = UDim2.new(.5, 30 + (index % 4) * 5, 0, 20 + math.floor(index / 4) * 5), Size = UDim2.fromOffset(2, 2)}, titlebar)
-	end
-	make("Frame", {BackgroundColor3 = C.Line, Position = UDim2.fromOffset(0, 46), Size = UDim2.new(1, 0, 0, 1)}, root)
-	local minimize = make("TextButton", {Text = "−", TextColor3 = C.Muted, Font = Enum.Font.Gotham, TextSize = 18, BackgroundTransparency = 1, AutoButtonColor = false, Position = UDim2.new(1, -75, 0, 10), Size = UDim2.fromOffset(28, 28)}, root)
-	local hide = make("TextButton", {Text = "×", TextColor3 = C.Muted, Font = Enum.Font.Gotham, TextSize = 18, BackgroundTransparency = 1, AutoButtonColor = false, Position = UDim2.new(1, -43, 0, 10), Size = UDim2.fromOffset(28, 28)}, root)
-	local sidebar = make("Frame", {BackgroundColor3 = C.Sidebar, Position = UDim2.fromOffset(0, 47), Size = UDim2.new(0, navWidth, 1, -76)}, root)
-	text(sidebar, "KHÔNG GIAN", 8, UDim2.fromOffset(20, 20), UDim2.fromOffset(110, 16), C.Muted, true)
-	local navigation = make("ScrollingFrame", {Name = "Navigation", BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 49), Size = UDim2.new(1, 0, 1, -154), CanvasSize = UDim2.fromOffset(0, 0), CanvasPosition = Vector2.new(0, 0), ScrollBarThickness = 0}, sidebar)
-	local marker = make("Frame", {BackgroundColor3 = C.Selected, Position = UDim2.fromOffset(10, 0), Size = UDim2.fromOffset(navWidth - 20, 36), Visible = false}, navigation)
-	corner(marker)
-	make("Frame", {BackgroundColor3 = C.Accent, Size = UDim2.fromOffset(2, 36)}, marker)
-	local sidebarCat = icon(sidebar, "cat", UDim2.new(0, 20, 1, -88), 36, C.Muted)
-	local sidebarBrand = text(sidebar, "L U N A", 8, UDim2.new(0, 20, 1, -44), UDim2.fromOffset(70, 14), C.Accent, true)
-	local sidebarKey = text(sidebar, "K  Ẩn / hiện", 9, UDim2.new(0, 20, 1, -26), UDim2.fromOffset(110, 18), C.Muted)
-	local content = make("Frame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(navWidth, 47), Size = UDim2.new(1, -navWidth, 1, -76)}, root)
-	local footer = make("Frame", {BackgroundTransparency = 1, Position = UDim2.new(0, 0, 1, -29), Size = UDim2.new(1, 0, 0, 29)}, root)
-	make("Frame", {BackgroundColor3 = C.Line, Size = UDim2.new(1, 0, 0, 1)}, footer)
-	text(footer, options.Footer or "LUNA · UI", 9, UDim2.fromOffset(14, 0), UDim2.new(1, -160, 1, 0), C.Muted)
-	local footerIndex = text(footer, "DESIGN 05", 9, UDim2.new(1, -130, 0, 0), UDim2.fromOffset(116, 29), C.Muted, true)
-	footerIndex.TextXAlignment = Enum.TextXAlignment.Right
-	local blocker = make("TextButton", {Text = "", BackgroundTransparency = 1, AutoButtonColor = false, Size = UDim2.fromScale(1, 1), ZIndex = 100, Visible = false}, root)
-	local launcher = make("TextButton", {Name = "Launcher", Text = "", AutoButtonColor = false, BackgroundColor3 = C.Sidebar, Size = UDim2.fromOffset(48, 43), ZIndex = 6}, gui)
-	corner(launcher, 6)
-	local launcherStroke = stroke(launcher, Color3.fromRGB(85, 88, 77))
-	local cat = icon(launcher, "cat", UDim2.fromOffset(10, 7), 28, C.Text)
-	local shell = make("Frame", {Name = "TransitionShell", BackgroundColor3 = C.Background, Visible = false, ZIndex = 4}, gui)
-	corner(shell, 8)
-	stroke(shell, C.Line)
-	local tooltip = make("TextLabel", {Text = "", Font = Enum.Font.Gotham, TextSize = 10, TextColor3 = C.Text, BackgroundColor3 = C.Sidebar, Size = UDim2.fromOffset(122, 27), Visible = false, ZIndex = 30}, gui)
-	corner(tooltip)
-	stroke(tooltip)
-	local tipSequence = 0
-	local function tip(button, message)
-		button.MouseEnter:Connect(function()
-			tipSequence += 1
-			local ticket = tipSequence
-			later(.3, function()
-				if ticket ~= tipSequence or not button.Visible then return end
-				tooltip.Text = message
-				local point = button.AbsolutePosition
-				local view = camera and camera.ViewportSize or Vector2.new(800, 600)
-				tooltip.Position = UDim2.fromOffset(math.clamp(point.X, 4, math.max(4, view.X - 126)), math.max(4, point.Y - 33))
-				tooltip.Visible = true
-			end)
-		end)
-		button.MouseLeave:Connect(function() tipSequence += 1; tooltip.Visible = false end)
-	end
-	tip(launcher, "Luna · K để thu / mở")
-	tip(minimize, "Thu menu · K")
-	tip(hide, "Ẩn menu · K")
-
-	local function viewport()
-		return camera and camera.ViewportSize or Vector2.new(800, 600)
-	end
-	local noticeGroup = nil :: any
-	local noticeTimer = nil :: any
-	local noticeTitle, noticeBody
-	function window:Notify(title, message)
-		if self.Destroyed then return end
-		if noticeTimer and pending[noticeTimer] then task.cancel(noticeTimer); pending[noticeTimer] = nil end
-		local view = viewport()
-		if not noticeGroup then
-			noticeGroup = make("CanvasGroup", {Name="Notice", BackgroundColor3=C.Sidebar, GroupTransparency=1, ZIndex=40}, gui)
-			corner(noticeGroup, 5); stroke(noticeGroup, C.Accent)
-			noticeTitle = text(noticeGroup, "", 11, UDim2.fromOffset(12, 8), UDim2.new(1, -24, 0, 20), C.Accent)
-			noticeBody = text(noticeGroup, "", 10, UDim2.fromOffset(12, 30), UDim2.new(1, -24, 0, 44))
-			noticeBody.TextWrapped = true
-		end
-		local noticeWidth = math.max(160, math.min(400, view.X - 24))
-		noticeGroup.Size = UDim2.fromOffset(noticeWidth, 82)
-		noticeGroup.Position = UDim2.fromOffset(math.max(0, (view.X-noticeWidth)/2), math.max(0, view.Y-94))
-		noticeTitle.Text, noticeBody.Text = tostring(title), tostring(message or "")
-		noticeGroup.Visible = true
-		animate(noticeGroup, {GroupTransparency=0}, .18)
-		noticeTimer = later(5, function()
-			animate(noticeGroup, {GroupTransparency=1}, .18, function() noticeGroup.Visible=false end)
-		end)
-	end
-	local function revealNavigation(tab)
-		local top = (tab.Index - 1) * 40
-		local available = math.max(1, height - 76 - (height >= 400 and 154 or 49))
-		if top < navigation.CanvasPosition.Y then navigation.CanvasPosition = Vector2.new(0, top)
-		elseif top + 36 > navigation.CanvasPosition.Y + available then navigation.CanvasPosition = Vector2.new(0, math.max(0, top + 36 - available)) end
-	end
-	local function layout(initial)
-		local view = viewport()
-		width, height = math.max(240, math.min(716, view.X - 24)), math.max(160, math.min(544, view.Y - 120))
-		mobile = width < 600
-		compact = height < 520
-		navWidth = mobile and 100 or 144
-		root.Size = UDim2.fromOffset(width, height)
-		if initial then root.Position = UDim2.fromOffset(math.max(0, (view.X - width) / 2), math.max(math.min(64, math.max(0, view.Y - height)), (view.Y - height - 55) / 2)) end
-		root.Position = UDim2.fromOffset(math.clamp(root.Position.X.Offset, 0, math.max(0, view.X - width)), math.clamp(root.Position.Y.Offset, 0, math.max(0, view.Y - 47)))
-		launcher.Position = UDim2.fromOffset(root.Position.X.Offset, math.clamp(root.Position.Y.Offset + height + 8, 0, math.max(0, view.Y - 43)))
-		sidebar.Size = UDim2.new(0, navWidth, 1, -76)
-		local showMark = height >= 400
-		sidebarCat.Visible, sidebarBrand.Visible, sidebarKey.Visible = showMark, showMark, showMark
-		navigation.Size = UDim2.new(1, 0, 1, showMark and -154 or -49)
-		if currentTab then revealNavigation(currentTab) end
-		content.Position, content.Size = UDim2.fromOffset(navWidth, 47), UDim2.new(1, -navWidth, 1, -76)
-		marker.Size = UDim2.fromOffset(navWidth - 20, 36)
-		subtitle.Visible = not mobile
-		if shell.Visible then
-			sequence += 1
-			if running[shell] then running[shell]:Cancel() end
-			if running[root] then running[root]:Cancel() end
-			shell.Visible, root.Visible = false, window.Open
-			root.GroupTransparency = window.Open and 0 or 1
-		end
-		for _, refresh in ipairs(responsive) do refresh() end
-		if closePopup then closePopup() end
-	end
-	layout(true)
-
-	closePopup = function()
-		if not popup then return end
-		local old = popup
-		popup = nil
-		old.Control.Arrow.Text = "⌄"
-		animate(old.Group, {GroupTransparency = 1}, .1, function() old.Group:Destroy() end)
-	end
-
-	function window:SetOpen(value)
-		if self.Destroyed or self.Open == (value == true) then return end
-		self.Open = value == true
-		sequence += 1
-		local ticket = sequence
-		closePopup()
-		dragging = nil
-		if scrubbing then scrubbing.Bubble.Visible = false; scrubbing = nil end
-		tipSequence += 1
-		tooltip.Visible = false
-		root.Visible, blocker.Visible = true, not self.Open
-		if not shell.Visible then shell.Position, shell.Size = self.Open and launcher.Position or root.Position, self.Open and launcher.Size or root.Size end
-		shell.Visible = true
-		if self.Open then
-			animate(shell, {Position = root.Position, Size = root.Size, BackgroundTransparency = 0}, .32, function()
-				if ticket ~= sequence then return end
-				animate(shell, {BackgroundTransparency = 1}, .12, function() if ticket == sequence then shell.Visible = false end end)
-			end)
-			later(.18, function() if ticket == sequence then animate(root, {GroupTransparency = 0}, .2) end end)
-		else
-			animate(root, {GroupTransparency = 1}, .09)
-			shell.BackgroundTransparency = 0
-			animate(shell, {Position = launcher.Position, Size = launcher.Size, BackgroundTransparency = 1}, .33, function()
-				if ticket == sequence then shell.Visible, root.Visible = false, false end
-			end)
-		end
-	end
-
-	function window:Toggle()
-		self:SetOpen(not self.Open)
-	end
-	function window:Destroy()
-		if self.Destroyed then return end
-		self.Destroyed = true
-		for _, fn in ipairs(destroyHandlers) do callback(fn) end
-		table.clear(destroyHandlers)
-		sequence += 1
-		tabSequence += 1
-		if viewportConnection then viewportConnection:Disconnect() end
-		for _, connection in ipairs(connections) do connection:Disconnect() end
-		for thread in pairs(pending) do task.cancel(thread) end
-		for _, tween in pairs(running) do tween:Cancel() end
-		table.clear(connections); table.clear(pending); table.clear(running)
-		table.clear(responsive); table.clear(self.Tabs)
-		dragging, scrubbing, popup = nil, nil, nil
-		gui:Destroy()
-	end
-	gui.Destroying:Connect(function() window:Destroy() end)
-	minimize.Activated:Connect(function() window:Toggle() end)
-	hide.Activated:Connect(function() window:Toggle() end)
-	launcher.Activated:Connect(function()
-		animate(cat, {Rotation = cat.Rotation + 360}, .52)
-		window:Toggle()
-	end)
-	launcher.MouseEnter:Connect(function() animate(launcherStroke, {Color = C.Accent}, .14) end)
-	launcher.MouseLeave:Connect(function() animate(launcherStroke, {Color = Color3.fromRGB(85, 88, 77)}, .14) end)
-
-	local function setTab(tab)
-		if window.Destroyed or currentTab == tab then return end
-		tabSequence += 1
-		local ticket = tabSequence
-		closePopup()
-		currentTab = tab
-		marker.Visible = true
-		local tabTop = (tab.Index - 1) * 40
-		animate(marker, {Position = UDim2.fromOffset(10, tabTop)}, .3)
-		revealNavigation(tab)
-		for _, other in ipairs(window.Tabs) do
-			other.NavLabel.TextColor3 = other == tab and C.Accent or C.Muted
-			if other ~= tab then animate(other.Page, {GroupTransparency = 1}, .09) end
-		end
-		later(.09, function()
-			if ticket ~= tabSequence then return end
-			for _, other in ipairs(window.Tabs) do other.Page.Visible = other == tab end
-			tab.Page.Visible = true
-			tab.Page.GroupTransparency = 1
-			animate(tab.Page, {GroupTransparency = 0}, .28)
-			tab.Heading.Position = UDim2.fromOffset(10, 0)
-			animate(tab.Heading, {Position = UDim2.fromOffset(0, 0)}, .32)
-		end)
-	end
-	function window:OnDestroy(fn)
-		assert(type(fn) == "function", "Destroy handler must be a function")
-		if self.Destroyed then callback(fn) else table.insert(destroyHandlers, fn) end
-	end
-
-	function window:Tab(settings)
-		assert(not self.Destroyed, "Luna UI window was destroyed")
-		if type(settings) == "string" then settings = {Name = settings} end
-		settings = settings or {}
-		local index = #self.Tabs + 1
-		local tab = {Index = index, Controls = {}, Sections = 0, Rows = 0}
-		local button = make("TextButton", {Text = "", BackgroundTransparency = 1, AutoButtonColor = false, Position = UDim2.fromOffset(10, (index - 1) * 40), Size = UDim2.fromOffset(navWidth - 20, 36)}, navigation)
-		navigation.CanvasSize = UDim2.fromOffset(0, index * 40)
-		icon(button, settings.Icon or "stand", UDim2.fromOffset(9, 11), 14, C.Muted)
-		local number = text(button, string.format("%02d", index), 8, UDim2.fromOffset(29, 0), UDim2.fromOffset(17, 36), C.Muted, true)
-		local navLabel = text(button, settings.ShortName or settings.Name or "Tab", 11, UDim2.fromOffset(48, 0), UDim2.new(1, -50, 1, 0), C.Muted)
-		navLabel.TextWrapped = true
-		local page = make("CanvasGroup", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false, GroupTransparency = 1}, content)
-		local scroll = make("ScrollingFrame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), CanvasSize = UDim2.fromOffset(0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3, ScrollBarImageColor3 = C.Muted, BorderSizePixel = 0}, page)
-		local padding = make("UIPadding", {PaddingLeft = UDim.new(0, 28), PaddingRight = UDim.new(0, 28), PaddingTop = UDim.new(0, 25), PaddingBottom = UDim.new(0, 22)}, scroll)
-		make("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder}, scroll)
-		local headingRow = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 64), LayoutOrder = 0}, scroll)
-		local heading = make("Frame", {BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1)}, headingRow)
-		text(heading, settings.Name or "Tab", 22, UDim2.fromOffset(0, 0), UDim2.new(1, -72, 0, 28))
-		text(heading, settings.Description or "", 10, UDim2.fromOffset(0, 31), UDim2.new(1, -10, 0, 20), C.Muted)
-		local pageIndex = text(headingRow, tostring(index), 10, UDim2.new(1, -66, 0, 3), UDim2.fromOffset(66, 20), C.Muted, true)
-		pageIndex.TextXAlignment = Enum.TextXAlignment.Right
-		local steps = make("Frame", {BackgroundTransparency = 1, Position = UDim2.new(1, -66, 0, 28), Size = UDim2.fromOffset(66, 2)}, headingRow)
-		tab.Page, tab.Heading, tab.NavLabel, tab.PageIndex, tab.Steps = page, heading, navLabel, pageIndex, steps
-		table.insert(self.Tabs, tab)
-		for _, other in ipairs(self.Tabs) do
-			other.PageIndex.Text = string.format("%02d — %02d", other.Index, #self.Tabs)
-			for _, child in ipairs(other.Steps:GetChildren()) do child:Destroy() end
-			local interval = math.min(14, 66 / #self.Tabs)
-			local markWidth = interval * .7
-			for position = 1, #self.Tabs do
-				make("Frame", {BackgroundColor3 = position == other.Index and C.Accent or C.Line, Position = UDim2.new(1, -(#self.Tabs - position + 1) * interval, 0, 0), Size = UDim2.fromOffset(markWidth, 2)}, other.Steps)
-			end
-		end
-		button.Activated:Connect(function() setTab(tab) end)
-		scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function() if popup and popup.Tab == tab then closePopup() end end)
-		table.insert(responsive, function()
-			button.Size = UDim2.fromOffset(navWidth - 20, 36)
-			number.Visible = not mobile
-			navLabel.Position = UDim2.fromOffset(mobile and 29 or 48, 0)
-			navLabel.Size = UDim2.new(1, mobile and -30 or -50, 1, 0)
-			padding.PaddingLeft, padding.PaddingRight = UDim.new(0, mobile and 14 or 28), UDim.new(0, mobile and 14 or 28)
-			padding.PaddingTop, padding.PaddingBottom = UDim.new(0, compact and 21 or 25), UDim.new(0, compact and 16 or 22)
-			headingRow.Size = UDim2.new(1, 0, 0, compact and 58 or 64)
-		end)
-
-		local function row(label, hint)
-			tab.Rows += 1
-			local frame = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 59), LayoutOrder = tab.Rows}, scroll)
-			make("Frame", {BackgroundColor3 = C.Line, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, frame)
-			local labelNode = text(frame, label, 12, UDim2.fromOffset(0, hint and 10 or 0), UDim2.new(1, -100, 0, hint and 22 or 59))
-			labelNode.TextWrapped = true
-			local hintNode
-			if hint then
-				hintNode = text(frame, hint, 9, UDim2.fromOffset(0, 31), UDim2.new(1, -76, 0, 23), C.Muted)
-				hintNode.TextWrapped = true
-			end
-			local function refreshRow()
-				local rowHeight = compact and 50 or 59
-				frame.Size = UDim2.new(1, 0, 0, rowHeight)
-				labelNode.Position = UDim2.fromOffset(0, hint and (compact and 6 or 10) or 0)
-				labelNode.Size = UDim2.new(labelNode.Size.X.Scale, labelNode.Size.X.Offset, 0, hint and 22 or rowHeight)
-				if hintNode then
-					hintNode.Position = UDim2.fromOffset(0, compact and 26 or 31)
-					hintNode.Size = UDim2.new(1, -76, 0, compact and 21 or 23)
-				end
-			end
-			table.insert(responsive, refreshRow); refreshRow()
-			return frame, labelNode, hintNode
-		end
-		local function register(control)
-			table.insert(tab.Controls, control)
-			return control
-		end
-		function tab:Select() setTab(self) end
-		function tab:Section(label)
-			self.Rows += 1; self.Sections += 1
-			local frame = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), LayoutOrder = self.Rows}, scroll)
-			text(frame, string.format("%02d", self.Sections), 8, UDim2.fromOffset(0, 0), UDim2.fromOffset(20, 26), C.Accent, true)
-			local headingText = text(frame, label, 10, UDim2.fromOffset(23, 0), UDim2.new(1, -23, 1, 0), C.Muted)
-			local divider = make("Frame", {BackgroundColor3 = C.Line, Position = UDim2.new(1, 0, 0, 13), Size = UDim2.fromOffset(0, 1)}, frame)
-			headingText:GetPropertyChangedSignal("TextBounds"):Connect(function()
-				local start = 33 + headingText.TextBounds.X
-				divider.Position, divider.Size = UDim2.fromOffset(start, 13), UDim2.new(1, -start, 0, 1)
-			end)
-			return self
-		end
-		function tab:Label(value)
-			local frame, labelNode = row(value)
-			labelNode.Size = UDim2.fromScale(1, 1)
-			return register({Element = frame, Set = function(_, new) if not window.Destroyed then labelNode.Text = tostring(new) end end})
-		end
-		function tab:Toggle(settings)
-			local frame = row(settings.Name, settings.Hint)
-			local stateLabel = text(frame, "", 8, UDim2.new(1, -63, 0, 0), UDim2.new(0, 24, 1, 0), C.Muted, true)
-			local buttonNode = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = C.Line, Position = UDim2.new(1, -32, .5, -9), Size = UDim2.fromOffset(32, 18)}, frame)
-			corner(buttonNode, 10)
-			local thumb = make("Frame", {BackgroundColor3 = C.Text, Position = UDim2.fromOffset(3, 3), Size = UDim2.fromOffset(12, 12)}, buttonNode)
-			corner(thumb, 12)
-			local value = settings.Default == true
-			local control = {Element = frame}
-			local function paint(animated)
-				stateLabel.Text, stateLabel.TextColor3 = value and "BẬT" or "TẮT", value and C.Accent or C.Muted
-				if animated then
-					animate(buttonNode, {BackgroundColor3 = value and C.Accent or C.Line}, .18)
-					animate(thumb, {Position = UDim2.fromOffset(value and 17 or 3, 3), BackgroundColor3 = value and C.Sidebar or C.Text}, .24)
-				else
-					buttonNode.BackgroundColor3 = value and C.Accent or C.Line
-					thumb.Position, thumb.BackgroundColor3 = UDim2.fromOffset(value and 17 or 3, 3), value and C.Sidebar or C.Text
-				end
-			end
-			function control:Get() return value end
-			function control:Set(new, silent)
-				if window.Destroyed or type(new) ~= "boolean" or new == value then return false end
-				value = new; paint(true)
-				if not silent then callback(settings.Callback, value) end
-				return true
-			end
-			buttonNode.Activated:Connect(function() control:Set(not value) end)
-			paint(false)
-			return register(control)
-		end
-		function tab:Slider(settings)
-			local minimum, maximum, step = settings.Min or 0, settings.Max or 100, settings.Step or 1
-			assert(finite(minimum) and finite(maximum) and maximum > minimum and finite(step) and step > 0, "Invalid slider range")
-			local frame, labelNode = row(settings.Name)
-			local trackWidth = mobile and 54 or 100
-			local track = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = Color3.fromRGB(84, 86, 78), Size = UDim2.fromOffset(trackWidth, 3), Position = UDim2.new(1, -trackWidth - 90, .5, -1)}, frame)
-			local hit = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 26), Position = UDim2.fromOffset(0, -12)}, track)
-			local fill = make("Frame", {BackgroundColor3 = C.Accent, Size = UDim2.fromScale(0, 1)}, track)
-			local thumb = make("Frame", {AnchorPoint = Vector2.new(.5, .5), BackgroundColor3 = C.Accent, Size = UDim2.fromOffset(12, 12), Position = UDim2.fromScale(0, .5)}, track)
-			corner(thumb, 12)
-			for mark = 0, 4 do make("Frame", {BackgroundColor3 = C.Muted, BackgroundTransparency = .4, Size = UDim2.fromOffset(1, mark % 4 == 0 and 5 or 3), Position = UDim2.new(mark / 4, 0, 0, 13)}, track) end
-			local box = make("TextBox", {BackgroundColor3 = C.Input, TextColor3 = C.Text, Font = Enum.Font.Code, TextSize = 11, ClearTextOnFocus = false, Position = UDim2.new(1, -78, .5, -14), Size = UDim2.fromOffset(48, 28)}, frame)
-			corner(box); stroke(box)
-			text(frame, settings.Unit or "", 9, UDim2.new(1, -23, 0, 0), UDim2.new(0, 23, 1, 0), C.Muted, true)
-			local bubble = text(track, "", 10, UDim2.fromOffset(0, -30), UDim2.fromOffset(34, 22), C.Sidebar, true)
-			bubble.AnchorPoint, bubble.BackgroundColor3, bubble.BackgroundTransparency = Vector2.new(.5, 0), C.Accent, 0
-			bubble.TextXAlignment, bubble.Visible = Enum.TextXAlignment.Center, false
-			corner(bubble)
-			local value = minimum
-			local control = {Element = frame}
-			local function snap(new)
-				return math.clamp(minimum + math.floor((new - minimum) / step + .5) * step, minimum, maximum)
-			end
-			local function paint()
-				local fraction = (value - minimum) / (maximum - minimum)
-				fill.Size, thumb.Position = UDim2.fromScale(fraction, 1), UDim2.fromScale(fraction, .5)
-				bubble.Position = UDim2.new(fraction, 0, 0, -30)
-				box.Text = string.format("%.6g", value); bubble.Text = box.Text
-			end
-			function control:Get() return value end
-			function control:Set(new, silent)
-				if window.Destroyed or not finite(new) then return false end
-				new = snap(new)
-				if math.abs(new - value) <= step * 1e-7 then paint(); return false end
-				value = new; paint()
-				if not silent then callback(settings.Callback, value) end
-				return true
-			end
-			local function point(x)
-				local actualWidth = track.AbsoluteSize.X
-				if actualWidth > 0 then control:Set(minimum + math.clamp((x - track.AbsolutePosition.X) / actualWidth, 0, 1) * (maximum - minimum)) end
-			end
-			hit.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-					scrubbing = {Input = input, Update = point, Bubble = bubble}
-					bubble.Visible = true; point(input.Position.X)
-				end
-			end)
-			box.FocusLost:Connect(function() local new = tonumber(box.Text); if finite(new) then control:Set(new) end; paint() end)
-			local function refreshSlider()
-				trackWidth = mobile and 54 or 100
-				track.Size, track.Position = UDim2.fromOffset(trackWidth, 3), UDim2.new(1, -trackWidth - 90, .5, -1)
-				labelNode.Size = UDim2.new(1, -trackWidth - 98, 1, 0)
-			end
-			table.insert(responsive, refreshSlider)
-			refreshSlider()
-			value = finite(settings.Default) and snap(settings.Default) or minimum
-			paint()
-			return register(control)
-		end
-		function tab:Dropdown(settings)
-			local frame, labelNode = row(settings.Name)
-			labelNode.Size = UDim2.new(1, -128, 1, 0)
-			local buttonNode = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = C.Input, Position = UDim2.new(1, -112, .5, -14), Size = UDim2.fromOffset(112, 28)}, frame)
-			corner(buttonNode); stroke(buttonNode)
-			local selected = text(buttonNode, "", 10, UDim2.fromOffset(8, 0), UDim2.new(1, -25, 1, 0))
-			selected.TextTruncate = Enum.TextTruncate.AtEnd
-			local arrow = text(buttonNode, "⌄", 12, UDim2.new(1, -20, 0, 0), UDim2.fromOffset(16, 28), C.Muted)
-			local multiple = settings.Multiple == true
-			local choices, value = {}, multiple and {} or nil
-			local control = {Element = frame, Arrow = arrow}
-			local function equal(a, b)
-				if type(a) ~= "table" or type(b) ~= "table" then return a == b end
-				if #a ~= #b then return false end
-				for index, entry in ipairs(a) do if b[index] ~= entry then return false end end
-				return true
-			end
-			local function paint()
-				selected.Text = multiple and (#value > 0 and table.concat(value, ", ") or "—") or (value or "—")
-				if popup and popup.Control == control and popup.Paint then popup.Paint() end
-			end
-			function control:Get() return multiple and table.clone(value) or value end
-			function control:Set(new, silent)
-				if window.Destroyed then return false end
-				if multiple then
-					if type(new) ~= "table" then return false end
-					local normalized = {}
-					for _, entry in ipairs(new) do
-						if not table.find(choices, entry) then return false end
-						if not table.find(normalized, entry) then table.insert(normalized, entry) end
-					end
-					for _, exclusive in ipairs(settings.Exclusive or {}) do
-						local index = table.find(normalized, exclusive)
-						if index and #normalized > 1 then
-							if table.find(value, exclusive) then table.remove(normalized, index) else normalized = {exclusive} end
-						end
-					end
-					new = normalized
-				elseif not table.find(choices, new) then return false end
-				if equal(value, new) then return false end
-				value = new; paint()
-				if not silent then callback(settings.Callback, self:Get()) end
-				return true
-			end
-			function control:SetOptions(new, silent)
-				if window.Destroyed then return end
-				local normalized, seen = {}, {}
-				for _, entry in ipairs(new) do
-					assert(type(entry) == "string", "Dropdown choices must be strings")
-					if not seen[entry] then seen[entry] = true; table.insert(normalized, entry) end
-				end
-				if equal(choices, normalized) then return end
-				if popup and popup.Control == self then closePopup() end
-				choices = normalized
-				local previous = value
-				if multiple then
-					value = {}
-					for _, entry in ipairs(previous) do if table.find(choices, entry) then table.insert(value, entry) end end
-				elseif not table.find(choices, value) then value = choices[1] end
-				paint()
-				if not silent and not equal(previous, value) then callback(settings.Callback, self:Get()) end
-			end
-			local function isSelected(entry)
-				if multiple then return table.find(value, entry) ~= nil end
-				return value == entry
-			end
-			local function choose(entry)
-				if multiple then
-					local next = table.clone(value)
-					local index = table.find(next, entry)
-					if index then table.remove(next, index) else table.insert(next, entry) end
-					control:Set(next)
-				else control:Set(entry); closePopup() end
-			end
-			control:SetOptions(settings.Options or {}, true)
-			if settings.Default then control:Set(settings.Default, true) end
-			paint()
-			buttonNode.Activated:Connect(function()
-				if popup and popup.Control == control then closePopup(); return end
-				closePopup()
-				if #choices == 0 then return end
-				local view, position = viewport(), buttonNode.AbsolutePosition
-				local menuWidth, menuHeight = math.min(210, view.X - 16), math.min(#choices * 29 + 8, math.max(40, view.Y - 24), 280)
-				local x = math.clamp(position.X, 8, math.max(8, view.X - menuWidth - 8))
-				local y = position.Y + 33
-				if y + menuHeight > view.Y - 8 then y = math.max(8, position.Y - menuHeight - 5) end
-				local group = make("CanvasGroup", {BackgroundColor3 = C.Background, Position = UDim2.fromOffset(x, y - 4), Size = UDim2.fromOffset(menuWidth, menuHeight), GroupTransparency = 1, ZIndex = 20}, gui)
-				corner(group); stroke(group)
-				local items = make("ScrollingFrame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(4, 4), Size = UDim2.new(1, -8, 1, -8), ScrollBarThickness = 3, CanvasSize = UDim2.fromOffset(0, #choices * 29)}, group)
-				local rows = {}
-				for itemIndex, entry in ipairs(choices) do
-					local option = make("TextButton", {Text = "", AutoButtonColor = false, BackgroundColor3 = C.Selected, BackgroundTransparency = 1, Position = UDim2.fromOffset(0, (itemIndex - 1) * 29), Size = UDim2.new(1, -3, 0, 29)}, items)
-					local labelNode = text(option, entry, 10, UDim2.fromOffset(8, 0), UDim2.new(1, -28, 1, 0))
-					local check = text(option, "✓", 11, UDim2.new(1, -20, 0, 0), UDim2.fromOffset(15, 29), C.Accent)
-					table.insert(rows, {Entry=entry, Button=option, Label=labelNode, Check=check})
-					option.Activated:Connect(function()
-						if window.Destroyed or not popup or popup.Group ~= group then return end
-						choose(entry)
-					end)
-				end
-				local function paintOptions()
-					for _, item in ipairs(rows) do
-						local enabled = isSelected(item.Entry)
-						item.Button.BackgroundTransparency, item.Check.Visible = enabled and 0 or 1, enabled
-						item.Label.TextColor3 = enabled and C.Accent or C.Text
-					end
-				end
-				popup = {Control = control, Group = group, Button = buttonNode, Tab = tab, Paint = paintOptions}
-				paintOptions()
-				arrow.Text = "⌃"
-				animate(group, {Position = UDim2.fromOffset(x, y), GroupTransparency = 0}, .22)
-			end)
-			return register(control)
-		end
-		function tab:Input(settings)
-			local frame, labelNode = row(settings.Name)
-			labelNode.Size = UDim2.new(1, -148, 1, 0)
-			local box = make("TextBox", {Text = tostring(settings.Default or ""), PlaceholderText = settings.Placeholder or "", PlaceholderColor3 = C.Muted, ClearTextOnFocus = false, BackgroundColor3 = C.Input, TextColor3 = C.Text, Font = Enum.Font.Gotham, TextSize = 11, Position = UDim2.new(1, -132, .5, -14), Size = UDim2.fromOffset(132, 28)}, frame)
-			corner(box); stroke(box)
-			local value = box.Text
-			local control = {Element = frame}
-			function control:Get() return value end
-			function control:Set(new, silent)
-				if window.Destroyed or type(new) ~= "string" or new == value then return false end
-				value = new; box.Text = value
-				if not silent then callback(settings.Callback, value) end
-				return true
-			end
-			box.FocusLost:Connect(function() control:Set(box.Text) end)
-			return register(control)
-		end
-		function tab:Button(settings)
-			local frame = row("")
-			local buttonNode = make("TextButton", {Text = settings.Name, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.Text, BackgroundColor3 = C.Input, AutoButtonColor = false, Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 38)}, frame)
-			corner(buttonNode); stroke(buttonNode)
-			buttonNode.Activated:Connect(function() if not window.Destroyed then callback(settings.Callback) end end)
-			return register({Element = frame})
-		end
-		layout(false)
-		if not currentTab then setTab(tab) end
-		return tab
-	end
-
-	local function contains(object, position)
-		local p, s = object.AbsolutePosition, object.AbsoluteSize
-		return position.X >= p.X and position.Y >= p.Y and position.X <= p.X + s.X and position.Y <= p.Y + s.Y
-	end
-	titlebar.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = {Input = input, Start = input.Position, Origin = root.Position}
-			closePopup()
-		end
-	end)
-	own(Input.InputBegan, function(input, processed)
-		if popup and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
-			if not contains(popup.Group, input.Position) and not contains(popup.Button, input.Position) then closePopup() end
-		end
-		if processed or Input:GetFocusedTextBox() then return end
-		if input.KeyCode == Enum.KeyCode.K then window:Toggle()
-		elseif input.KeyCode == Enum.KeyCode.Escape then closePopup() end
-	end)
-	own(Input.InputChanged, function(input)
-		local mouse = input.UserInputType == Enum.UserInputType.MouseMovement
-		if scrubbing and (input == scrubbing.Input or (mouse and scrubbing.Input.UserInputType == Enum.UserInputType.MouseButton1)) then scrubbing.Update(input.Position.X) end
-		if dragging and (input == dragging.Input or (mouse and dragging.Input.UserInputType == Enum.UserInputType.MouseButton1)) then
-			local view = viewport()
-			root.Position = UDim2.fromOffset(math.clamp(dragging.Origin.X.Offset + input.Position.X - dragging.Start.X, 0, math.max(0, view.X - width)), math.clamp(dragging.Origin.Y.Offset + input.Position.Y - dragging.Start.Y, 0, math.max(0, view.Y - 47)))
-		end
-	end)
-	own(Input.InputEnded, function(input)
-		local mouseEnded = input.UserInputType == Enum.UserInputType.MouseButton1
-		if scrubbing and (input == scrubbing.Input or (mouseEnded and scrubbing.Input.UserInputType == Enum.UserInputType.MouseButton1)) then scrubbing.Bubble.Visible = false; scrubbing = nil end
-		if dragging and (input == dragging.Input or (mouseEnded and dragging.Input.UserInputType == Enum.UserInputType.MouseButton1)) then dragging = nil end
-	end)
-	local function bindCamera()
-		if viewportConnection then viewportConnection:Disconnect(); viewportConnection = nil end
-		camera = workspace.CurrentCamera
-		if camera then viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function() layout(false) end) end
-		layout(false)
-	end
-	own(workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
-	bindCamera()
-	animate(root, {GroupTransparency = 0}, .4)
-	return window
+local function sanitizeSlot(slot)
+    if type(slot) ~= "table" or cleanText(slot.stand) == "" then
+        return nil
+    end
+    local normalized = {
+        stand = cleanText(slot.stand),
+        att = normalizeAttributes(slot.att),
+    }
+    if normalized.stand ~= "Any" and cleanText(slot.standId) ~= "" then
+        normalized.standId = cleanText(slot.standId)
+    end
+    return normalized
 end
 
--- Presentation and feature bindings belong here; commands/data belong to Features.
-function Library.Mount(api)
-	assert(type(api)=="table" and type(api.GetSnapshot)=="function", "Feature engine is incompatible")
-	local window = Library.CreateWindow({Title="LUNA", Subtitle="Stand Upright Rebooted", Footer="LUNA · SUR"})
-	local alive, refreshing = true, false
-	local changed, notices
-	window:OnDestroy(function()
-		alive = false
-		if changed then changed:Disconnect() end
-		if notices then notices:Disconnect() end
-		api:Destroy()
-	end)
-	api:OnStop(function() window:Destroy() end)
-	local bindings, snapshot = {}, api:GetSnapshot()
-	local refresh
-	local function invoke(name, value)
-		if not alive or refreshing then return end
-		local ok, err = pcall(api.Call, api, name, value)
-		if not ok then window:Notify("Không thực hiện được", tostring(err)); if refresh then refresh() end end
-	end
-	local function bind(tab, kind, name, settings)
-		local schema = assert(api.Parameters[name], "Missing feature parameter: "..name)
-		local value = api:Get(name)
-		if schema.Type == "selection" then
-			settings.Multiple, settings.Exclusive = schema.Multiple == true, schema.Exclusive
-			settings.Default = schema.Multiple and value or value[1]
-		else settings.Default = value end
-		settings.Callback = function(new) invoke(name, new) end
-		local control = tab[kind](tab, settings)
-		bindings[name] = control
-		return control
-	end
-	local stand = window:Tab({Name="Auto Stand", ShortName="Stand", Icon="stand", Description="Quay Stand theo mục tiêu đã lưu."})
-	stand:Section("VẬT PHẨM")
-	bind(stand,"Dropdown","RollItem",{Name="Vật phẩm",Options={"Stand Arrow","Locked Stand Arrow","Charged Arrow","Kars Mask"}})
-	if api.Parameters.RokaItem then
-		bind(stand,"Dropdown","RokaItem",{Name="Rokakaka",Options={"Rokakaka","Locked Rokakaka"}})
-	end
-	bind(stand,"Toggle","StandFarm",{Name="Auto Stand",Hint="Dừng khi trúng mục tiêu hoặc cần kiểm tra kho."})
-	local currentStand = stand:Label("")
-	local currentAttribute = stand:Label("")
-	local farmState = stand:Label("")
-	local orbStatus
-	if api.Parameters.AutoOrb then
-		stand:Section("2X ORB")
-		bind(stand,"Toggle","AutoOrb",{Name="Auto x2 Orb",Hint="Dùng khi farm Arrow; chờ xác nhận trước khi dùng lại."})
-		orbStatus = stand:Label("")
-	end
-	if api.Parameters.AntiAFK then
-		stand:Section("PHIÊN CHƠI")
-		bind(stand,"Toggle","AntiAFK",{Name="Anti AFK",Hint="Mô phỏng thao tác khi Roblox báo không hoạt động."})
-	end
-	local targets = window:Tab({Name="Targets",Icon="targets",Description="Chọn Stand và thuộc tính muốn giữ."})
-	targets:Section("TẠO MỤC TIÊU")
-	bind(targets,"Dropdown","TargetMatchMode",{Name="Cách so khớp",Options={"Stand + Attribute","Stand Only","Attribute Only"}})
-	bind(targets,"Input","StandSearch",{Name="Tìm Stand",Placeholder="Tên / viết tắt / ID"})
-	local standChoice = bind(targets,"Dropdown","SelectedStand",{Name="Stand",Options=snapshot.StandChoices})
-	local selectedLabel = targets:Label("")
-	local attributes = bind(targets,"Dropdown","SelectedAttributes",{Name="Thuộc tính",Options=snapshot.Attributes})
-	targets:Button({Name="Thêm mục tiêu",Callback=function() invoke("AddTarget") end})
-	targets:Button({Name="Làm mới danh sách Stand",Callback=function() invoke("RefreshCatalog") end})
-	targets:Section("MỤC TIÊU ĐÃ LƯU")
-	local targetCount = targets:Label("")
-	local placeholder = "— Chọn mục tiêu —"
-	local saved = targets:Dropdown({Name="Mục tiêu",Options={placeholder},Default=placeholder,Callback=function(value)
-		invoke("SelectTarget", tonumber(value:match("^%[(%d+)%]")))
-	end})
-	targets:Button({Name="Xóa mục tiêu đã chọn",Callback=function() invoke("RemoveTarget") end})
-	targets:Button({Name="Xóa toàn bộ mục tiêu",Callback=function() invoke("ClearTargets") end})
-	local lair = window:Tab({Name="Auto Lair",ShortName="Lair",Icon="lair",Description="Cơ chế từ bản 0071."})
-	lair:Section("VÀO LAIR")
-	bind(lair,"Dropdown","LairLevel",{Name="Cấp độ",Options={"Lv 200"}})
-	bind(lair,"Toggle","JoinLair",{Name="Join Lair",Hint="Duy trì bật cho đến khi anh tắt."})
-	lair:Section("BÁM BOSS · 0071")
-	bind(lair,"Toggle","BossLockAura",{Name="TP / Lock + Aura",Hint="Giữ cơ chế của mốc 0071."})
-	bind(lair,"Slider","BossDistance",{Name="Khoảng cách",Min=1,Max=30,Step=.5,Unit="stud"})
-	bind(lair,"Slider","AuraInterval",{Name="Nhịp Kill Aura",Min=.1,Max=30,Step=.1,Unit="giây"})
-	bind(lair,"Toggle","AutoM1",{Name="Auto M1",Hint="Công tắc riêng; đánh tại vị trí bám boss."})
-	if api.Parameters.HalloweenTapE then
-		local halloween = window:Tab({Name="Halloween",Icon="lair",Description="Tương tác cửa nhà trong sự kiện."})
-		halloween:Section("CỬA NHÀ")
-		bind(halloween,"Toggle","HalloweenTapE",{Name="Nhấn E một lần",Hint="Đứng trong tầm cửa đang hoạt động rồi bấm E."})
-	end
-	local storage = window:Tab({Name="Stand Storage",ShortName="Storage",Icon="storage",Description="Cất Stand trúng mục tiêu vào slot 1, 2, 4."})
-	storage:Section("KHO STAND")
-	bind(storage,"Toggle","AutoStore",{Name="Tự cất Stand",Hint="Giữ Stand khớp mục tiêu trong kho."})
-	storage:Button({Name="Mở Stand Storage",Callback=function() invoke("OpenStandStorage") end})
-	local storageState = storage:Label("")
-	local storageRows = {}
-	for index=1,#snapshot.Storage do storageRows[index]=storage:Label("") end
-	storage:Button({Name="Xóa chờ xác nhận sau khi kiểm tra kho",Callback=function() invoke("ResetStoragePending") end})
-	local safe = window:Tab({Name="Safe Zone",Icon="safe",Description="Di chuyển tới vị trí Safe Zone đã lưu."})
-	safe:Section("DI CHUYỂN")
-	safe:Button({Name="Đến Safe Zone",Callback=function() invoke("TeleportSafeZone") end})
-	local previousError
-	refresh = function()
-		if not alive or refreshing then return end
-		refreshing = true
-		local ok, err = pcall(function()
-			local state = api:GetSnapshot()
-			local choices = {}
-			for _, name in ipairs(state.StandChoices) do if name~="-- No matches --" then table.insert(choices,name) end end
-			if not table.find(choices,state.SelectedStand) then table.insert(choices,1,state.SelectedStand) end
-			standChoice:SetOptions(choices,true)
-			attributes:SetOptions(state.Attributes,true)
-			for name, control in pairs(bindings) do
-				local schema, value = api.Parameters[name], api:Get(name)
-				if schema.Type=="selection" and not schema.Multiple then value=value[1] end
-				control:Set(value,true)
-			end
-			currentStand:Set("Stand: "..state.Stand)
-			currentAttribute:Set("Thuộc tính: "..state.Attribute)
-			farmState:Set("Auto Stand: "..(state.Farming and "Bật" or "Tắt"))
-			if orbStatus then orbStatus:Set(state.OrbStatus or "2x Orb: Chưa có dữ liệu") end
-			selectedLabel:Set("Đã chọn: "..state.SelectedStand)
-			targetCount:Set(tostring(#state.Targets).." mục tiêu đã lưu")
-			local options, map = {placeholder}, {}
-			for _, target in ipairs(state.Targets) do local title="["..target.Index.."] "..target.Description;table.insert(options,title);map[target.Index]=title end
-			saved:SetOptions(options,true)
-			saved:Set(map[state.SelectedTargetIndex] or placeholder,true)
-			storageState:Set("Kho: "..state.StorageMessage)
-			for index, record in ipairs(state.Storage) do
-				storageRows[index]:Set(record.Label..": "..(record.Stand and (record.Stand.." / "..tostring(record.Attribute)..(record.Protected and " · GIỮ" or "")) or "Chưa đọc được"))
-			end
-		end)
-		refreshing = false
-		if not ok and previousError~=tostring(err) then window:Notify("Cập nhật giao diện",tostring(err)) end
-		previousError = not ok and tostring(err) or nil
-	end
-	changed = api:Subscribe("Changed", refresh)
-	notices = api:Subscribe("Notice", function(notice) if alive then window:Notify(notice.Title,notice.Content) end end)
-	refresh()
-	stand:Select()
-	api:FlushNotices()
-	return window
+local function normalizeFarmSlots(decoded)
+    if type(decoded) ~= "table" then
+        return {}
+    end
+    local normalized = {}
+    for _, slot in ipairs(decoded) do
+        local cleanSlot = sanitizeSlot(slot)
+        if cleanSlot then
+            table.insert(normalized, cleanSlot)
+        end
+    end
+    return normalized
 end
 
-return Library
+--================== HELPER FUNCTIONS ==================--
+
+function featureState.standAbbreviation(value)
+    local letters = {}
+    for word in cleanText(value):gmatch("[%w]+") do
+        table.insert(letters, word:sub(1, 1):lower())
+    end
+    return table.concat(letters)
+end
+
+function featureState.rememberStandSelection(value)
+    value = cleanText(value)
+    if value == "" or value == "Any" then
+        return
+    end
+    for i = #featureState.recentStandSelections, 1, -1 do
+        if nameKey(featureState.recentStandSelections[i]) == nameKey(value) then
+            table.remove(featureState.recentStandSelections, i)
+        end
+    end
+    table.insert(featureState.recentStandSelections, 1, value)
+    while #featureState.recentStandSelections > 5 do
+        table.remove(featureState.recentStandSelections)
+    end
+    engine:Emit("Changed")
+end
+
+function featureState.getFilteredStandList(query)
+    query = nameKey(query)
+    local result, seen = {}, {}
+    local function add(value)
+        local key = nameKey(value)
+        if value and value ~= "" and not seen[key] then
+            seen[key] = true
+            table.insert(result, value)
+        end
+    end
+    if query == "" then
+        add("Any")
+        for _, value in ipairs(featureState.recentStandSelections) do
+            add(value)
+        end
+        for _, value in ipairs(standOptions) do
+            add(value)
+        end
+    else
+        for _, value in ipairs(standOptions) do
+            local key = nameKey(value)
+            local id = uniqueStandId(value)
+            if
+                key:find(query, 1, true)
+                or featureState.standAbbreviation(value):find(query, 1, true)
+                or (id and nameKey(id):find(query, 1, true))
+            then
+                add(value)
+            end
+        end
+    end
+    if #result == 0 then
+        return { "-- No matches --" }
+    end
+    return result
+end
+
+function featureState.targetKey(slot)
+    local attributes = normalizeAttributes(slot and slot.att or { "Any" })
+    table.sort(attributes)
+    local standKey = slot and (slot.standId or nameKey(slot.stand)) or "any"
+    return tostring(standKey) .. "|" .. table.concat(attributes, ",")
+end
+
+local function getSlotDisplayText(slot)
+    local attText = "Any"
+    if type(slot.att) == "table" then
+        local filtered = {}
+        for _, a in ipairs(slot.att) do
+            table.insert(filtered, a)
+        end
+        if #filtered == 0 or (#filtered == 1 and filtered[1] == "Any") then
+            attText = "Any Att"
+        else
+            attText = table.concat(filtered, ", ")
+        end
+    elseif type(slot.att) == "string" then
+        attText = slot.att
+    end
+    return (slot.stand or "Any") .. " + [" .. attText .. "]"
+end
+
+
+local function targetsChanged()
+    featureState.targetRevision = (featureState.targetRevision or 0) + 1
+    selectedRemoveIndex = nil
+    engine:Emit("Changed")
+end
+
+--================== CORE FUNCTIONS ==================--
+
+local function notif(title, text)
+    engine:Notify(title, text)
+end
+
+local STABMAN_NPC_COORD = Vector3.new(28082.211, 47.423, -234.006)
+
+local function checkSlotMatch(standValue, attValue, standOnly)
+    if not standValue or standValue == "None" or not attValue then
+        return false, nil
+    end
+    local displayStand = getDisplayName(standValue)
+    for i, slot in ipairs(farmSlots) do
+        local sm
+        if slot.stand == "Any" then
+            sm = true
+        elseif slot.standId then
+            sm = slot.standId == standValue
+        else
+            sm = nameKey(slot.stand) == nameKey(standValue)
+                or nameKey(getDisplayName(slot.stand)) == nameKey(displayStand)
+        end
+        -- Optional query: can ANY attribute make this Stand worth keeping?
+        -- Normal two-argument callers still require Stand AND Attribute.
+        if sm and standOnly then
+            return true, i
+        end
+        local am = false
+        if type(slot.att) == "table" then
+            for _, a in ipairs(slot.att) do
+                if a == "Any" or a == attValue then
+                    am = true
+                    break
+                end
+            end
+        else
+            am = (slot.att == "Any") or (slot.att == attValue)
+        end
+        if sm and am then
+            return true, i
+        end
+    end
+    return false, nil
+end
+
+function featureState.isNamedTargetStand(standValue)
+    if not standValue or standValue == "None" then
+        return false
+    end
+    local displayStand = getDisplayName(standValue)
+    for _, slot in ipairs(farmSlots) do
+        if slot.stand ~= "Any" then
+            if
+                slot.standId == standValue
+                or nameKey(slot.stand) == nameKey(standValue)
+                or nameKey(getDisplayName(slot.stand)) == nameKey(displayStand)
+            then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function saveSlots()
+    if type(writefile) ~= "function" then
+        return false, "writefile API unavailable."
+    end
+    local ok, err = pcall(function()
+        writefile("sur_farmslots.txt", jsonservice:JSONEncode(farmSlots))
+    end)
+    if not ok then
+        return false, err
+    end
+    return true, nil
+end
+
+local function loadSlots()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return false, "readfile API unavailable."
+    end
+    local okExists, exists = pcall(function()
+        return isfile("sur_farmslots.txt")
+    end)
+    if not okExists then
+        return false, exists
+    end
+    if not exists then
+        farmSlots = {}
+        return true, "missing"
+    end
+    local okRead, raw = pcall(function()
+        return readfile("sur_farmslots.txt")
+    end)
+    if not okRead then
+        return false, raw
+    end
+    if raw == "" then
+        farmSlots = {}
+        return true, "empty"
+    end
+    local okDecode, decoded = pcall(function()
+        return jsonservice:JSONDecode(raw)
+    end)
+    if not okDecode or type(decoded) ~= "table" then
+        return false, "Invalid target save data."
+    end
+    local normalized = normalizeFarmSlots(decoded)
+    local count = 0
+    for key in pairs(decoded) do
+        if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+            return false, "Saved targets must be an array."
+        end
+        count = count + 1
+    end
+    if #normalized ~= count then
+        return false, "Invalid target entry; current targets kept."
+    end
+    farmSlots = normalized
+    return true, nil
+end
+
+local function autoSaveSlots()
+    local ok, err = saveSlots()
+    if not ok then
+        notif("Target Save Failed", tostring(err))
+    end
+end
+
+local isFarmingActive = false
+local farmRun = 0
+
+local function setFarmStateOff()
+    if engine.Parameters.StandFarm then engine:Set("StandFarm", false, true) end
+end
+
+stopStandFarm = function()
+    getgenv().farmstands = false
+    farmRun = farmRun + 1
+    setFarmStateOff()
+end
+
+local function findFarmItem(name)
+    local backpack = localplr:FindFirstChild("Backpack")
+    local char = localplr.Character
+    return (backpack and backpack:FindFirstChild(name)) or (char and char:FindFirstChild(name))
+end
+
+local function returnFarmItem(item)
+    local backpack = localplr:FindFirstChild("Backpack")
+    pcall(function()
+        if backpack and item and item.Parent == localplr.Character then
+            item.Parent = backpack
+        end
+    end)
+end
+
+local function getUseItemRemote(item)
+    local events = ReplicatedStorage:FindFirstChild("Events")
+    local remote = events and events:FindFirstChild("UseItem")
+    if remote and remote:IsA("RemoteEvent") then
+        return remote
+    end
+    local itemRemote = item and item:FindFirstChild("Use")
+    return itemRemote and itemRemote:IsA("RemoteEvent") and itemRemote or nil
+end
+
+--================== STORAGE STATE ==================--
+-- User-confirmed open storage buttons are Slots 1, 2 and 4. Slot 4 uses the
+-- remote argument "Slot4" and Data.Slot4; Slots 3, 5 and 6 are excluded.
+local storageMap = {
+    { label = "Slot 1", remote = "Slot1", data = "Slot1" },
+    { label = "Slot 2", remote = "Slot2", data = "Slot2" },
+    { label = "Slot 4", remote = "Slot4", data = "Slot4" },
+}
+local accountKey = tostring(localplr.UserId or localplr.Name)
+-- V2 intentionally ignores obsolete Slot5 pending records from the earlier map.
+local storageFile = "sur_storage_pending_v2_" .. accountKey .. ".json"
+local storageMessage = "Ready"
+local storagePending
+local lastStorageRequest = -math.huge
+
+getgenv().SURStorageStateV2 = getgenv().SURStorageStateV2 or {}
+local function persistState(path, value)
+    if type(writefile) ~= "function" then
+        return false
+    end
+    local ok = pcall(function()
+        writefile(path, jsonservice:JSONEncode(value))
+    end)
+    if not ok then
+        warn("Could not save " .. path)
+    end
+    return ok
+end
+
+local function readSavedState(path)
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return nil
+    end
+    local ok, result = pcall(function()
+        if not isfile(path) then
+            return nil
+        end
+        return jsonservice:JSONDecode(readfile(path))
+    end)
+    if not ok then
+        return nil, "Unreadable saved state: " .. path
+    end
+    if result ~= nil and type(result) ~= "table" then
+        return nil, "Invalid saved state: " .. path
+    end
+    return result
+end
+
+local function readStandRecord(prefix)
+    local data = localplr:FindFirstChild("Data")
+    if not data then
+        return nil
+    end
+    local s = data:FindFirstChild((prefix or "") .. "Stand")
+    local a = data:FindFirstChild((prefix or "") .. "Attri")
+    local g = data:FindFirstChild((prefix or "") .. "GUID")
+    if not s or not a or not g then
+        return nil
+    end
+    local ok, record = pcall(function()
+        return { stand = s.Value, att = a.Value, guid = g.Value }
+    end)
+    if
+        not ok
+        or type(record.stand) ~= "string"
+        or record.stand == ""
+        or type(record.att) ~= "string"
+        or type(record.guid) ~= "string"
+        or (record.stand ~= "None" and (record.guid == "" or record.guid == "Generate"))
+    then
+        return nil
+    end
+    return record
+end
+
+local function sameRecord(a, b)
+    return a and b and a.stand == b.stand and a.att == b.att and a.guid == b.guid
+end
+
+local function confirmedSwap(current, stored, pending)
+    if not sameRecord(stored, pending.current) then
+        return false
+    end
+    if pending.stored.stand == "None" then
+        -- Empty storage commonly has GUID "Generate", while the active empty
+        -- record may receive a fresh GUID. The valuable side must still arrive
+        -- intact in storage; the active side must be stably empty.
+        return current and current.stand == "None" and current.att == "None"
+    end
+    return sameRecord(current, pending.stored)
+end
+
+local function validRecord(record)
+    return type(record) == "table"
+        and type(record.stand) == "string"
+        and type(record.att) == "string"
+        and type(record.guid) == "string"
+end
+
+local function validPending(pending)
+    if type(pending) ~= "table" or not validRecord(pending.current) or not validRecord(pending.stored) then
+        return false
+    end
+    for _, slot in ipairs(storageMap) do
+        if pending.data == slot.data and pending.remote == slot.remote then
+            return true
+        end
+    end
+    return false
+end
+
+local function setStoragePending(pending)
+    storagePending = pending
+    getgenv().SURStorageStateV2[accountKey] = pending
+    persistState(storageFile, pending or { pending = false })
+end
+
+local function storageAvailability()
+    local free, unknown, protected = nil, 0, 0
+    for _, slot in ipairs(storageMap) do
+        local record = readStandRecord(slot.data)
+        if not record then
+            unknown = unknown + 1
+        elseif checkSlotMatch(record.stand, record.att) then
+            protected = protected + 1
+        elseif not free then
+            free = slot
+        end
+    end
+    if free then
+        return free, "available"
+    end
+    return nil, unknown > 0 and "unavailable" or (protected == #storageMap and "full" or "unavailable")
+end
+
+local function storageCooldown()
+    local folder = localplr:FindFirstChild("GlobalCooldowns")
+    local cd = folder and folder:FindFirstChild("StandSwitchCD")
+    local remaining = math.max(0, 8 - (os.clock() - lastStorageRequest))
+    if cd then
+        local ok, value = pcall(function()
+            return cd.Value
+        end)
+        if not ok or type(value) ~= "number" or value ~= value then
+            return nil
+        end
+        remaining = math.max(remaining, value)
+    end
+    return remaining
+end
+
+local function awaitStorageConfirmation(running)
+    if not validPending(storagePending) then
+        return false, "Storage check needs manual review."
+    end
+    local pending = storagePending
+    local deadline = os.clock() + 10
+    local confirmedSince
+    while running() and os.clock() < deadline do
+        local current = readStandRecord()
+        local stored = readStandRecord(pending.data)
+        if confirmedSwap(current, stored, pending) then
+            confirmedSince = confirmedSince or os.clock()
+            if os.clock() - confirmedSince >= 0.35 then
+                setStoragePending(nil)
+                storageMessage = "Stored in " .. pending.label
+                return true, pending.label
+            end
+        else
+            confirmedSince = nil
+        end
+        task.wait(0.08)
+    end
+    storageMessage = "Swap not confirmed. Check storage before resuming."
+    return false, storageMessage
+end
+
+local function storeMatchedStand(stand, att, running)
+    if storagePending then
+        return awaitStorageConfirmation(running)
+    end
+    local deadline = os.clock() + 25
+    while running() and autoStoreMatches and os.clock() < deadline do
+        local remaining = storageCooldown()
+        if remaining == nil then
+            return false, "Cannot read storage cooldown."
+        end
+        if remaining > 0 then
+            storageMessage = "Waiting for storage cooldown: " .. math.ceil(remaining) .. "s"
+            task.wait(0.1)
+            continue
+        end
+        local current = readStandRecord()
+        if not current or current.stand ~= stand or current.att ~= att then
+            return false, "Current stand data changed."
+        end
+        if not checkSlotMatch(current.stand, current.att) then
+            return false, "Target list changed."
+        end
+        local slot, reason = storageAvailability()
+        if not slot then
+            return false,
+                reason == "full" and "All enabled slots are protected." or "No confirmed usable storage slot."
+        end
+        local stored = readStandRecord(slot.data)
+        if not stored or checkSlotMatch(stored.stand, stored.att) then
+            return false, "Storage contents changed."
+        end
+        -- Require a stable snapshot of both sides before sending the swap.
+        task.wait(0.35)
+        if not running() or not autoStoreMatches then
+            return false, "Storage cancelled."
+        end
+        if
+            not sameRecord(readStandRecord(), current) or not sameRecord(readStandRecord(slot.data), stored)
+        then
+            continue
+        end
+        if not checkSlotMatch(current.stand, current.att) or checkSlotMatch(stored.stand, stored.att) then
+            continue
+        end
+        local cd = storageCooldown()
+        if cd == nil or cd > 0 then
+            continue
+        end
+        local events = ReplicatedStorage:FindFirstChild("Events")
+        local remote = events and events:FindFirstChild("SwitchStand")
+        if not remote or not remote:IsA("RemoteEvent") then
+            return false, "SwitchStand RemoteEvent is missing."
+        end
+        setStoragePending({
+            pending = true,
+            data = slot.data,
+            remote = slot.remote,
+            label = slot.label,
+            current = current,
+            stored = stored,
+        })
+        -- File APIs may yield, so verify once more after recording the intent.
+        if
+            not running()
+            or not autoStoreMatches
+            or not sameRecord(readStandRecord(), current)
+            or not sameRecord(readStandRecord(slot.data), stored)
+            or not checkSlotMatch(current.stand, current.att)
+            or checkSlotMatch(stored.stand, stored.att)
+        then
+            setStoragePending(nil)
+            return false, "Storage cancelled before request."
+        end
+        storageMessage = "Confirming swap into " .. slot.label
+        lastStorageRequest = os.clock()
+        local ok, err = pcall(function()
+            remote:FireServer(slot.remote)
+        end)
+        if not ok then
+            return false, "Storage request failed: " .. tostring(err)
+        end
+        return awaitStorageConfirmation(running)
+    end
+    return false, "Storage cancelled or cooldown timed out."
+end
+
+local function itemAmount(item)
+    local ok, amount = pcall(function()
+        return item:GetAttribute("ItemAmount")
+    end)
+    return ok and type(amount) == "number" and amount or nil
+end
+
+local orbState = {expiresAt=0, requestedAt=0, pending=false}
+local orbPendingItem, orbPendingCharacter, orbPendingAmount
+local orbNextTry = 0
+local orbMessage = "No recorded use"
+getgenv().SUROrbSessionStateV2 = getgenv().SUROrbSessionStateV2 or {}
+
+local function saveOrbState()
+    getgenv().SUROrbSessionStateV2[accountKey] = {
+        gameRef = game,
+        playerRef = localplr,
+        state = table.clone(orbState),
+    }
+end
+
+local function orbRemaining()
+    return math.max(0, orbState.expiresAt - os.time())
+end
+
+local function checkOrbConsumption()
+    if not orbState.pending then
+        return
+    end
+    if orbPendingItem and localplr.Character == orbPendingCharacter then
+        local hum = orbPendingCharacter and orbPendingCharacter:FindFirstChildOfClass("Humanoid")
+        local currentAmount = itemAmount(orbPendingItem)
+        local consumed = orbPendingItem.Parent == nil
+            or (orbPendingAmount and currentAmount and currentAmount < orbPendingAmount)
+        if hum and hum.Health > 0 and consumed then
+            orbState.pending = false
+            orbState.expiresAt = orbState.requestedAt + 1800
+            orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+            orbMessage = "Use confirmed"
+            saveOrbState()
+            return
+        end
+    end
+    -- Without confirmation do not consume another orb during the possible buff window.
+    if os.time() - orbState.requestedAt >= 1800 then
+        orbState.pending = false
+        orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+        orbMessage = "Previous unconfirmed-use window ended"
+        saveOrbState()
+    end
+end
+
+local function ensureOrb(running, stand, att)
+    checkOrbConsumption()
+    if
+        not autoUseOrb
+        or not running()
+        or orbRemaining() > 0
+        or orbState.pending
+        or os.clock() < orbNextTry
+    then
+        return
+    end
+    local item = findFarmItem("2x Orb")
+    if not item then
+        orbMessage = "No 2x Orb - farming without Orb"
+        orbNextTry = os.clock() + 5
+        return
+    end
+    local char = localplr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then
+        return
+    end
+    local using = item:FindFirstChild("Using")
+    if using and using.Value == true then
+        orbMessage = "Orb already in use; waiting"
+        orbNextTry = os.clock() + 2
+        return
+    end
+    local remote = getUseItemRemote(item)
+    if not remote then
+        orbMessage = "UseItem unavailable - farming without Orb"
+        orbNextTry = os.clock() + 30
+        return
+    end
+    local fired = false
+    local ok, err = pcall(function()
+        hum:EquipTool(item)
+        task.wait(0.1)
+        local s, a = readStandData()
+        if
+            not running()
+            or not autoUseOrb
+            or localplr.Character ~= char
+            or hum.Health <= 0
+            or item.Parent ~= char
+            or s ~= stand
+            or a ~= att
+            or #farmSlots == 0
+        then
+            return
+        end
+        orbState = { pending = true, requestedAt = os.time(), expiresAt = 0 }
+        orbPendingItem, orbPendingCharacter, orbPendingAmount = item, char, itemAmount(item)
+        saveOrbState()
+        s, a = readStandData()
+        if
+            not running()
+            or not autoUseOrb
+            or localplr.Character ~= char
+            or hum.Health <= 0
+            or item.Parent ~= char
+            or s ~= stand
+            or a ~= att
+            or #farmSlots == 0
+        then
+            orbState.pending = false
+            orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+            saveOrbState()
+            return
+        end
+        fired = true
+        orbMessage = "Using 2x Orb..."
+        remote:FireServer()
+        local deadline = os.clock() + 10
+        while running() and autoUseOrb and os.clock() < deadline do
+            checkOrbConsumption()
+            if not orbState.pending then
+                return
+            end
+            task.wait(0.1)
+        end
+        orbMessage = "Use not confirmed - automatic reuse held"
+    end)
+    returnFarmItem(item)
+    if not ok then
+        orbMessage = "Orb error - farming continues"
+        warn("Orb: " .. tostring(err))
+        if not fired then
+            orbState.pending = false
+            orbPendingItem, orbPendingCharacter, orbPendingAmount = nil, nil, nil
+            saveOrbState()
+        end
+    end
+    orbNextTry = os.clock() + 30
+end
+
+local function orbStatusText()
+    local remaining = math.ceil(orbRemaining())
+    if remaining > 0 then
+        return string.format(
+            "2x Orb: ACTIVE (estimated) %02d:%02d | Auto: %s",
+            math.floor(remaining / 60),
+            remaining % 60,
+            autoUseOrb and "ON" or "OFF"
+        )
+    end
+    if orbState.pending then
+        return "2x Orb: use unconfirmed; automatic reuse held"
+    end
+    if orbState.expiresAt > 0 then
+        return "2x Orb: EXPIRED | Auto: " .. (autoUseOrb and "ON" or "OFF")
+    end
+    return "2x Orb: " .. orbMessage .. " | Auto: " .. (autoUseOrb and "ON" or "OFF")
+end
+
+do
+    local cached = getgenv().SUROrbSessionStateV2[accountKey]
+    local candidate = type(cached) == "table"
+            and cached.gameRef == game
+            and cached.playerRef == localplr
+            and cached.state
+        or nil
+    local now = os.time()
+    if
+        type(candidate) == "table"
+        and type(candidate.expiresAt) == "number"
+        and type(candidate.requestedAt) == "number"
+        and candidate.requestedAt <= now
+        and candidate.requestedAt >= now - 1800
+        and candidate.expiresAt >= 0
+        and candidate.expiresAt <= now + 1800
+    then
+        orbState = {
+            expiresAt = candidate.expiresAt,
+            requestedAt = candidate.requestedAt,
+            pending = candidate.pending == true,
+        }
+        if orbRemaining() > 0 then
+            orbMessage = "Restored same-session estimate"
+        elseif orbState.pending then
+            orbMessage = "Restored same-session pending use"
+        end
+    else
+        orbState = { expiresAt = 0, requestedAt = 0, pending = false }
+        orbMessage = "New game session - fresh Orb required"
+        saveOrbState()
+    end
+end
+
+local function updateFarmState()
+    checkOrbConsumption()
+    engine:Emit("Changed")
+end
+
+do
+    local saved, err = readSavedState(storageFile)
+    storagePending = getgenv().SURStorageStateV2[accountKey]
+        or (saved and saved.pending ~= false and saved or nil)
+    if err or (storagePending and not validPending(storagePending)) then
+        storagePending = { invalid = true }
+        storageMessage = "Saved swap record unreadable; manual review required."
+    elseif storagePending then
+        storageMessage = "Previous swap awaits verification."
+    end
+
+end
+
+local function doStandFarm()
+    if isFarmingActive or not getgenv().farmstands or getgenv().SURFarmSession ~= hubSession then
+        return
+    end
+    isFarmingActive = true
+    farmRun = farmRun + 1
+    local run = farmRun
+    local errors, lastFire = 0, 0
+    local waitingForItem = nil
+    local activeItem
+    local function running()
+        return getgenv().farmstands and farmRun == run and getgenv().SURFarmSession == hubSession
+    end
+    local function alive()
+        local char = localplr.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        return char, hum and hum.Health > 0
+    end
+    local function recordError(message)
+        if not running() then
+            return
+        end
+        errors = errors + 1
+
+        notif("Farm retry " .. errors .. "/10", message)
+        task.wait(0.5)
+    end
+    local function stableData()
+        local started, changedAt = os.clock(), os.clock()
+        local previousStand, previousAtt
+        local matchStand, matchRevision, unselected
+        while running() and os.clock() - started < 4 do
+            local s, a = readStandData()
+            if s == nil then
+                return nil, nil
+            end
+            if s ~= previousStand or a ~= previousAtt then
+                previousStand, previousAtt = s, a
+                changedAt = os.clock()
+            end
+            -- An unselected Stand cannot become a match just because its Attribute
+            -- arrives later. Reject it quickly; keep the full Attribute window for
+            -- possible targets (including every Stand when a target uses Any).
+            local empty = s == "None" and a == "None"
+            local revision = featureState.targetRevision or 0
+            if s ~= matchStand or revision ~= matchRevision then
+                matchStand, matchRevision = s, revision
+                unselected = s ~= "None" and not checkSlotMatch(s, a, true)
+            end
+            local fast = empty or unselected
+            local minimumWait = fast and 0 or 0.75
+            local quietWait = fast and (1 / 60) or 0.35
+            if os.clock() - started >= minimumWait and os.clock() - changedAt >= quietWait and a ~= "" then
+                return s, a, unselected
+            end
+            task.wait()
+        end
+        return nil, nil
+    end
+    local function fireItem(item, expectedStand, expectedAtt, fastReject)
+        local remaining = 0.05 - (os.clock() - lastFire)
+        if remaining > 0 then
+            task.wait(remaining)
+        end
+        if not running() then
+            return false, "cancelled"
+        end
+        local char, isAlive = alive()
+        if not isAlive or not item or not item.Parent then
+            return false, "Character/item unavailable."
+        end
+        local remote = getUseItemRemote(item)
+        if not remote then
+            return false, "UseItem RemoteEvent was not found."
+        end
+        local equipOk, equipErr = pcall(function()
+            char:FindFirstChildOfClass("Humanoid"):EquipTool(item)
+        end)
+        if not equipOk then
+            return false, tostring(equipErr)
+        end
+        -- Keep the previous farm Tool equipped until Roblox replaces it here.
+        -- This removes the visible empty-hand gap between Arrow and Rokakaka.
+        activeItem = item
+        task.wait()
+        if not running() then
+            return false, "cancelled"
+        end
+        local currentChar, stillAlive = alive()
+        local s, a = readStandData()
+        if currentChar ~= char or not stillAlive or item.Parent ~= char then
+            return false, "Character/item changed during equip."
+        end
+        if s ~= expectedStand or a ~= expectedAtt then
+            return false, "data changed"
+        end
+        local isRoka = item.Name == "Rokakaka" or item.Name == "Locked Rokakaka"
+        if
+            #farmSlots == 0
+            or (isRoka and (selectedRollItem == "Kars Mask" or item.Name ~= selectedRokaItem))
+            or (not isRoka and item.Name ~= selectedRollItem)
+        then
+            return false, "data changed"
+        end
+        if storagePending then
+            return false, "Storage swap still requires verification."
+        end
+        if item.Name == "Kars Mask" and s ~= "Kars" and featureState.isNamedTargetStand(s) then
+            return false, "Current Stand is in saved targets."
+        end
+        -- A retrieved junk Stand may still be removed even after storage becomes
+        -- full. Require free storage only before using the next Arrow.
+        if autoStoreMatches and expectedStand == "None" and item.Name ~= "Kars Mask" then
+            local available = storageAvailability()
+            if not available then
+                return false, "No confirmed storage space."
+            end
+        end
+        -- Re-check the slots after every yield before consuming Rokakaka.
+        if expectedStand ~= "None" and checkSlotMatch(s, a) then
+            return false, "data changed"
+        end
+        -- A target added during equip invalidates the fast rejection even if
+        -- its desired Attribute has not arrived yet. Re-enter the normal check.
+        if fastReject and checkSlotMatch(s, a, true) then
+            return false, "data changed"
+        end
+        local ok, err = pcall(function()
+            remote:FireServer()
+        end)
+        lastFire = os.clock()
+        return ok, err
+    end
+    local function waitForResult(usingArrow, fromStand)
+        local deadline = os.clock() + 8
+        while running() and os.clock() < deadline do
+            local s = readStandData()
+            if s ~= nil then
+                if usingArrow and s ~= "None" then
+                    return true
+                end
+                if not usingArrow and s == "None" then
+                    return true
+                end
+                if not usingArrow and s ~= fromStand then
+                    return false
+                end
+            end
+            task.wait()
+        end
+        return false
+    end
+    local function maskAmount(item)
+        local amount = itemAmount(item)
+        if amount then
+            return amount
+        end
+        local ok, attributes = pcall(function()
+            return item:GetAttributes()
+        end)
+        if not ok or type(attributes) ~= "table" then
+            return nil
+        end
+        for name, value in pairs(attributes) do
+            local key = tostring(name):lower()
+            if (key == "amount" or key == "count" or key == "value") and type(value) == "number" then
+                return value
+            end
+        end
+        return nil
+    end
+    local function waitForMaskResult(fromStand, fromAtt, fromRecord, item, initialAmount)
+        local deadline = os.clock() + 8
+        while running() and os.clock() < deadline do
+            local stand, att = readStandData()
+            if stand == "Kars" then
+                if stand ~= fromStand or att ~= fromAtt then
+                    return true
+                end
+                local currentRecord = readStandRecord()
+                if fromRecord and currentRecord and currentRecord.guid ~= fromRecord.guid then
+                    return true
+                end
+                local amount = maskAmount(item)
+                if not item.Parent or (initialAmount and amount and amount < initialAmount) then
+                    return true
+                end
+            elseif stand and stand ~= fromStand then
+                return false
+            end
+            task.wait(0.08)
+        end
+        return false
+    end
+
+    local ok, err = xpcall(function()
+        notif("Stand Farm", "Started. Item: " .. selectedRollItem)
+        while running() do
+            task.wait()
+            if not running() then
+                break
+            end
+            if #farmSlots == 0 then
+                notif("Stand Farm", "Add at least 1 target before farming.")
+                break
+            end
+            if errors >= 10 then
+                notif("Farm Stopped", "Too many item-use errors. Check inventory/connection.")
+                break
+            end
+            local _, isAlive = alive()
+            if not isAlive or not localplr:FindFirstChild("Backpack") then
+                task.wait(0.5)
+                continue
+            end
+            -- Never use Arrow/Roka while an earlier swap has an uncertain outcome.
+            if storagePending then
+                local confirmed, detail = awaitStorageConfirmation(running)
+                if not confirmed then
+                    notif("Storage Stopped", detail)
+                    break
+                end
+
+            end
+            local stand, att, fastReject = stableData()
+            if not running() then
+                break
+            end
+            if stand == nil then
+                task.wait(0.25)
+                continue
+            end
+            local maskMode = selectedRollItem == "Kars Mask"
+            if maskMode and not checkSlotMatch("Kars", "None", true) then
+                notif("Kars Mask Stopped", "Add a Kars or Any-Stand target before using masks.")
+                break
+            end
+            if maskMode and stand ~= "Kars" and featureState.isNamedTargetStand(stand) then
+                notif("Kars Mask Stopped", "Current Stand is in your saved target list. It was kept.")
+                break
+            end
+            local usingRollItem = maskMode or stand == "None"
+            if stand ~= "None" then
+                local matched, slotNum = checkSlotMatch(stand, att)
+                if matched then
+
+                    -- A kept Stand must never leave an Arrow/Roka equipped while the
+                    -- hub stores it, stops, or displays the match popup.
+                    returnFarmItem(activeItem)
+                    activeItem = nil
+                    local dn = getDisplayName(stand)
+                    notif("MATCH!", "Target " .. slotNum .. ": " .. att .. " " .. dn)
+
+                    if autoStoreMatches and not maskMode then
+                        local stored, detail = storeMatchedStand(stand, att, running)
+                        if not stored then
+                            storageMessage = detail
+                            notif("Storage Stopped", detail)
+                            break
+                        end
+
+                        notif("Stand Stored", dn .. " / " .. att .. " -> " .. detail)
+                        -- Re-read the stand taken OUT of storage before deciding what to use.
+                        continue
+                    end
+                    getgenv().farmstands = false
+                    setFarmStateOff()
+
+                    break
+                end
+
+            end
+
+            -- With a junk Stand active, use its Roka first. Once it becomes None,
+            -- stop before the next Arrow if every enabled slot is protected.
+            if autoStoreMatches and usingRollItem and not maskMode then
+                local available, reason = storageAvailability()
+                if not available then
+                    storageMessage = reason == "full" and "All enabled slots are protected; farm stopped."
+                        or "Storage data unavailable; farm stopped."
+                    notif("Storage Stopped", storageMessage)
+                    break
+                end
+            end
+            if not running() then
+                break
+            end
+            if usingRollItem and not maskMode then
+                ensureOrb(running, stand, att)
+            end
+            if not running() then break end
+            local itemName = usingRollItem and selectedRollItem or selectedRokaItem
+            local item = findFarmItem(itemName)
+            if not item then
+                if waitingForItem ~= itemName then
+                    waitingForItem = itemName
+                    notif("Stand Farm", "Waiting for " .. itemName .. "; farming will resume automatically.")
+                end
+                task.wait(1)
+                continue
+            end
+            if waitingForItem then
+                notif("Stand Farm", itemName .. " found; resuming farming.")
+                waitingForItem = nil
+            end
+            local previousRecord = maskMode and readStandRecord() or nil
+            local previousAmount = maskMode and maskAmount(item) or nil
+            local fired, fireError = fireItem(item, stand, att, fastReject)
+            if not fired then
+                returnFarmItem(activeItem)
+                activeItem = nil
+                if not running() then
+                    break
+                end
+                if maskMode and fireError ~= "data changed" then
+                    notif("Kars Mask Stopped", tostring(fireError))
+                    break
+                end
+                if fireError ~= "data changed" then
+                    recordError(tostring(fireError))
+                end
+                continue
+            end
+            local succeeded = maskMode and waitForMaskResult(stand, att, previousRecord, item, previousAmount)
+                or (not maskMode and waitForResult(usingRollItem, stand))
+            if not running() then
+                break
+            end
+            if not succeeded then
+                returnFarmItem(activeItem)
+                activeItem = nil
+                if maskMode then
+                    notif(
+                        "Kars Mask Stopped",
+                        "Mask result was not confirmed; check Stand, Attribute and inventory."
+                    )
+                    break
+                end
+                recordError(itemName .. " timed out; no confirmed result.")
+                continue
+            end
+            errors = 0
+        end
+    end, function(message)
+        return debug.traceback(tostring(message), 2)
+    end)
+
+    returnFarmItem(activeItem)
+    isFarmingActive = false
+    if farmRun == run and getgenv().SURFarmSession == hubSession then
+        getgenv().farmstands = false
+        setFarmStateOff()
+    end
+    if not ok then
+
+        warn(err)
+        notif("Farm Error", tostring(err))
+    end
+    notif("Farm Stopped", "Stand Farm stopped.")
+    -- An off/on action during an old worker's wait starts exactly one fresh worker.
+    if getgenv().farmstands and getgenv().SURFarmSession == hubSession then
+        task.defer(startStandFarm)
+    end
+end
+
+startStandFarm = function()
+    if getgenv().SURFarmSession ~= hubSession then
+        return
+    end
+    getgenv().farmstands = true
+    if not isFarmingActive then
+        task.spawn(doStandFarm)
+    end
+end
+
+--================== LOAD SAVED DATA ==================--
+engine:Emit("Progress", "Loading Stand catalog...")
+local catalogLoaded, catalogLoadError = scanStandCatalog(0)
+if not catalogLoaded then
+    warn("Stand catalog fallback: " .. tostring(catalogLoadError))
+end
+local slotsLoaded, slotsLoadError = loadSlots()
+if not slotsLoaded and slotsLoadError then
+    warn("Failed to load saved targets: " .. tostring(slotsLoadError))
+end
+
+
+local searchQuery = ""
+
+
+engine:Define("TargetMatchMode", {Type="selection"}, {featureState.selectedTargetMode}, function(values)
+        featureState.selectedTargetMode = firstOption(values, "Stand + Attribute")
+    end)
+
+engine:Define("StandSearch", {Type="string"}, "", function(value) searchQuery=value end)
+
+engine:Define("SelectedStand", {Type="selection"}, {selectedStandForSlot}, function(values)
+        local name = firstOption(values, "Any")
+        if name == "-- No matches --" then
+            return
+        end
+        selectedStandForSlot = name
+        featureState.rememberStandSelection(name)
+    end)
+
+engine:Define("SelectedAttributes", {Type="selection", Multiple=true, Exclusive={"Any"}}, selectedAttsForSlot, function(values)
+        selectedAttsForSlot = normalizeAttributes(values)
+    end)
+
+engine:Register("AddTarget", function()
+        local targetStand = selectedStandForSlot or "Any"
+        local targetAttributes = normalizeAttributes(selectedAttsForSlot)
+        if featureState.selectedTargetMode == "Stand Only" then
+            targetAttributes = { "Any" }
+        elseif featureState.selectedTargetMode == "Attribute Only" then
+            targetStand = "Any"
+        end
+        local newSlot = {
+            stand = targetStand,
+            standId = targetStand ~= "Any" and uniqueStandId(targetStand) or nil,
+            att = targetAttributes,
+        }
+        for i, existing in ipairs(farmSlots) do
+            if featureState.targetKey(existing) == featureState.targetKey(newSlot) then
+                notif("Target Exists", "Same as Target " .. i .. ".")
+                return
+            end
+        end
+        table.insert(farmSlots, newSlot)
+        autoSaveSlots()
+        notif("Target Added", "Target " .. #farmSlots .. ": " .. getSlotDisplayText(newSlot))
+        targetsChanged()
+    end)
+
+engine:Register("RefreshCatalog", function()
+        local ok, message = scanStandCatalog(5)
+                engine:Emit("Changed")
+        notif("Stand Catalog", ok and message or (tostring(message) .. " Current list kept."))
+    end)
+
+engine:Register("SelectTarget",function(index) selectedRemoveIndex=tonumber(index) end)
+
+engine:Register("RemoveTarget", function()
+        local index = selectedRemoveIndex
+        local removed = index and farmSlots[index]
+        if not removed then
+            notif("Targets", "Select a saved target first.")
+            return
+        end
+        table.remove(farmSlots, index)
+        selectedRemoveIndex = nil
+        autoSaveSlots()
+        notif("Removed", getSlotDisplayText(removed))
+        targetsChanged()
+    end)
+
+engine:Register("ClearTargets", function()
+        if #farmSlots == 0 then
+            notif("Targets", "There are no targets to clear.")
+            return
+        end
+        table.clear(farmSlots)
+        selectedRemoveIndex = nil
+        local ok, err = saveSlots()
+        targetsChanged()
+        notif(
+            "Cleared",
+            ok and "All targets removed and saved."
+                or ("All targets removed, but save failed: " .. tostring(err))
+        )
+    end)
+
+engine:Define("RollItem", {Type="selection", Flag="ArrowType", Multiple=false}, {"Stand Arrow"}, function(Options)
+    local value = firstOption(Options, "Stand Arrow")
+    selectedRollItem = (value == "Charged Arrow" or value == "Kars Mask" or value == "Locked Stand Arrow") and value or "Stand Arrow"
+    
+end)
+
+engine:Define("RokaItem", {Type="selection", Multiple=false}, {"Rokakaka"}, function(options)
+    selectedRokaItem = firstOption(options, "Rokakaka") == "Locked Rokakaka" and "Locked Rokakaka" or "Rokakaka"
+end)
+
+engine:Define("AutoOrb", {Type="boolean", Flag="AutoUse2xOrbV1"}, true, function(value)
+    autoUseOrb = value == true
+end)
+
+engine:Define("AutoStore", {Type="boolean", Flag="AutoStoreMatchesV1"}, true, function(value)
+        autoStoreMatches = value == true
+    end)
+
+engine:Register("ResetStoragePending", function()
+        if getgenv().farmstands or isFarmingActive then
+            notif("Storage", "Stop farming before resetting the pending-swap check.")
+            return
+        end
+        setStoragePending(nil)
+        storageMessage = "Pending check cleared. Contents will be re-read on start."
+        updateFarmState()
+    end)
+
+engine:Register("TeleportSafeZone", function()
+    local char = localplr.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        char.HumanoidRootPart.CFrame = CFrame.new(-3047.042, 43.185, -1695.433)
+        notif("Teleport", "Moved to Safe Zone!")
+    end
+end)
+
+engine:Register("OpenStandStorage", function()
+    local npc = game.Workspace:FindFirstChild("Map")
+        and game.Workspace.Map:FindFirstChild("NPCs")
+        and game.Workspace.Map.NPCs:FindFirstChild("admpn")
+    local remote = npc and npc:FindFirstChild("Done")
+    if remote then
+        remote:FireServer()
+        notif("Storage Stand", "Remote fired.")
+    else
+        notif("Storage Stand", "Storage NPC remote not found.")
+    end
+end)
+
+engine:Define("StandFarm", {Type="boolean", Flag="AutoFarmStands"}, false, function(Value)
+    if Value then
+        startStandFarm()
+    else
+        stopStandFarm()
+    end
+end)
+
+do
+    local selectedLairLevel = "Lv 200"
+    local joinEnabled = false
+    local joinRun = nil
+    local joinConnection = nil
+    local useLairNPCName = "i_stabman"
+    local targetedLairNPC = nil
+    local lastLairAttempt = 0
+
+    local function joinSessionActive(run)
+        return joinEnabled
+            and joinRun == run
+            and getgenv().SURFarmSession == hubSession
+            and engine:IsRunning()
+    end
+
+    local function getInstanceRootPart(instance)
+        if not instance then
+            return nil
+        end
+        if instance:IsA("Model") then
+            return instance.PrimaryPart
+                or instance:FindFirstChild("HumanoidRootPart")
+                or instance:FindFirstChild("Torso")
+                or instance:FindFirstChild("UpperTorso")
+        end
+        if instance:IsA("BasePart") then
+            return instance
+        end
+        return nil
+    end
+
+    local function getInstancePosition(instance)
+        local root = getInstanceRootPart(instance)
+        return root and root.Position or nil
+    end
+
+    local function findTargetedLairNPC()
+        local npc = targetedLairNPC
+        local map = game.Workspace:FindFirstChild("Map")
+        local npcsFolder = map and map:FindFirstChild("NPCs")
+        if npc and npc.Parent and npc.Name == useLairNPCName and npc:FindFirstChild("Done") then
+            return npc
+        end
+        if not npcsFolder then
+            targetedLairNPC = nil
+            return nil
+        end
+        npc = nil
+        local char = localplr.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local referencePos = hrp and hrp.Position
+        local closestDist = math.huge
+        for _, candidate in ipairs(npcsFolder:GetChildren()) do
+            if candidate.Name == useLairNPCName and candidate:FindFirstChild("Done") then
+                local pos = getInstancePosition(candidate)
+                if pos then
+                    local dist
+                    if useLairNPCName == "i_stabman" then
+                        dist = (pos - STABMAN_NPC_COORD).Magnitude
+                    elseif referencePos then
+                        dist = (pos - referencePos).Magnitude
+                    end
+                    if dist and dist < closestDist then
+                        closestDist = dist
+                        npc = candidate
+                    end
+                end
+                npc = npc or candidate
+            end
+        end
+        targetedLairNPC = npc
+        return npc
+    end
+
+    local function tryEnterLair()
+        local now = os.clock()
+        -- Five attempts per second is still immediate, but avoids flooding the same
+        -- server remote every rendered frame while a Lair transition is pending.
+        if now - lastLairAttempt < 0.2 then
+            return
+        end
+        local npc = findTargetedLairNPC()
+        if not npc then
+            return
+        end
+        local doneRemote = npc:FindFirstChild("Done")
+        if not doneRemote or not doneRemote:IsA("RemoteEvent") then
+            return
+        end
+        lastLairAttempt = now
+        pcall(function()
+            doneRemote:FireServer(localplr.Character)
+        end)
+    end
+
+    local function stopJoinConnection()
+        if joinConnection then
+            joinConnection:Disconnect()
+            joinConnection = nil
+        end
+        targetedLairNPC = nil
+        lastLairAttempt = 0
+    end
+    engine:OnStop(function()
+        joinEnabled = false
+        joinRun = nil
+        stopJoinConnection()
+    end)
+
+    
+    engine:Define("LairLevel", {Type="selection"}, {selectedLairLevel}, function(values)
+        selectedLairLevel = values[1] == "Lv 200" and values[1] or "Lv 200"
+    end)
+    engine:Define("JoinLair", {Type="boolean"}, false, function(value)
+        local enabled = value == true
+        if joinEnabled == enabled then
+            return
+        end
+        joinEnabled = enabled
+        joinRun = nil
+        stopJoinConnection()
+        if not enabled then
+            return
+        end
+        local run = {}
+        joinRun = run
+        local connection
+        connection = game:GetService("RunService").Heartbeat:Connect(function()
+            if not joinSessionActive(run) then
+                connection:Disconnect()
+                if joinConnection == connection then
+                    joinConnection = nil
+                end
+                return
+            end
+            -- Match the official entry caller's character readiness checks.
+            local char = localplr.Character
+            if not char then
+                return
+            end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then
+                return
+            end
+            tryEnterLair()
+        end)
+        joinConnection = connection
+    end)
+end
+
+-- LUNA_ORIGINAL_LAIR_FEATURES_BEGIN
+do
+    local RunService = game:GetService("RunService")
+    local LocalPlayer = localplr
+    local Cfg = { AutoBossKill = false, Dist = 7, AuraInterval = 3, Mode = "Dưới chân" }
+    local auraBoss, auraHumanoid = nil, nil
+    local lastAuraAt = nil
+    local WasLocking = false
+    local arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = nil, nil, nil
+    local autoM1Enabled = false
+    local lastLairM1 = 0
+    local lairM1Busy = false
+    local closed = false
+    local connections = {}
+
+    local function RestoreCollision(char)
+        if not char then
+            return
+        end
+        for _, part in ipairs(char:GetDescendants()) do
+            if
+                part:IsA("BasePart") and part.Name == "HumanoidRootPart"
+                or part.Name == "Torso"
+                or part.Name == "UpperTorso"
+            then
+                part.CanCollide = true
+            end
+        end
+    end
+
+    -- // 2. Tìm Boss đang hoạt động trong Workspace.Living
+    local function GetActiveBoss()
+        local living = workspace:FindFirstChild("Living")
+        if not living then
+            return nil, nil, nil
+        end
+
+        -- Ưu tiên tìm đúng model "Boss"
+        local boss = living:FindFirstChild("Boss")
+        if boss then
+            local hum = boss:FindFirstChildOfClass("Humanoid")
+            local root = boss:FindFirstChild("HumanoidRootPart") or boss.PrimaryPart
+            -- Kiểm tra xác Boss chưa bị hủy và vẫn còn gắn trong Workspace
+            if hum and root and root.Parent and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+                return boss, root, hum
+            end
+        end
+        return nil, nil, nil
+    end
+
+    -- // 3. Hàm tính toán CFrame theo khoảng cách Xa/Gần & Hướng đứng
+    local function GetLockCFrame(bossRoot)
+        local bossCF = bossRoot.CFrame
+        local bossPos = bossRoot.Position
+
+        if Cfg.Mode == "Dưới chân" then
+            local targetPos = bossPos + Vector3.new(0, -Cfg.Dist, 0)
+            return CFrame.lookAt(targetPos, bossPos)
+        elseif Cfg.Mode == "Trên đầu" then
+            local targetPos = bossPos + Vector3.new(0, Cfg.Dist, 0)
+            return CFrame.lookAt(targetPos, bossPos)
+        else -- "Sau lưng"
+            local targetPos = (bossCF * CFrame.new(0, 0, Cfg.Dist)).Position
+            return CFrame.lookAt(targetPos, bossPos)
+        end
+    end
+
+    local function getLairM1Remotes()
+        local character = localplr.Character
+        if not character then
+            return nil
+        end
+        local combatModel = character
+        local standEvents = combatModel:FindFirstChild("StandEvents")
+        if not standEvents then
+            local living = workspace:FindFirstChild("Living")
+            combatModel = living and living:FindFirstChild(localplr.Name) or combatModel
+            standEvents = combatModel and combatModel:FindFirstChild("StandEvents")
+        end
+        local m1Remote = standEvents and standEvents:FindFirstChild("M1")
+        local events = ReplicatedStorage:FindFirstChild("Events")
+        local abilityInput = events and events:FindFirstChild("AbilityInput")
+        if m1Remote and m1Remote:IsA("RemoteEvent") and abilityInput and abilityInput:IsA("RemoteEvent") then
+            return abilityInput, m1Remote
+        end
+        return nil
+    end
+
+    local function pressLairM1()
+        local now = os.clock()
+        if lairM1Busy or now - lastLairM1 < 0.15 then
+            return
+        end
+        local abilityInput, m1Remote = getLairM1Remotes()
+        if not abilityInput or not m1Remote then
+            return
+        end
+
+        lairM1Busy = true
+        lastLairM1 = now
+        local began = false
+        pcall(function()
+            abilityInput:FireServer("MouseButton1", "Begin", nil)
+            began = true
+            m1Remote:FireServer()
+        end)
+        task.delay(0.08, function()
+            if began and abilityInput.Parent then
+                pcall(function()
+                    abilityInput:FireServer("MouseButton1", "End", nil)
+                end)
+            end
+            lairM1Busy = false
+        end)
+    end
+
+    local function shutdown()
+        if closed then
+            return
+        end
+        closed, Cfg.AutoBossKill, autoM1Enabled = true, false, false
+        arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = nil, nil, nil
+        auraBoss, auraHumanoid = nil, nil
+        lastAuraAt = nil
+        for _, connection in ipairs(connections) do
+            connection:Disconnect()
+        end
+        if WasLocking then
+            WasLocking = false
+            RestoreCollision(LocalPlayer.Character)
+        end
+    end
+    local function active()
+        if closed then
+            return false
+        end
+        if getgenv().SURFarmSession ~= hubSession or not engine:IsRunning() then
+            shutdown()
+            return false
+        end
+        return true
+    end
+    local function tryImmediateBossTP()
+        if not active() or not Cfg.AutoBossKill then
+            return
+        end
+        local char = LocalPlayer.Character
+        local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+        local myHum = char and char:FindFirstChildOfClass("Humanoid")
+        if not myRoot or not myHum or myHum.Health <= 0 then
+            return
+        end
+        local boss, bossRoot = GetActiveBoss()
+        if not boss or not bossRoot then
+            return
+        end
+        local target = GetLockCFrame(bossRoot)
+        if (myRoot.Position - target.Position).Magnitude <= 0.01 then
+            return
+        end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+        myRoot.CFrame = target
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.AssemblyAngularVelocity = Vector3.zero
+        -- Do not mark arrival here; Heartbeat must still observe it.
+    end
+    connections[#connections + 1] = workspace.DescendantAdded:Connect(function(descendant)
+        if not Cfg.AutoBossKill then
+            return
+        end
+        local boss = descendant.Name == "Boss" and descendant or descendant.Parent
+        if boss and boss.Name == "Boss" and boss:IsA("Model")
+            and boss.Parent == workspace:FindFirstChild("Living")
+            and (descendant == boss or descendant:IsA("Humanoid") or descendant:IsA("BasePart")) then
+            tryImmediateBossTP()
+        end
+    end)
+    connections[#connections + 1] = RunService.Stepped:Connect(function()
+        if not active() then
+            return
+        end
+        if not Cfg.AutoBossKill then
+            return
+        end
+        local char = LocalPlayer.Character
+        if not char then
+            return
+        end
+
+        local boss, bossRoot = GetActiveBoss()
+        if boss and bossRoot then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+            -- Acquire a new target before physics; Heartbeat still observes
+            -- arrival and owns the Aura interval and regular position lock.
+            local myRoot = char:FindFirstChild("HumanoidRootPart")
+            local myHum = char:FindFirstChildOfClass("Humanoid")
+            if myRoot and myHum and myHum.Health > 0
+                and (arrivalBoss ~= boss or arrivalBossRoot ~= bossRoot or arrivalCharacterRoot ~= myRoot) then
+                myRoot.CFrame = GetLockCFrame(bossRoot)
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+                myRoot.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end)
+    connections[#connections + 1] = RunService.Heartbeat:Connect(function()
+        if not active() then
+            return
+        end
+        local char = LocalPlayer.Character
+        local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+        local myHum = char and char:FindFirstChildOfClass("Humanoid")
+        if not myRoot or not myHum or myHum.Health <= 0 then
+            arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = nil, nil, nil
+            return
+        end
+
+        local boss, bossRoot, bossHum = GetActiveBoss()
+
+        -- A. Khi có Boss: Tự động TP tới Boss + Khóa vị trí + Kill Aura
+        if Cfg.AutoBossKill and boss and bossRoot and bossHum then
+            WasLocking = true
+
+            local lockCFrame = GetLockCFrame(bossRoot)
+            -- Observe arrival before writing this frame's TP. A new boss or
+            -- character must complete its own TP cycle before Aura can run.
+            local arrived = arrivalBoss == boss
+                and arrivalBossRoot == bossRoot
+                and arrivalCharacterRoot == myRoot
+                and (myRoot.Position - lockCFrame.Position).Magnitude <= 2
+
+            -- Khóa vị trí theo khoảng cách Xa/Gần đã chỉnh
+            myRoot.CFrame = lockCFrame
+            arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = boss, bossRoot, myRoot
+            myRoot.AssemblyLinearVelocity = Vector3.zero
+            myRoot.AssemblyAngularVelocity = Vector3.zero
+
+            -- A new boss/Humanoid bypasses the previous round's cooldown.
+            -- The same boss repeats at the selected interval, after arrival only.
+            if auraBoss ~= boss or auraHumanoid ~= bossHum then
+                auraBoss, auraHumanoid = boss, bossHum
+                lastAuraAt = nil
+            end
+            local now = os.clock()
+            if arrived and (not lastAuraAt or now - lastAuraAt >= Cfg.AuraInterval) then
+                lastAuraAt = now
+                pcall(function()
+                    sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+                    if bossHum.Health > 0 and (myRoot.Position - bossRoot.Position).Magnitude <= 35 then
+                        bossHum.Health = 0
+                    end
+                end)
+            end
+
+        -- B. Ngay khi Boss chết/biến mất: Nhả khóa ngay lập tức để chuyển Lair không bị kẹt khoảng không
+        else
+            arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = nil, nil, nil
+            if WasLocking then
+                WasLocking = false
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+                RestoreCollision(char)
+                -- Nếu đang ở dưới đất thì nhấc nhân vật lên mặt sàn an toàn
+                if Cfg.Mode == "Dưới chân" then
+                    myRoot.CFrame += Vector3.new(0, Cfg.Dist + 4, 0)
+                end
+            end
+        end
+    end)
+    connections[#connections + 1] = RunService.Heartbeat:Connect(function()
+        if not active() or not autoM1Enabled then
+            return
+        end
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local myRoot = char and char:FindFirstChild("HumanoidRootPart")
+        if not hum or hum.Health <= 0 or not myRoot then
+            return
+        end
+        local boss, bossRoot, bossHum = GetActiveBoss()
+        if not boss or not bossRoot or not bossHum then
+            return
+        end
+        -- Keep the M1 switch independent; attack only at the selected lock
+        -- position, whether reached by TP/Lock or by moving there separately.
+        if (myRoot.Position - GetLockCFrame(bossRoot).Position).Magnitude > 2 then
+            return
+        end
+        pressLairM1()
+    end)
+    engine:OnStop(shutdown)
+
+    
+    engine:Define("AuraInterval", {Type="number", Flag="LairAuraIntervalSeconds", Range={0.1,30}, Increment=0.1}, Cfg.AuraInterval, function(value)
+        Cfg.AuraInterval = value
+    end)
+    engine:Define("BossDistance", {Type="number", Flag="LairBossDistanceStuds", Range={1,30}, Increment=0.5}, Cfg.Dist, function(value)
+        if Cfg.Dist ~= value then
+            arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = nil, nil, nil
+        end
+        Cfg.Dist = value
+    end)
+
+    engine:Define("BossLockAura", {Type="boolean"}, false, function(v)
+        if Cfg.AutoBossKill ~= v then
+            arrivalBoss, arrivalBossRoot, arrivalCharacterRoot = nil, nil, nil
+            auraBoss, auraHumanoid = nil, nil
+            lastAuraAt = nil
+        end
+        Cfg.AutoBossKill = v
+        if v then
+            tryImmediateBossTP()
+        end
+        if not v and LocalPlayer.Character then
+            WasLocking = false
+            RestoreCollision(LocalPlayer.Character)
+        end
+    end)
+
+    engine:Define("AutoM1", {Type="boolean"}, false, function(value)
+        autoM1Enabled = value == true
+    end)
+end
+-- LUNA_ORIGINAL_LAIR_FEATURES_END
+
+
+function engine:GetSnapshot()
+    local stand, attribute = readStandData()
+    local targets, storage = {}, {}
+    for index, slot in ipairs(farmSlots) do targets[index] = {Index=index, Description=getSlotDisplayText(slot)} end
+    for index, slot in ipairs(storageMap) do
+        local record = readStandRecord(slot.data)
+        storage[index] = {Label=slot.label, Stand=record and getDisplayName(record.stand) or nil,
+            Attribute=record and record.att or nil, Protected=record and checkSlotMatch(record.stand, record.att) or false}
+    end
+    return {Stand=getDisplayName(stand or "None"), Attribute=attribute or "None", Farming=getgenv().farmstands,
+        Targets=targets, StandChoices=featureState.getFilteredStandList(searchQuery), Attributes=table.clone(allAttributes),
+        SelectedStand=selectedStandForSlot, SelectedAttributes=table.clone(selectedAttsForSlot), Catalog=catalogSource,
+        Storage=storage, StorageMessage=storageMessage, SelectedTargetIndex=selectedRemoveIndex, OrbStatus=orbStatusText(),
+        HalloweenStatus=featureState.halloweenStatus}
+end
+engine:OnStop(function()
+    if getgenv().SURFarmSession == hubSession then stopStandFarm();getgenv().SURFarmSession=nil end
+    if extrasConnection then extrasConnection:Disconnect(); extrasConnection = nil end
+    if respawnConnection then respawnConnection:Disconnect(); respawnConnection = nil end
+end)
+respawnConnection=localplr.CharacterAdded:Connect(function()
+    task.wait(2.5)
+    if not engine:IsRunning() then return end
+    if getgenv().farmstands and not isFarmingActive then
+        notif("Auto Resume","Nhân vật respawn → Tiếp tục Stand Farm...")
+        task.spawn(doStandFarm)
+    end
+end)
+local elapsed=0
+extrasConnection=game:GetService("RunService").Heartbeat:Connect(function(dt)
+    if not engine:IsRunning() then engine:Destroy();return end
+    elapsed+=dt
+    if elapsed>=1 then
+        elapsed=0
+        local ok,err=pcall(updateFarmState)
+        if not ok then warn("[Luna Features] State update: "..tostring(err)) end
+    end
+end)
+
+    end)
+    if not ok then engine:Destroy();error(err,0) end
+    return engine
+end
+
+-- LUNA_FEATURE_CORE_END
+-- Only the loader references the UI; no menu construction lives in this file.
+local UI_LIBRARY_URL = "https://raw.githubusercontent.com/lunaoir/lunan/refs/heads/main/ui%20lib"
+local UI_LIBRARY_REFRESH_URL = "https://raw.githubusercontent.com/lunaoir/lunan/main/ui%20lib"
+local loaded, library = pcall(function()
+    assert(type(loadstring)=="function", "loadstring is required")
+    local function fetch(url)
+        local ok, source = pcall(game.HttpGet, game, url)
+        if not ok then return nil, tostring(source) end
+        if type(source)~="string" or not source:find("-- LUNA_UI_DESIGN05_FEATURES_V2",1,true)
+            or not source:find("-- LUNA_UI_HALLOWEEN_AUTO_V1",1,true) then
+            return nil, "Cap nhat ui lib bang Luna_UI_Library.lua co muc Halloween moi."
+        end
+        return source
+    end
+    local source, fetchError = fetch(UI_LIBRARY_URL)
+    if not source then source, fetchError = fetch(UI_LIBRARY_REFRESH_URL) end
+    assert(source, "Khong tai duoc UI moi: "..tostring(fetchError))
+    local chunk, err = loadstring(source, "@Luna_UI_Library.lua")
+    assert(chunk, err)
+    local result = chunk()
+    assert(type(result)=="table" and result.Design=="Luna-05" and result.FeaturesVersion==2 and result.HalloweenAutoVersion==1
+        and type(result.Mount)=="function", "UI library is incompatible with this rebuild")
+    return result
+end)
+if not loaded then warn("[Luna Hub] UI: "..tostring(library)); return end
+local ok, session = pcall(Features.Start)
+if not ok then warn("[Luna Hub] Start: "..tostring(session)); return end
+local mounted, result = pcall(library.Mount, session)
+if not mounted then session:Destroy(); warn("[Luna Hub] Mount: "..tostring(result)); return end
+return session
