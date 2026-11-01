@@ -4,6 +4,7 @@
 -- LUNA_UI_HALLOWEEN_ROUTE_V2
 -- LUNA_UI_HALLOWEEN_SCHEDULE_V3
 -- LUNA_UI_LAIR_POSES_V1
+-- LUNA_UI_LAIR_REWORK_V1
 -- LUNA_UI_INDEPENDENT_V1
 -- LUNA_UI_REJOIN_MENU_V2
 -- LUNA_UI_HALLOWEEN_PULL_E_V2
@@ -12,7 +13,7 @@
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, IndependentVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, SettingsVersion = 1, Design = "Luna-05", Build = "2026-11-01.17"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, LairReworkVersion = 1, IndependentVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, SettingsVersion = 1, Design = "Luna-05", Build = "2026-11-01.18"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -843,16 +844,16 @@ function Library.Mount(api)
 	end})
 	targets:Button({Name="Xóa mục tiêu đã chọn",Callback=function() invoke("RemoveTarget") end})
 	targets:Button({Name="Xóa toàn bộ mục tiêu",Callback=function() invoke("ClearTargets") end})
-	local lair = window:Tab({Name="Auto Lair",ShortName="Lair",Icon="lair",Description="Cơ chế từ bản 0071."})
+	local lair = window:Tab({Name="Auto Lair",ShortName="Lair",Icon="lair",Description="Theo dõi boss, TP và chuyển lượt."})
 	lair:Section("VÀO LAIR")
 	bind(lair,"Dropdown","LairLevel",{Name="Cấp độ",Options={"Lv 200"}})
 	bind(lair,"Toggle","JoinLair",{Name="Join Lair",Hint="Duy trì bật cho đến khi anh tắt."})
-	lair:Section("BÁM BOSS · 0071")
+	lair:Section("BÁM BOSS")
 	bind(lair,"Toggle","BossLockAura",{Name="TP / Lock + Aura",Hint="Bám boss theo tư thế và khoảng cách đã chọn."})
 	bind(lair,"Dropdown","BossPose",{Name="Tư thế",Options={"Dưới chân","Đứng trên boss","Nằm sau lưng"},Hint="Nằm sau lưng: nằm ngang phía sau theo hướng boss quay."})
 	bind(lair,"Slider","BossDistance",{Name="Khoảng cách",Min=1,Max=30,Step=.5,Unit="stud"})
 	bind(lair,"Slider","AuraInterval",{Name="Nhịp Kill Aura",Min=.1,Max=30,Step=.1,Unit="giây"})
-	bind(lair,"Toggle","AutoM1",{Name="Auto M1",Hint="Công tắc riêng; đánh tại vị trí bám boss."})
+	bind(lair,"Toggle","AutoM1",{Name="Auto M1",Hint="Công tắc riêng; đánh khi tới vị trí khóa hoặc tự đứng gần boss."})
 	local lairState=lair:Label("")
 	local halloweenStatus
 	if api.Parameters.HalloweenTapE then
@@ -908,7 +909,7 @@ function Library.Mount(api)
 			currentStand:Set("Stand: "..state.Stand)
 			currentAttribute:Set("Thuộc tính: "..state.Attribute)
 			farmState:Set("Auto Stand: "..(state.Farming and "Đang chạy" or "Tắt"))
-			lairState:Set("Auto Lair: "..((api:Get("JoinLair") or api:Get("BossLockAura") or api:Get("AutoM1")) and "Theo công tắc đã bật" or "Tắt"))
+			lairState:Set(state.LairStatus or "Auto Lair: Đang tắt")
 			if orbStatus then orbStatus:Set(state.OrbStatus or "2x Orb: Chưa có dữ liệu") end
 			if halloweenStatus then halloweenStatus:Set(state.HalloweenStatus or "Đã tắt") end
 			selectedLabel:Set("Đã chọn: "..state.SelectedStand)
