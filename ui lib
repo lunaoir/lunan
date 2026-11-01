@@ -12,7 +12,7 @@
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, HalloweenStorageVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, ActivityIntentVersion = 1, Design = "Luna-05", Build = "2026-11-01.15"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 3, BossPoseVersion = 1, HalloweenStorageVersion = 1, RejoinMenuVersion = 2, HalloweenPullVersion = 2, StartupVersion = 1, ActivityIntentVersion = 1, Design = "Luna-05", Build = "2026-11-01.16"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -880,7 +880,7 @@ function Library.Mount(api)
 	local storageState = storage:Label("")
 	local storageRows = {}
 	for index=1,#snapshot.Storage do storageRows[index]=storage:Label("") end
-	storage:Button({Name="Xóa chờ xác nhận sau khi kiểm tra kho",Callback=function() invoke("ResetStoragePending") end})
+	storage:Button({Name="Gỡ chờ sau khi kiểm tra kho",Callback=function() invoke("ResetStoragePending") end})
 	local safe = window:Tab({Name="Safe Zone",Icon="safe",Description="Di chuyển tới vị trí Safe Zone đã lưu."})
 	safe:Section("DI CHUYỂN")
 	safe:Button({Name="Đến Safe Zone",Callback=function() invoke("TeleportSafeZone") end})
