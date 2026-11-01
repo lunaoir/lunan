@@ -1,10 +1,11 @@
 -- LUNA_UI_DESIGN05_FEATURES_V2
 -- LUNA_UI_HALLOWEEN_TAP_V1
 -- LUNA_UI_HALLOWEEN_AUTO_V1
+-- LUNA_UI_HALLOWEEN_ROUTE_V2
 -- Luna UI, design study 05. Native Roblox controls; no gameplay or remote loader.
 -- API: CreateWindow -> Tab -> Section / Toggle / Slider / Dropdown / Input / Button / Label.
 -- Set(value, true) updates a control silently. Mounting never calls feature callbacks.
-local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 1, Design = "Luna-05", Build = "2026-11-01.5"}
+local Library = {Version = 1, FeaturesVersion = 2, HalloweenTapVersion = 1, HalloweenAutoVersion = 2, Design = "Luna-05", Build = "2026-11-01.6"}
 
 local C = {
 	Background = Color3.fromRGB(30, 32, 33), Sidebar = Color3.fromRGB(25, 27, 28),
@@ -850,8 +851,8 @@ function Library.Mount(api)
 		halloween:Section("CỬA NHÀ")
 		bind(halloween,"Toggle","HalloweenTapE",{Name="Nhấn E một lần",Hint="Đứng trong tầm cửa đang hoạt động rồi bấm E."})
 		if api.Parameters.HalloweenAutoDoor then
-			bind(halloween,"Toggle","HalloweenAutoDoor",{Name="Auto Door",Hint="Lặp tại một nhà; tạm dừng khi có quái quanh cửa."})
-			bind(halloween,"Toggle","HalloweenAutoMob",{Name="Auto Mob · M1",Hint="Đánh Evil Bandit và Headless Horseman quanh cửa."})
+			bind(halloween,"Toggle","HalloweenAutoDoor",{Name="Auto Door",Hint="TP lần lượt các cửa; chuyển nhanh sang nhà khác."})
+			bind(halloween,"Toggle","HalloweenAutoMob",{Name="Auto Mob · M1",Hint="Quét xa, TP dưới chân Evil Bandit / Headless Horseman để đánh."})
 			halloweenStatus=halloween:Label("")
 		end
 	end
