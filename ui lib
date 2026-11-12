@@ -1,3 +1,6 @@
+-- LUNA JNKIE1211 — upload this entire file to UI-Source.
+-- Menu + key handoff only. No farming code, no recursive call to the same loader.
+local function createLunaMenuLibrary()
 -- LUNA_UI_SCHEMA_V1
 -- Luna UI, design 05 (rework): dark charcoal control panel with a champagne accent.
 -- Native Roblox controls only; no gameplay logic and no remote loader.
@@ -14,7 +17,7 @@
 --   Item Label: Tone = "ok" | "warn" | "error"   coloured marker beside a status label
 --   Item Button: Primary = true                   filled main action
 --   Item Dropdown: Placeholder = "..."            text shown while nothing is selected
-local Library = {Version = 1, SchemaVersion = 1, Design = "Luna-05", Build = "2026-11-08.1"}
+local Library = {Version = 1, SchemaVersion = 1, Design = "Luna-05", Build = "2026-11-12.1211"}
 
 local C = {
 	Window = Color3.fromRGB(27, 28, 30),
@@ -1554,3 +1557,77 @@ function Library.Mount(api)
 end
 
 return Library
+end
+-- UI handoff only; the protected JNKIE loader performs authentication.
+local function selectLunaJNKIEKey(env,prompt)
+    local function trim(value)return type(value)=="string" and value:match("^%s*(.-)%s*$") or "" end
+    local saved=trim(env.SCRIPT_KEY)
+    local resume=env.LunaJNKIEAutoResumeV1==true
+    env.LunaJNKIEAutoResumeV1=nil
+    env.LunaJNKIELibraryV1=nil
+    local selected
+    if resume and saved~="" then selected=saved else selected=prompt(saved) end
+    selected=trim(selected)
+    if selected=="" then env.SCRIPT_KEY=nil;env.UI_CLOSED=true;return false end
+    env.SCRIPT_KEY=selected;env.UI_CLOSED=false
+    return true
+end
+
+local function showLunaJNKIEKeyPrompt(previous)
+    local players=game:GetService("Players")
+    local deadline=os.clock()+60
+    while not players.LocalPlayer and os.clock()<deadline do task.wait(.1) end
+    local player=assert(players.LocalPlayer,"Chờ Roblox client tải xong rồi chạy lại")
+    local host=assert(player:WaitForChild("PlayerGui",15),"Chưa tải PlayerGui")
+    local old=host:FindFirstChild("LunaJNKIEKey")
+    if old then old:Destroy() end
+    local function make(class,props,parent)
+        local item=Instance.new(class)
+        for key,value in pairs(props) do item[key]=value end
+        item.Parent=parent;return item
+    end
+    local screen=make("ScreenGui",{Name="LunaJNKIEKey",ResetOnSpawn=false,DisplayOrder=200,ZIndexBehavior=Enum.ZIndexBehavior.Sibling},host)
+    local panel=make("Frame",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.new(.9,0,0,240),BackgroundColor3=Color3.fromRGB(30,32,33)},screen)
+    make("UISizeConstraint",{MaxSize=Vector2.new(460,240)},panel)
+    make("UICorner",{CornerRadius=UDim.new(0,8)},panel)
+    local function label(text,y,height,size)
+        return make("TextLabel",{BackgroundTransparency=1,Text=text,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,
+            Font=Enum.Font.Gotham,TextSize=size or 13,TextColor3=Color3.fromRGB(231,228,221),Position=UDim2.fromOffset(20,y),Size=UDim2.new(1,-40,0,height)},panel)
+    end
+    label("LUNA · Nhập key",15,30,18)
+    label("Nhập key của anh. JNKIE sẽ xác thực sau khi tiếp tục.",48,35)
+    local box=make("TextBox",{Text=previous or "",PlaceholderText="Key JNKIE",ClearTextOnFocus=false,
+        Font=Enum.Font.Code,TextSize=14,TextColor3=Color3.fromRGB(231,228,221),BackgroundColor3=Color3.fromRGB(22,24,25),
+        Position=UDim2.fromOffset(20,90),Size=UDim2.new(1,-40,0,36)},panel)
+    local note=label("Không dùng key chỉ có hiệu lực nếu dịch vụ cho phép.",176,40,11)
+    local function button(text,x,width)
+        local item=make("TextButton",{Text=text,Font=Enum.Font.Gotham,TextSize=12,
+            TextColor3=Color3.fromRGB(231,228,221),BackgroundColor3=Color3.fromRGB(62,59,48),
+            Position=UDim2.new(x,20,0,138),Size=UDim2.new(width,-14,0,32)},panel)
+        make("UICorner",{CornerRadius=UDim.new(0,4)},item)
+        return item
+    end
+    local submit=button("Tiếp tục",0,.36)
+    local keyless=button("Không dùng key",.36,.38)
+    local close=button("Đóng",.74,.22)
+    local done,selected=false,nil
+    local links={}
+    links[#links+1]=submit.Activated:Connect(function()
+        if done then return end
+        local key=box.Text:match("^%s*(.-)%s*$")
+        if key=="" then note.Text="Anh nhập key trước nhé.";return end
+        selected=key;done=true
+    end)
+    links[#links+1]=keyless.Activated:Connect(function()if not done then selected="KEYLESS";done=true end end)
+    links[#links+1]=close.Activated:Connect(function()done=true end)
+    links[#links+1]=screen.Destroying:Connect(function()selected=nil;done=true end)
+    while not done do task.wait(.05) end
+    for _,connection in ipairs(links) do connection:Disconnect() end
+    if screen.Parent then box:ReleaseFocus();screen:Destroy() end
+    return selected
+end
+
+local env=type(getgenv)=="function" and getgenv() or _G
+if not selectLunaJNKIEKey(env,showLunaJNKIEKeyPrompt) then return end
+env.LunaJNKIELibraryV1=createLunaMenuLibrary()
+-- End UI-Source here: the protected JNKIE loader authenticates and continues.
