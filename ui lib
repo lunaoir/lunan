@@ -1,4 +1,4 @@
--- LUNA JNKIE1211 — upload this entire file to UI-Source.
+-- LUNA JNKIE1206 — upload this entire file to UI-Source.
 -- Menu + key handoff only. No farming code, no recursive call to the same loader.
 local function createLunaMenuLibrary()
 -- LUNA_UI_SCHEMA_V1
@@ -17,7 +17,7 @@ local function createLunaMenuLibrary()
 --   Item Label: Tone = "ok" | "warn" | "error"   coloured marker beside a status label
 --   Item Button: Primary = true                   filled main action
 --   Item Dropdown: Placeholder = "..."            text shown while nothing is selected
-local Library = {Version = 1, SchemaVersion = 1, Design = "Luna-05", Build = "2026-11-12.1211"}
+local Library = {Version = 1, SchemaVersion = 1, Design = "Luna-05", Build = "2026-11-08.1"}
 
 local C = {
 	Window = Color3.fromRGB(27, 28, 30),
