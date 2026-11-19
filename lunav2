@@ -142,9 +142,14 @@ if not ok or not input then return false end
 local position,size=button.AbsolutePosition,button.AbsoluteSize
 local point=Vector2.new(position.X+size.X/2,position.Y+size.Y/2)
 local clear=false
-for _,hit in ipairs(host:GetGuiObjectsAtPosition(point.X,point.Y))do
+local okHits,hits=pcall(function()return host:GetGuiObjectsAtPosition(point.X,point.Y)end)
+if not okHits or type(hits)~="table"then
+clear=true
+else
+for _,hit in ipairs(hits)do
 if hit==button or hit:IsDescendantOf(button)then clear=true;break end
 if hit:IsA("GuiButton")or hit.Active then break end
+end
 end
 assert(clear,"Nút Play đang bị UI khác che; đóng UI đó rồi chạy lại script.")
 local down,downError=pcall(function()input:SendMouseButton(point,Enum.UserInputType.MouseButton1,true,0)end)
@@ -242,9 +247,14 @@ end
 if(isPlay or isSkip)and type(host.GetGuiObjectsAtPosition)=="function"then
 local p,z=button.AbsolutePosition,button.AbsoluteSize
 local clear=false
-for _,hit in ipairs(host:GetGuiObjectsAtPosition(p.X+z.X/2,p.Y+z.Y/2))do
+local okHits,hits=pcall(host.GetGuiObjectsAtPosition,host,p.X+z.X/2,p.Y+z.Y/2)
+if not okHits or type(hits)~="table"then
+clear=true
+else
+for _,hit in ipairs(hits)do
 if hit==button or hit:IsDescendantOf(button)then clear=true;break end
 if hit:IsA("GuiButton")or hit.Active then break end
+end
 end
 if not clear then return end
 end
@@ -284,9 +294,11 @@ firesignal(signal)
 end)
 if not ok then engine:Notify("Skip / Play / Close",tostring(err).." Anh bấm nút game thủ công nhé.")end
 end
+local scanErrors,scanErrorWarned=0,false
 local function startMenu()
 stopMenu();attempted={};elapsed=0;deadline=os.clock()+60
 skipWasVisible,pendingPlay,playReadyAt=false,nil,nil
+scanErrors=0;scanErrorWarned=false
 connection=game:GetService("RunService").Heartbeat:Connect(function(dt)
 if not engine:IsRunning()then stopMenu();return end
 if scanning then return end
@@ -300,7 +312,20 @@ scanning=true
 local ok,err=pcall(scanMenu)
 scanning=false
 if not engine:IsRunning()then return end
-if not ok then stopMenu();engine:Notify("Play / Close",tostring(err))
+if not ok then
+scanErrors+=1
+featureState.gameMenuBusy=false
+elapsed=-.75
+if not scanErrorWarned then scanErrorWarned=true;engine:Notify("Play / Close",tostring(err))end
+if scanErrors>=2 then
+local char=localplr.Character
+local hum=char and char:FindFirstChildOfClass("Humanoid")
+local root=char and char:FindFirstChild("HumanoidRootPart")
+if char and char:IsDescendantOf(workspace)and hum and hum.Health>0 and root and root:IsA("BasePart")then
+session.StartupReady=true
+stopMenu()
+end
+end
 elseif session.StartupReady then stopMenu()end
 end)
 end
@@ -3597,11 +3622,11 @@ end
 return core
 end
 ]]):sub(2),"@EDUHub_New/Luna_Stand_Extras.lua"))()
-local installDungeonLegacyInput=assert(loadstring(([[!return function(session)
+local installDungeonLegacyInput=assert(loadstring(([=[!return function(session)
 local env=getgenv and getgenv()or _G
 local previous=env.EDUDungeonLegacyInputV1
 if previous and type(previous.Destroy)=="function"then previous:Destroy()end
-local self={Running=true,Held={},Generation=0,Cursor=0}
+local self={Running=true,Held={},Generation=0,Cursor=0,NextSummon=0,MobileButtons={},MobileScanAt=0}
 env.EDUDungeonLegacyInputV1=self
 local KEY_TO_ABILITY={
 LeftClick="MouseButton1",
@@ -3611,6 +3636,12 @@ MouseButton2="MouseButton2",
 E="E",R="R",T="T",Y="Y",J="J",H="H",F="F",Z="Z",X="X",C="C",V="V",
 }
 local KEY_ORDER={"E","R","T","Y","J","H","F","Z","X","C","V","RightClick"}
+local KEY_SLOT={E=1,R=2,T=3,Y=4,J=5,H=6,F=7,Z=8,X=9,C=10,V=11}
+local EXCLUDED_FOLDER={
+Block=true,Quote=true,Pose=true,Summon=true,SummonStand=true,Unsummon=true,
+Heal=true,Jump=true,TogglePilot=true,Dash=true,Sprint=true,Run=true,
+Walk=true,Taunt=true,Emote=true,Equip=true,Unequip=true,
+}
 local DEFAULT_KEY_HOLD={
 MouseButton1=.05,
 MouseButton2=.2,
@@ -3650,6 +3681,11 @@ F={Name="DemonicAppetite",Hold=8.0,SendStandEnd=true},
 Z={Name="WildfireCyclone",Hold=.35,SendStandEnd=true},
 },
 }
+local function isMobileDevice(environment)
+local g=environment and environment.game or game
+local okUis,uis=pcall(g.GetService,g,"UserInputService")
+return okUis and uis and uis.TouchEnabled==true and not uis.KeyboardEnabled or false
+end
 local function uiClearForKeys(environment)
 local g=environment and environment.game or game
 local okUis,uis=pcall(g.GetService,g,"UserInputService")
@@ -3684,6 +3720,12 @@ local boss=env.EDUHubBossCombatV1
 if boss and boss.CurrentSession and boss.CurrentSession.Model then
 local bRoot=modelRootPart(boss.CurrentSession.Model)
 if bRoot and bRoot.Position then return bRoot.Position end
+end
+local qTarget=env.EDUHubQuestTargetV1
+if qTarget and type(env.EDUHubQuestCombatAt)=="number"and os.clock()-env.EDUHubQuestCombatAt<=.75 then
+local qHum=qTarget:FindFirstChildOfClass("Humanoid")
+local qRoot=qHum and qHum.Health>0 and modelRootPart(qTarget)
+if qRoot and qRoot.Position then return qRoot.Position end
 end
 local ownRoot=char and modelRootPart(char)
 local ownPos=ownRoot and ownRoot.Position
@@ -3759,7 +3801,194 @@ local hw=env.EDUHalloweenV1
 if hw and hw.Running~=false and type(hw.IsFightingMob)=="function"and hw:IsFightingMob()then
 return true
 end
+local qAt=env.EDUHubQuestCombatAt
+local qTarget=env.EDUHubQuestTargetV1
+if type(qAt)=="number"and os.clock()-qAt<=.75 and qTarget and qTarget.Parent then
+local qHum=qTarget:FindFirstChildOfClass("Humanoid")
+if qHum and qHum.Health>0 then return true end
+end
 return false
+end
+local function detectSummoned(char)
+if not char then return nil end
+for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
+if type(char.GetAttribute)=="function"then
+local ok,val=pcall(char.GetAttribute,char,attr)
+if ok and type(val)=="boolean"then return val end
+end
+end
+local standModel=char:FindFirstChild("Stand")
+if standModel and type(standModel.GetAttribute)=="function"then
+for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
+local ok,val=pcall(standModel.GetAttribute,standModel,attr)
+if ok and type(val)=="boolean"then return val end
+end
+end
+for _,childName in ipairs({"Aura","Summoned","StandSummoned"})do
+local v=char:FindFirstChild(childName)
+if v and v:IsA("BoolValue")then return v.Value end
+end
+if standModel and standModel:IsA("Model")and type(standModel.GetDescendants)=="function"then
+local sawPart=false
+for _,desc in ipairs(standModel:GetDescendants())do
+if desc:IsA("BasePart")and type(desc.Transparency)=="number"then
+sawPart=true
+if desc.Transparency<0.95 then return true end
+end
+end
+if sawPart then return false end
+end
+return nil
+end
+local function ensureStandSummoned(char,events,now)
+if not char or not events then return true end
+if detectSummoned(char)~=false then return true end
+if now>=(self.NextSummon or 0)then
+self.NextSummon=now+1
+if events:IsA("Folder")then
+local s=events:FindFirstChild("Summon")or events:FindFirstChild("SummonStand")
+if s and s:IsA("RemoteEvent")then pcall(function()s:FireServer()end)end
+elseif events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent")then
+pcall(function()events:FireServer("InitiateMove","SummonStand","Start",nil)end)
+end
+end
+return false
+end
+local function hasListeners(sig)
+if not sig or type(getconnections)~="function"then return nil end
+local ok,list=pcall(getconnections,sig)
+if not ok or type(list)~="table"then return nil end
+for _,c in ipairs(list)do
+if c and c.Enabled~=false then return true end
+end
+return false
+end
+local function fireGuiSignal(sig)
+if not sig then return false end
+if type(firesignal)=="function"then
+local ok=pcall(firesignal,sig)
+if ok then return true end
+end
+if type(getconnections)=="function"then
+local ok,list=pcall(getconnections,sig)
+if ok and type(list)=="table"then
+local fired=false
+for _,c in ipairs(list)do
+if c and c.Enabled~=false and type(c.Function)=="function"then
+if pcall(c.Function)then fired=true end
+end
+end
+return fired
+end
+end
+return false
+end
+local function triggerMobileButton(btn,down,isHold)
+if not btn or not btn.Parent then return false end
+if isHold then
+local sig=down and btn.MouseButton1Down or btn.MouseButton1Up
+if sig and hasListeners(sig)~=false and fireGuiSignal(sig)then return true end
+if down then
+local act=btn.Activated
+if act and hasListeners(act)~=false and fireGuiSignal(act)then return true end
+local clk=btn.MouseButton1Click
+if clk and hasListeners(clk)~=false and fireGuiSignal(clk)then return true end
+end
+return false
+end
+if not down then return true end
+if type(getconnections)=="function"then
+if hasListeners(btn.MouseButton1Down)==true then
+fireGuiSignal(btn.MouseButton1Down)
+if btn.MouseButton1Up then fireGuiSignal(btn.MouseButton1Up)end
+return true
+end
+if hasListeners(btn.Activated)==true then return fireGuiSignal(btn.Activated)end
+if hasListeners(btn.MouseButton1Click)==true then return fireGuiSignal(btn.MouseButton1Click)end
+return false
+end
+local sent=false
+if btn.Activated then sent=fireGuiSignal(btn.Activated)or sent end
+if not sent and btn.MouseButton1Click then sent=fireGuiSignal(btn.MouseButton1Click)or sent end
+return sent
+end
+local function isIgnoredGui(root)
+if not root then return true end
+if type(root.GetAttribute)=="function"then
+local okA,vA=pcall(root.GetAttribute,root,"LunaUIOwner")
+if okA and vA~=nil then return true end
+end
+local low=string.lower(tostring(root.Name or""))
+return low=="menugui"or low=="cdgui"or low=="touchgui"or low=="chat"or low=="bubblechat"
+or low=="freecam"or low=="backpack"or low=="newstatsgui"
+or low:find("slime",1,true)~=nil or low:find("luna",1,true)~=nil or low:find("eduhub",1,true)~=nil
+end
+local function isGuiVisible(obj,host)
+if not obj or not obj.Parent or obj.Active==false then return false end
+local sz=obj.AbsoluteSize
+if not sz or sz.X<10 or sz.Y<10 then return false end
+local node=obj
+while node and node~=host do
+if node:IsA("GuiObject")and node.Visible==false then return false end
+if node:IsA("ScreenGui")and node.Enabled==false then return false end
+node=node.Parent
+end
+return node==host
+end
+local function matchButtonToken(raw)
+if type(raw)~="string"or#raw==0 or#raw>20 then return nil end
+local cleaned=raw:gsub("<[^>]+>",""):upper():gsub("^%s+",""):gsub("%s+$",""):gsub("[%[%]()%s:._-]","")
+if#cleaned==0 or#cleaned>14 then return nil end
+if KEY_TO_ABILITY[cleaned]and#cleaned==1 then return cleaned end
+if cleaned=="M1"or cleaned=="LMB"or cleaned=="PUNCH"or cleaned=="ATTACK"or cleaned=="NORMALPUNCH"or cleaned=="LEFTCLICK"then
+return"MouseButton1"
+end
+if cleaned=="M2"or cleaned=="RMB"or cleaned=="HEAVY"or cleaned=="HEAVYPUNCH"or cleaned=="STRONGPUNCH"or cleaned=="POWERPUNCH"or cleaned=="RIGHTCLICK"then
+return"MouseButton2"
+end
+return cleaned:match("^SKILL([ERTJYHFZXCV])$")or cleaned:match("^KEY([ERTJYHFZXCV])$")or cleaned:match("^([ERTJYHFZXCV])SKILL$")
+end
+local function findMobileSkillButton(localplr,inputToken,now)
+if not localplr then return nil end
+if now>=(self.MobileScanAt or 0)then
+self.MobileScanAt=now+3
+local nextMap,scores={},{}
+local gui=localplr:FindFirstChild("PlayerGui")
+if gui and type(gui.GetDescendants)=="function"then
+for _,obj in ipairs(gui:GetDescendants())do
+if obj:IsA("GuiButton")and isGuiVisible(obj,gui)then
+local root=obj
+while root.Parent and root.Parent~=gui do root=root.Parent end
+if not isIgnoredGui(root)then
+local tok=matchButtonToken(obj.Name)
+local score=tok and 3 or 0
+if not tok and obj:IsA("TextButton")then
+tok=matchButtonToken(obj.Text);score=tok and 2 or 0
+end
+if not tok and type(obj.GetChildren)=="function"then
+local kids=obj:GetChildren()
+if#kids<=4 then
+for _,k in ipairs(kids)do
+if k:IsA("TextLabel")and k.Visible~=false then
+tok=matchButtonToken(k.Text)
+if tok then score=1;break end
+end
+end
+end
+end
+if tok and score>(scores[tok]or 0)then
+nextMap[tok]=obj;scores[tok]=score
+end
+end
+end
+end
+end
+self.MobileButtons=nextMap
+end
+local btn=self.MobileButtons[inputToken]
+if btn and btn.Parent then return btn end
+self.MobileButtons[inputToken]=nil
+return nil
 end
 local function dispatchEntry(entry,down)
 if entry.Mode=="Ability"then
@@ -3783,20 +4012,37 @@ end
 elseif(events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent"))and move and move.Name then
 if down then
 pcall(function()
+if move.Direct then
+if move.ArgCount==1 and move.StartState==nil then events:FireServer(move.Name)
+else events:FireServer(move.Name,move.StartState)end
+else
+local action=move.Action or"InitiateMove"
 if move.Aim then
 local aimPos=resolveAimPosition(char,entry.Environment)
-events:FireServer("InitiateMove",move.Name,"Start",nil)
-events:FireServer("InitiateMove",move.Name,"Aim",aimPos,nil)
+events:FireServer(action,move.Name,move.StartState or"Start",nil)
+events:FireServer(action,move.Name,"Aim",aimPos,nil)
+elseif move.ArgCount==2 and move.StartState==nil then
+events:FireServer(action,move.Name)
+elseif move.ArgCount==3 and move.Extra4==nil then
+events:FireServer(action,move.Name,move.StartState or"Start")
 else
-events:FireServer("InitiateMove",move.Name,"Start",nil)
+events:FireServer(action,move.Name,move.StartState or"Start",move.Extra4)
+end
 end
 end)
 elseif move.SendStandEnd then
 pcall(function()
-events:FireServer("InitiateMove",move.Name,"End",nil)
+if move.Direct then
+events:FireServer(move.Name,move.EndState~=nil and move.EndState or false)
+else
+events:FireServer(move.Action or"InitiateMove",move.Name,move.EndState or"End",nil)
+end
 end)
 end
 end
+end
+if entry.MobileButton and entry.MobileButton.Parent then
+pcall(triggerMobileButton,entry.MobileButton,down,entry.IsHold)
 end
 elseif entry.Backend and entry.Key then
 entry.Backend:SendKeyEvent(down,entry.Key,false,entry.Game)
@@ -3840,11 +4086,63 @@ end
 local function resolveMoveSpec(inputToken,stand,events)
 local spec=stand and STAND_KEY_MOVES[stand]and STAND_KEY_MOVES[stand][inputToken]or nil
 if spec then return spec end
+local learned=env.EDUHubLearnedStandsV1 and stand and env.EDUHubLearnedStandsV1[stand]
+if learned and type(learned.Moves)=="table"and#learned.Moves>0 then
+local nonM1,m1Move,m2Move={},nil,nil
+for _,m in ipairs(learned.Moves)do
+if type(m)=="table"and type(m.Name)=="string"and not EXCLUDED_FOLDER[m.Name]then
+local wire=m.RemoteName or m.Name
+if wire=="M1"or wire=="NormalPunch"or m.Name=="M1"then
+m1Move={Name=wire,Hold=.05,Action=m.Action,Direct=m.Direct,StartState=m.StartState,ArgCount=m.ArgCount,Extra4=m.Extra4}
+else
+nonM1[#nonM1+1]=m
+local low=string.lower(wire)
+if not m2Move and(low:find("heavy",1,true)or low:find("strong",1,true)or low:find("power",1,true)or low:find("m2",1,true)or low:find("cursed",1,true))then
+m2Move=m
+end
+end
+end
+end
+if inputToken=="MouseButton1"and m1Move then return m1Move end
+local picked=inputToken=="MouseButton2"and m2Move or(KEY_SLOT[inputToken]and nonM1[KEY_SLOT[inputToken]])
+if picked then
+return{
+Name=picked.RemoteName or picked.Name,
+Aim=picked.Aim,
+Hold=picked.Hold or DEFAULT_KEY_HOLD[inputToken]or.4,
+SendStandEnd=(picked.EndState~=nil),
+Action=picked.Action,
+Direct=picked.Direct,
+StartState=picked.StartState,
+EndState=picked.EndState,
+ArgCount=picked.ArgCount,
+Extra4=picked.Extra4,
+}
+end
+end
 if events and events:IsA("Folder")then
-if inputToken=="MouseButton1"then return{Name="M1",Hold=.05}
+if inputToken=="MouseButton1"then
+local m1=events:FindFirstChild("M1")and"M1"or(events:FindFirstChild("NormalPunch")and"NormalPunch")or"M1"
+return{Name=m1,Hold=.05}
 elseif inputToken=="MouseButton2"then
-for _,n in ipairs({"HeavyPunch","StrongPunch","M2"})do
+for _,n in ipairs({"HeavyPunch","StrongPunch","PowerPunch","M2"})do
 if events:FindFirstChild(n)then return{Name=n,Hold=.2}end
+end
+else
+local exact=events:FindFirstChild(inputToken)or events:FindFirstChild("Skill"..inputToken)
+if exact and exact:IsA("RemoteEvent")and not EXCLUDED_FOLDER[exact.Name]then
+return{Name=exact.Name,Hold=DEFAULT_KEY_HOLD[inputToken]or.4}
+end
+local slot=KEY_SLOT[inputToken]
+if slot then
+local list={}
+for _,r in ipairs(events:GetChildren())do
+if r:IsA("RemoteEvent")and r.Name~="M1"and r.Name~="NormalPunch"and not EXCLUDED_FOLDER[r.Name]then
+list[#list+1]=r.Name
+end
+end
+table.sort(list)
+if list[slot]then return{Name=list[slot],Hold=DEFAULT_KEY_HOLD[inputToken]or.4}end
 end
 end
 elseif events and(events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent"))then
@@ -3864,7 +4162,8 @@ return false
 end
 local abilityRemote=getAbilityInputRemote(environment)
 local moveSpec=resolveMoveSpec(inputToken,stand,events)
-if not abilityRemote and not events then
+local mobileBtn=isMobileDevice(environment)and findMobileSkillButton(localplr,inputToken,now)or nil
+if not abilityRemote and not events and not mobileBtn then
 if inputToken=="MouseButton1"or inputToken=="MouseButton2"then return false end
 return pulseKey(backend,key,.08,environment)
 end
@@ -3885,6 +4184,8 @@ AbilityRemote=abilityRemote,
 StandEvents=events,
 Character=char,
 MoveSpec=moveSpec,
+MobileButton=mobileBtn,
+IsHold=hold>=.3,
 Environment=environment,
 Until=now+hold,
 }
@@ -3909,6 +4210,10 @@ return false
 end
 local now=os.clock()
 stepExpiredHolds(now)
+local _,char,events=getPlayerContext(environment)
+if not ensureStandSummoned(char,events,now)then
+return false
+end
 local backend=upvalues and upvalues[0]
 local sent=false
 local activeList={}
@@ -3970,12 +4275,13 @@ self.Running=false;self.Generation+=1
 local released=releaseAll()
 if not released then released=releaseAll()end
 if not released then warn("[EDU Input] Không gửi được lệnh thả phím khi dọn script")end
+table.clear(self.MobileButtons)
 if env.EDUDungeonLegacyInputV1==self then env.EDUDungeonLegacyInputV1=nil end
 end
 session:Own(self)
 return self
 end
-]]):sub(2),"@EDUHub_New/Dungeon_Legacy_Input.lua"))()
+]=]):sub(2),"@EDUHub_New/Dungeon_Legacy_Input.lua"))()
 local installBossMovement=assert(loadstring(([[!return function(resolveRoot,settings)
 local self={Collisions={}}
 local function heading(cf)
@@ -4296,6 +4602,10 @@ part.CFrame=frame;part.AssemblyLinearVelocity=Vector3.zero;part.AssemblyAngularV
 end
 end
 end
+local okUis,uisService=pcall(game.GetService,game,"UserInputService")
+local function isTouchOnly()
+return okUis and uisService and uisService.TouchEnabled==true and not uisService.KeyboardEnabled or false
+end
 function self:Ready(model,char)
 if not running()or not self:Owns(model)or char~=player.Character then return false end
 local hum=char and char:FindFirstChildOfClass("Humanoid")
@@ -4304,10 +4614,13 @@ local target=currentRoot(model)
 if not hum or hum.Health<=0 or not root or not target then return false end
 local follow=self.CurrentSession.Follow
 if follow then
+local touchOnly=isTouchOnly()
+local maxAge=touchOnly and 1.5 or 1.0
+local maxDist=touchOnly and 6.0 or 3.5
 if follow.Character~=char or follow.Root~=root or follow.Hum~=hum or follow.TargetRoot~=target
-or follow.Token~=self.RunToken or os.clock()-follow.At>1 then return false end
+or follow.Token~=self.RunToken or os.clock()-follow.At>maxAge then return false end
 local desired=follow.Frame
-return(root.Position-desired.Position).Magnitude<=3.5
+return(root.Position-desired.Position).Magnitude<=maxDist
 end
 return false
 end
@@ -4593,19 +4906,31 @@ if profiles[stand]then return profiles[stand],false end
 return nil,false
 end
 local function summonState(char)
+if not char then return nil end
 for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
 local ok,value=pcall(char.GetAttribute,char,attr)
 if ok and type(value)=="boolean"then return value end
 end
-local aura=char and char:FindFirstChild("Aura")
-if aura and aura:IsA("BoolValue")then return aura.Value end
-local standModel=char and char:FindFirstChild("Stand")
+local standModel=char:FindFirstChild("Stand")
+if standModel then
+for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
+local ok,value=pcall(standModel.GetAttribute,standModel,attr)
+if ok and type(value)=="boolean"then return value end
+end
+end
+for _,childName in ipairs({"Aura","Summoned","StandSummoned"})do
+local v=char:FindFirstChild(childName)
+if v and v:IsA("BoolValue")then return v.Value end
+end
 if standModel and standModel:IsA("Model")and type(standModel.GetDescendants)=="function"then
+local sawPart=false
 for _,desc in ipairs(standModel:GetDescendants())do
-if desc:IsA("BasePart")and type(desc.Transparency)=="number"and desc.Transparency<0.95 then
-return true
+if desc:IsA("BasePart")and type(desc.Transparency)=="number"then
+sawPart=true
+if desc.Transparency<0.95 then return true end
 end
 end
+if sawPart then return false end
 end
 end
 local function fireProtocol(events,move,stateOverride,char)
@@ -4835,7 +5160,11 @@ bridge={Installed=false,Busy=false,Until=0}
 local old
 local function wrapper(remote,...)
 if not bridge.Busy and bridge.Sink and os.clock()<bridge.Until then
-local fromExecutor=type(checkcaller)=="function"and checkcaller()
+local fromExecutor=false
+if type(checkcaller)=="function"then
+local okCaller,callerRes=pcall(checkcaller)
+fromExecutor=okCaller and callerRes==true
+end
 if not fromExecutor then
 bridge.Busy=true
 local ok,method=pcall(getnamecallmethod)
@@ -5015,7 +5344,6 @@ return false
 end
 else
 local summoned=summonState(char)
-if summoned==nil then return false end
 if summoned==false then
 if now>=(self.NextSummon or 0)then
 self.NextSummon=now+1
@@ -5121,7 +5449,7 @@ local function installHalloweenStorage()error("Luna Stand storage must be instal
 local installHalloweenCombat=assert(loadstring(([[!return function(engine,state,player,allowed,combat)
 local request,nextAt=nil,0
 local function ready()
-return request~=nil and request.Character==player.Character and os.clock()-request.At<=.35
+return request~=nil and request.Character==player.Character and os.clock()-request.At<=.65
 and engine:Get("HalloweenAutoDoor")and engine:Get("HalloweenAutoMob")
 and engine:IsRunning()and not state.gameMenuBusy and not state.halloweenRejoinPending and allowed()
 and state.hasHalloweenGroup and state.hasHalloweenGroup()
@@ -5555,7 +5883,7 @@ local player=game:GetService("Players").LocalPlayer
 local teleport=game:GetService("TeleportService")
 local toggle=tab:AddToggle("EDUAutoRejoin",{Title="Tự rejoin khi mất kết nối / bị kick",Default=false})
 local label=tab:AddParagraph({Title="Auto Rejoin",Content="Đã tắt"})
-local self={Running=true,Connections={},Generation=0,Attempts=0}
+local self={Running=true,Connections={},Generation=0,Attempts=0,FailedJobIds={},FailedCount=0,LastTargetJobId=nil}
 env.EDUAutoRejoinV1=self;session:Own(self)
 local lastText,elapsed=nil,0
 local function current()
@@ -5564,6 +5892,56 @@ end
 local function status(text)
 if current()and text~=lastText then lastText=text;label:SetDesc(text)end
 end
+local function markFailedJob(jobId)
+if type(jobId)~="string"or jobId==""then return end
+if self.FailedCount>=40 then table.clear(self.FailedJobIds);self.FailedCount=0 end
+if not self.FailedJobIds[jobId]then self.FailedJobIds[jobId]=true;self.FailedCount+=1 end
+end
+local function fetchUrl(url)
+if type(game.HttpGet)=="function"then
+local ok,body=pcall(function()return game:HttpGet(url)end)
+if ok and type(body)=="string"and body~=""then return body end
+end
+local req=(type(request)=="function"and request)or(type(http_request)=="function"and http_request)
+or(syn and type(syn.request)=="function"and syn.request)or(http and type(http.request)=="function"and http.request)
+if req then
+local ok,resp=pcall(req,{Url=url,Method="GET"})
+if ok and type(resp)=="table"and type(resp.Body)=="string"and resp.Body~=""then return resp.Body end
+end
+return nil
+end
+local function pickHealthyServer(avoidSet)
+local placeId=tonumber(game.PlaceId)
+if not placeId or placeId<=0 then return nil end
+local okHttp,http=pcall(game.GetService,game,"HttpService")
+if not okHttp or not http or type(http.JSONDecode)~="function"then return nil end
+local url="https://games.roblox.com/v1/games/"..tostring(placeId).."/servers/Public?sortOrder=Asc&limit=50&excludeFullGames=true"
+local body=fetchUrl(url)
+if type(body)~="string"or body==""then return nil end
+local okDec,decoded=pcall(http.JSONDecode,http,body)
+if not okDec or type(decoded)~="table"or type(decoded.data)~="table"then return nil end
+local currentJob=tostring(game.JobId or"")
+local roomy,fallback={},{}
+for _,item in ipairs(decoded.data)do
+if type(item)=="table"and type(item.id)=="string"and item.id~=""
+and item.id~=currentJob and not(avoidSet and avoidSet[item.id])then
+local playing=tonumber(item.playing)or 0
+local maxPlr=tonumber(item.maxPlayers)or 0
+if playing>=1 and maxPlr>playing then
+local rec={id=item.id,playing=playing,ping=tonumber(item.ping)or 999}
+if maxPlr-playing>=2 then roomy[#roomy+1]=rec else fallback[#fallback+1]=rec end
+end
+end
+end
+local list=#roomy>0 and roomy or fallback
+if#list==0 then return nil end
+table.sort(list,function(a,b)
+if a.ping~=b.ping then return a.ping<b.ping end
+return a.playing<b.playing
+end)
+local pick=list[math.random(1,math.min(#list,3))]
+return pick and pick.id or nil
+end
 local function cancel()
 self.Generation+=1
 local thread=self.Thread;self.Thread=nil
@@ -5571,12 +5949,15 @@ if thread and thread~=coroutine.running()and task.cancel then pcall(task.cancel,
 self.InFlightAt=nil
 end
 local function clear()
-cancel();self.DetectedAt=nil;self.NextAt=nil;self.Attempts=0
+cancel();self.DetectedAt=nil;self.NextAt=nil;self.Attempts=0;self.LastTargetJobId=nil
 end
-local function failed(text,now)
+local function failed(text,now,minWait)
+markFailedJob(self.LastTargetJobId);self.LastTargetJobId=nil
 self.InFlightAt=nil;self.Thread=nil
-self.NextAt=now+math.min(5*2^math.min(math.max(self.Attempts-1,0),3),30)
-status(text.." · Tự thử lại sau "..math.ceil(self.NextAt-now).."s")
+local waitSec=math.min(5*2^math.min(math.max(self.Attempts-1,0),3),30)
+if type(minWait)=="number"and minWait>waitSec then waitSec=minWait end
+self.NextAt=now+waitSec
+status(text.." · Tự thử lại sau "..math.ceil(waitSec).."s")
 end
 local function visible(object)
 local node=object
@@ -5614,6 +5995,19 @@ elseif options.EDUSettingsAutoResume and options.EDUSettingsAutoResume.Value the
 error("Chờ hệ thống lưu / chạy lại sẵn sàng")
 end
 if not allowed()then return end
+if type(teleport.TeleportToPlaceInstance)=="function"and(self.Attempts%3~=0)then
+local targetJob=pickHealthyServer(self.FailedJobIds)
+if not allowed()then return end
+if targetJob then
+self.LastTargetJobId=targetJob
+status("Đang chuyển sang server khỏe · Lần "..self.Attempts)
+local okInst=pcall(function()teleport:TeleportToPlaceInstance(game.PlaceId,targetJob,player)end)
+if okInst then return end
+markFailedJob(targetJob);self.LastTargetJobId=nil
+end
+end
+if not allowed()then return end
+self.LastTargetJobId=nil
 status("Đang yêu cầu rejoin · Lần "..self.Attempts)
 teleport:Teleport(game.PlaceId,player)
 end)
@@ -5631,6 +6025,8 @@ if self.Teleporting then return end
 local lost,readable=disconnected()
 if not lost then
 if self.DetectedAt or self.InFlightAt then clear()end
+if self.FailedCount>0 then table.clear(self.FailedJobIds);self.FailedCount=0 end
+self.LastTargetJobId=nil
 status(readable and"Đang theo dõi mất kết nối / kick"or"Executor chưa đọc được thông báo mất kết nối")
 return
 end
@@ -5650,11 +6046,21 @@ elapsed+=dt;if elapsed<1 then return end;elapsed=0
 local ok=pcall(self.Step,self,os.clock())
 if not ok and current()then status("Chờ dữ liệu kết nối · Sẽ kiểm tra lại")end
 end)
-self.Connections[#self.Connections+1]=teleport.TeleportInitFailed:Connect(function(who)
+self.Connections[#self.Connections+1]=teleport.TeleportInitFailed:Connect(function(who,result,message)
 if who~=player or not current()then return end
 local reconnecting=self.DetectedAt~=nil
 cancel();self.Teleporting=false
-if reconnecting and toggle.Value then failed("Rejoin chưa thành công",os.clock())end
+if reconnecting and toggle.Value then
+local okEnum,floodedEnum=pcall(function()return Enum.TeleportResult and Enum.TeleportResult.Flooded end)
+local isFlooded=okEnum and floodedEnum~=nil and result==floodedEnum
+local reason="Rejoin chưa thành công"
+if result~=nil or(type(message)=="string"and message~="")then
+local okName,rName=pcall(function()return result.Name end)
+local tag=(okName and type(rName)=="string"and rName)or tostring(result or message)
+reason="Rejoin lỗi ("..tag..") · Đổi server khác"
+end
+failed(reason,os.clock(),isFlooded and 12 or nil)
+end
 end)
 self.Connections[#self.Connections+1]=player.OnTeleport:Connect(function(state)
 if not current()then return end
@@ -5662,7 +6068,7 @@ if state==Enum.TeleportState.Started or state==Enum.TeleportState.InProgress the
 self.Teleporting=true;cancel()
 elseif state==Enum.TeleportState.Failed then
 self.Teleporting=false
-if self.DetectedAt then cancel();failed("Chuyển server thất bại",os.clock())end
+if self.DetectedAt then cancel();failed("Chuyển server thất bại · Thử server khác",os.clock())end
 end
 end)
 pcall(function()
@@ -5676,6 +6082,7 @@ if not self.Running then return end
 self.Running=false;clear()
 for _,connection in ipairs(self.Connections)do connection:Disconnect()end
 table.clear(self.Connections)
+table.clear(self.FailedJobIds);self.FailedCount=0
 if env.EDUAutoRejoinV1==self then env.EDUAutoRejoinV1=nil end
 end
 return self
@@ -8984,6 +9391,56 @@ if featureState.pauseHalloweenForActivity then featureState.pauseHalloweenForAct
 if featureState.cancelHalloweenSkillInput then featureState.cancelHalloweenSkillInput()end
 return not(featureState.hasHalloweenCombatInput and featureState.hasHalloweenCombatInput())
 end
+local rejoinPool={Failed={},Count=0,LastJob=nil,Attempts=0}
+local function markFailedJob(jobId)
+if type(jobId)~="string"or jobId==""then return end
+if rejoinPool.Count>=40 then table.clear(rejoinPool.Failed);rejoinPool.Count=0 end
+if not rejoinPool.Failed[jobId]then rejoinPool.Failed[jobId]=true;rejoinPool.Count+=1 end
+end
+local function pickHealthyServer(avoidSet)
+local placeId=tonumber(game.PlaceId)
+if not placeId or placeId<=0 then return nil end
+local okHttp,http=pcall(game.GetService,game,"HttpService")
+if not okHttp or not http or type(http.JSONDecode)~="function"then return nil end
+local url="https://games.roblox.com/v1/games/"..tostring(placeId).."/servers/Public?sortOrder=Asc&limit=50&excludeFullGames=true"
+local body=nil
+if type(game.HttpGet)=="function"then
+local ok,res=pcall(function()return game:HttpGet(url)end)
+if ok and type(res)=="string"and res~=""then body=res end
+end
+if not body then
+local req=(type(request)=="function"and request)or(type(http_request)=="function"and http_request)
+or(syn and type(syn.request)=="function"and syn.request)or(http and type(http.request)=="function"and http.request)
+if req then
+local ok,resp=pcall(req,{Url=url,Method="GET"})
+if ok and type(resp)=="table"and type(resp.Body)=="string"and resp.Body~=""then body=resp.Body end
+end
+end
+if type(body)~="string"or body==""then return nil end
+local okDec,decoded=pcall(http.JSONDecode,http,body)
+if not okDec or type(decoded)~="table"or type(decoded.data)~="table"then return nil end
+local currentJob=tostring(game.JobId or"")
+local roomy,fallback={},{}
+for _,item in ipairs(decoded.data)do
+if type(item)=="table"and type(item.id)=="string"and item.id~=""
+and item.id~=currentJob and not(avoidSet and avoidSet[item.id])then
+local playing=tonumber(item.playing)or 0
+local maxPlr=tonumber(item.maxPlayers)or 0
+if playing>=1 and maxPlr>playing then
+local rec={id=item.id,playing=playing,ping=tonumber(item.ping)or 999}
+if maxPlr-playing>=2 then roomy[#roomy+1]=rec else fallback[#fallback+1]=rec end
+end
+end
+end
+local list=#roomy>0 and roomy or fallback
+if#list==0 then return nil end
+table.sort(list,function(a,b)
+if a.ping~=b.ping then return a.ping<b.ping end
+return a.playing<b.playing
+end)
+local pick=list[math.random(1,math.min(#list,3))]
+return pick and pick.id or nil
+end
 local function requestRejoin()
 local now=os.clock()
 if joining or now<nextRejoin or otherFarm()then return end
@@ -8992,23 +9449,62 @@ if(mob.Value or mobAbove.Value)and featureState.hasHalloweenCombat and featureSt
 local persistence=env.EDUHubPersistenceV1
 if persistence and not persistence:PrepareTeleport()then status("Chưa chuẩn bị được nguồn chạy lại · Xem Settings");return end
 joining=true;joiningAt=now;nextRejoin=now+15;featureState.halloweenRejoinPending=true
+rejoinPool.Attempts+=1;rejoinPool.LastJob=nil
 if featureState.releaseHalloweenActions then featureState.releaseHalloweenActions(false)end
-status("Đang rejoin · Chạy lại theo công tắc trong Settings")
+status("Đang tìm server khỏe để rejoin · Chạy lại theo Settings")
 task.spawn(function()
 if not self.Running or not joining then return end
+if type(TeleportService.TeleportToPlaceInstance)=="function"and(rejoinPool.Attempts%3~=0)then
+local targetJob=pickHealthyServer(rejoinPool.Failed)
+if not self.Running or not joining then return end
+if targetJob then
+rejoinPool.LastJob=targetJob
+local okInst=pcall(function()TeleportService:TeleportToPlaceInstance(game.PlaceId,targetJob,player)end)
+if okInst then return end
+markFailedJob(targetJob);rejoinPool.LastJob=nil
+end
+end
+if not self.Running or not joining then return end
+rejoinPool.LastJob=nil
 local ok,why=pcall(function()TeleportService:Teleport(game.PlaceId,player)end)
-if not ok and self.Running then joining=false;featureState.halloweenRejoinPending=false;status("Rejoin lỗi: "..tostring(why))end
+if not ok and self.Running then
+joining=false;featureState.halloweenRejoinPending=false;nextRejoin=os.clock()+10
+status("Rejoin lỗi: "..tostring(why).." · Sẽ thử server khác")
+end
 end)
 end
 featureState.requestHalloweenRejoin=requestRejoin
 rejoinTab:AddButton({Title="Rejoin ngay",Callback=requestRejoin})
 rejoinTab:AddButton({Title="Hủy chờ rejoin",Callback=function()
 if joining then status("Roblox đã nhận yêu cầu rejoin; không thể thu hồi")else
-nextRejoin=0;featureState.halloweenRejoinPending=false;rejoin:SetValue(false);status("Đã hủy tự rejoin")
+nextRejoin=0;featureState.halloweenRejoinPending=false;rejoin:SetValue(false)
+rejoinPool.Attempts=0;rejoinPool.LastJob=nil;table.clear(rejoinPool.Failed);rejoinPool.Count=0
+status("Đã hủy tự rejoin")
 end
 end})
-connect(TeleportService.TeleportInitFailed,function(who,_,message)
-if who==player and joining then joining=false;featureState.halloweenRejoinPending=false;nextRejoin=os.clock()+15;status("Rejoin thất bại: "..tostring(message))end
+connect(TeleportService.TeleportInitFailed,function(who,result,message)
+if who==player and joining then
+markFailedJob(rejoinPool.LastJob);rejoinPool.LastJob=nil
+joining=false;featureState.halloweenRejoinPending=false
+local okEnum,floodedEnum=pcall(function()return Enum.TeleportResult and Enum.TeleportResult.Flooded end)
+local flooded=okEnum and floodedEnum~=nil and result==floodedEnum
+nextRejoin=os.clock()+(flooded and 15 or 10)
+local okName,rName=pcall(function()return result.Name end)
+local tag=tostring(message or(okName and type(rName)=="string"and rName)or"279/mạng")
+status("Rejoin thất bại ("..tag..") · Đổi server khác")
+end
+end)
+pcall(function()
+if player.OnTeleport and type(player.OnTeleport.Connect)=="function"then
+connect(player.OnTeleport,function(state)
+local okEnum,failedEnum=pcall(function()return Enum.TeleportState and Enum.TeleportState.Failed end)
+if okEnum and failedEnum~=nil and state==failedEnum and joining then
+markFailedJob(rejoinPool.LastJob);rejoinPool.LastJob=nil
+joining=false;featureState.halloweenRejoinPending=false;nextRejoin=os.clock()+10
+status("Chuyển server thất bại · Thử server khác sau 10s")
+end
+end)
+end
 end)
 function self:RestoreSettings()
 if not env.EDUHalloweenSettingsV1 then return end
@@ -10694,6 +11190,21 @@ local c=signal:Connect(fn)
 table.insert(Window._conns,c)
 return c
 end
+local function ConnectTap(btn,fn,sharedStamp)
+local stamp=sharedStamp or{At=-1}
+Connect(btn.MouseButton1Click,function()
+if IsTouch()then stamp.At=os.clock()end
+fn()
+end)
+if btn.Activated then
+Connect(btn.Activated,function(inp)
+if IsTouch()and(inp==nil or inp.UserInputType==Enum.UserInputType.Touch)then
+local now=os.clock()
+if now-stamp.At>=.08 then stamp.At=now;fn()end
+end
+end)
+end
+end
 local vp0=ViewportSize()
 local compact
 if opts.Compact~=nil then
@@ -11125,6 +11636,7 @@ if OpenMenu then
 local m=OpenMenu
 OpenMenu=nil
 if m.FilterLink then m.FilterLink:Disconnect()end
+if m.Filter and m.Filter.ReleaseFocus then pcall(m.Filter.ReleaseFocus,m.Filter)end
 if m.OnClose then
 m.OnClose()
 end
@@ -11199,6 +11711,7 @@ local filterLink=Filter:GetPropertyChangedSignal("Text"):Connect(function()
 local q=string.lower(Trim(Filter.Text))
 for _,entry in ipairs(filteredRows)do entry.Row.Visible=q==""or string.find(entry.Text,q,1,true)~=nil end
 end)
+OpenMenu.Filter=Filter
 OpenMenu.FilterLink=filterLink
 local Scroll=New("ScrollingFrame",{
 Position=UDim2.fromOffset(0,searchH),
@@ -11259,14 +11772,27 @@ Item.BackgroundTransparency=1
 Txt.TextColor3=T.Text
 Check.ImageColor3=T.Text
 end)
-Item.MouseButton1Click:Connect(function()
+local itemTapAt=-1
+local function pickItem()
 local close=onPick(opt)
 if close then
 self:_closeMenu()
 else
-Tween(Check,0.15,{ImageTransparency=isSelected(opt)and 0 or 1})
+Tween(Check,.15,{ImageTransparency=isSelected(opt)and 0 or 1})
+end
+end
+Item.MouseButton1Click:Connect(function()
+if IsTouch()then itemTapAt=os.clock()end
+pickItem()
+end)
+if Item.Activated then
+Item.Activated:Connect(function(inp)
+if IsTouch()and(inp==nil or inp.UserInputType==Enum.UserInputType.Touch)then
+local now=os.clock()
+if now-itemTapAt>=.08 then itemTapAt=now;pickItem()end
 end
 end)
+end
 end
 end
 local Grip
@@ -12444,12 +12970,9 @@ end)
 Connect(Switch.MouseLeave,function()
 knob(false)
 end)
-Connect(Switch.MouseButton1Click,function()
-api:Set(not state)
-end)
-Connect(RowButton.MouseButton1Click,function()
-api:Set(not state)
-end)
+local toggleTap={At=-1}
+ConnectTap(Switch,function()api:Set(not state)end,toggleTap)
+ConnectTap(RowButton,function()api:Set(not state)end,toggleTap)
 RegisterFlag(o.Flag,api,state)
 return api
 end
@@ -12655,12 +13178,10 @@ end)
 Connect(Btn.MouseLeave,function()
 Tween(Btn,0.2,{BackgroundTransparency=baseT})
 end)
-Connect(Btn.MouseButton1Click,function()
-Btn.BackgroundTransparency=math.max(0,baseT-0.15)
-Tween(Btn,0.4,{BackgroundTransparency=baseT})
-if o.Callback then
-task.spawn(o.Callback)
-end
+ConnectTap(Btn,function()
+Btn.BackgroundTransparency=math.max(0,baseT-.15)
+Tween(Btn,.4,{BackgroundTransparency=baseT})
+if o.Callback then task.spawn(o.Callback)end
 end)
 return{
 Type="Button",
@@ -12761,7 +13282,7 @@ value=multi and{}or nil
 end
 display()
 end
-Connect(Btn.MouseButton1Click,function()
+ConnectTap(Btn,function()
 Tween(Chev,0.3,{Rotation=180})
 Window:_openMenu(Btn,options,function(opt)
 if multi then
@@ -14213,15 +14734,21 @@ return true
 end
 local function runFarmStep(state,questKey,questInfo)
 if not eduSession.Running or eduSession:IsDungeonActive()or eduSession.GameMenuBusy or eduSession.RestoringSettings or bossHasPriority()then
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 return
 end
 local char=eduBossCharacter()
 if not char then
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 return
 end
 local root=char:FindFirstChild("HumanoidRootPart")
 local hum=char:FindFirstChildOfClass("Humanoid")
 if not root or not hum then
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 return
 end
 if not state.Loaded or state.LastQuest~=questKey or state.LastChar~=char then
@@ -14247,14 +14774,23 @@ if#enemies>0 then
 state.TargetIdx=((state.TargetIdx or 0)%#enemies)+1
 local target=enemies[state.TargetIdx]
 if target and attachAboveTarget(target,questInfo.range)then
+env.EDUHubQuestCombatAt=now
+env.EDUHubQuestTargetV1=target
 eduBossCombat(char,nil,nil,"EDU")
+else
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 end
 else
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 hum.Sit=false
 teleportPart(root,questInfo.loadCFrame*CFrame.new(0,25,0))
 end
 end
 local function stopQuestFarm()
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 if questConn then
 questConn:Disconnect()
 questConn=nil
@@ -14266,6 +14802,8 @@ hum.Sit=false
 end
 end
 local function stopLevelFarm()
+env.EDUHubQuestCombatAt=nil
+env.EDUHubQuestTargetV1=nil
 if levelConn then
 levelConn:Disconnect()
 levelConn=nil
