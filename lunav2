@@ -11190,21 +11190,6 @@ local c=signal:Connect(fn)
 table.insert(Window._conns,c)
 return c
 end
-local function ConnectTap(btn,fn,sharedStamp)
-local stamp=sharedStamp or{At=-1}
-Connect(btn.MouseButton1Click,function()
-if IsTouch()then stamp.At=os.clock()end
-fn()
-end)
-if btn.Activated then
-Connect(btn.Activated,function(inp)
-if IsTouch()and(inp==nil or inp.UserInputType==Enum.UserInputType.Touch)then
-local now=os.clock()
-if now-stamp.At>=.08 then stamp.At=now;fn()end
-end
-end)
-end
-end
 local vp0=ViewportSize()
 local compact
 if opts.Compact~=nil then
@@ -11772,27 +11757,14 @@ Item.BackgroundTransparency=1
 Txt.TextColor3=T.Text
 Check.ImageColor3=T.Text
 end)
-local itemTapAt=-1
-local function pickItem()
+Item.MouseButton1Click:Connect(function()
 local close=onPick(opt)
 if close then
 self:_closeMenu()
 else
-Tween(Check,.15,{ImageTransparency=isSelected(opt)and 0 or 1})
-end
-end
-Item.MouseButton1Click:Connect(function()
-if IsTouch()then itemTapAt=os.clock()end
-pickItem()
-end)
-if Item.Activated then
-Item.Activated:Connect(function(inp)
-if IsTouch()and(inp==nil or inp.UserInputType==Enum.UserInputType.Touch)then
-local now=os.clock()
-if now-itemTapAt>=.08 then itemTapAt=now;pickItem()end
+Tween(Check,0.15,{ImageTransparency=isSelected(opt)and 0 or 1})
 end
 end)
-end
 end
 end
 local Grip
@@ -12970,9 +12942,12 @@ end)
 Connect(Switch.MouseLeave,function()
 knob(false)
 end)
-local toggleTap={At=-1}
-ConnectTap(Switch,function()api:Set(not state)end,toggleTap)
-ConnectTap(RowButton,function()api:Set(not state)end,toggleTap)
+Connect(Switch.MouseButton1Click,function()
+api:Set(not state)
+end)
+Connect(RowButton.MouseButton1Click,function()
+api:Set(not state)
+end)
 RegisterFlag(o.Flag,api,state)
 return api
 end
@@ -13178,10 +13153,12 @@ end)
 Connect(Btn.MouseLeave,function()
 Tween(Btn,0.2,{BackgroundTransparency=baseT})
 end)
-ConnectTap(Btn,function()
-Btn.BackgroundTransparency=math.max(0,baseT-.15)
-Tween(Btn,.4,{BackgroundTransparency=baseT})
-if o.Callback then task.spawn(o.Callback)end
+Connect(Btn.MouseButton1Click,function()
+Btn.BackgroundTransparency=math.max(0,baseT-0.15)
+Tween(Btn,0.4,{BackgroundTransparency=baseT})
+if o.Callback then
+task.spawn(o.Callback)
+end
 end)
 return{
 Type="Button",
@@ -13282,7 +13259,7 @@ value=multi and{}or nil
 end
 display()
 end
-ConnectTap(Btn,function()
+Connect(Btn.MouseButton1Click,function()
 Tween(Chev,0.3,{Rotation=180})
 Window:_openMenu(Btn,options,function(opt)
 if multi then
