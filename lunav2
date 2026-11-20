@@ -4156,17 +4156,61 @@ end
 end
 return nil
 end
+local function resolveKeyCode(key)
+local name=tostring(key)
+local ok,code=pcall(function()return Enum and Enum.KeyCode and Enum.KeyCode[name]end)
+if ok and code~=nil then return code end
+return name
+end
+local function getVirtualInput(backend,environment)
+if backend and type(backend.SendKeyEvent)=="function"then return backend end
+local g=environment and environment.game or game
+local ok,vim=pcall(g.GetService,g,"VirtualInputManager")
+if ok and vim and type(vim.SendKeyEvent)=="function"then return vim end
+return nil
+end
 local function startAbilityHold(key,backend,environment,now)
 local inputToken=KEY_TO_ABILITY[key]or tostring(key)
 local localplr,char,events,stand=getPlayerContext(environment)
 if inputToken=="MouseButton1"and punchOnCooldown(localplr)then
 return false
 end
-local abilityRemote=getAbilityInputRemote(environment)
+local isMouse=(inputToken=="MouseButton1"or inputToken=="MouseButton2")
 local moveSpec=resolveMoveSpec(inputToken,stand,events)
+local hold=(moveSpec and moveSpec.Hold)or DEFAULT_KEY_HOLD[inputToken]or.4
+if not isMouse then
+local vim=getVirtualInput(backend,environment)
+if vim then
+local id="Key:"..tostring(inputToken)
+local current=self.Held[id]
+if current then
+if current.Character~=char or(current.Until and now>=current.Until)then
+release(id,current)
+else
+return false
+end
+end
+local entry={
+Mode="LegacyKey",
+Backend=vim,
+Key=resolveKeyCode(inputToken),
+Character=char,
+Game=(environment and environment.game)or game,
+Until=now+hold,
+}
+self.Held[id]=entry
+local ok=pcall(dispatchEntry,entry,true)
+if not ok then
+self.Held[id]=nil
+return false
+end
+return true
+end
+end
+local abilityRemote=getAbilityInputRemote(environment)
 local mobileBtn=isMobileDevice(environment)and findMobileSkillButton(localplr,inputToken,now)or nil
 if not abilityRemote and not events and not mobileBtn then
-if inputToken=="MouseButton1"or inputToken=="MouseButton2"then return false end
+if isMouse then return false end
 return pulseKey(backend,key,.08,environment)
 end
 local id="Ability:"..inputToken
@@ -4178,7 +4222,6 @@ else
 return false
 end
 end
-local hold=(moveSpec and moveSpec.Hold)or DEFAULT_KEY_HOLD[inputToken]or.4
 local entry={
 Mode="Ability",
 InputToken=inputToken,
