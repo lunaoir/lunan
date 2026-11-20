@@ -7498,6 +7498,8 @@ cancelCountdown()
 setStatus("Đang có Boss sống / chờ xử lý · Giữ server hiện tại")
 return
 end
+local nearShutdown=snap.ShutdownIn~=nil and snap.ShutdownIn<=120
+if not nearShutdown then
 local waitMins=math.clamp(tonumber(minWaitSlider.Value)or 3,1,30)
 local threshold=waitMins*60
 if snap.NextSelectedIn~=nil and snap.NextSelectedIn<=threshold then
@@ -7508,20 +7510,28 @@ local remS=remSec%60
 setStatus(string.format("Đợi %s (còn %dp %02ds <= %dp)",tostring(snap.NextSelectedName or"Boss"),remMin,remS,waitMins))
 return
 end
+end
 if not self.CountdownUntil then
 self.CountdownUntil=now+5
 fluent:Notify({
 Title="Boss Hop",
-Content="Hết Boss sống · Sẽ đổi server Public sau 5 giây",
+Content=nearShutdown and"Server sắp shutdown 3h · Sẽ đổi server Public sau 5 giây"
+or"Hết Boss sống · Sẽ đổi server Public sau 5 giây",
 Duration=4,
 })
 end
 local rem=self.CountdownUntil-now
 if rem>0 then
+if nearShutdown then
+setStatus(string.format("Server sắp shutdown 3h (còn %ds) · Đổi server sau %ds",math.ceil(snap.ShutdownIn),math.ceil(rem)))
+elseif snap.ServerSeconds~=nil and snap.NextSelectedIn==nil and not snap.HasUntimedSelected then
+setStatus("Hết lượt Boss trước shutdown 3h · Đổi server sau "..math.ceil(rem).."s")
+else
 setStatus("Hết Boss sống · Đổi server sau "..math.ceil(rem).."s")
+end
 return
 end
-executeHop("Hết Boss sống · Đổi server săn Boss")
+executeHop(nearShutdown and"Server sắp shutdown 3h · Đổi server Public"or"Hết Boss sống · Đổi server săn Boss")
 end
 hopToggle:OnChanged(function(val)
 cancelCountdown()
@@ -7764,6 +7774,7 @@ return family[a]~=nil and family[a]==family[b]
 end
 local names,byName={},{}
 for _,entry in ipairs(catalogue)do names[#names+1]=entry.Name;byName[entry.Name]=entry end
+local SERVER_LIFETIME=10800
 local self={Running=true,Clock=clock,Queue={},Active=nil,SeenCycles={},Live={},CheckedRegions={},NextScan=0}
 session.BossSchedule=self
 tab:AddSection("Hàng đợi Auto Boss")
@@ -7985,7 +7996,7 @@ function self:Step(now)
 if not self.Running then return end
 if not session.Running or fluent.Unloaded then self:Destroy();return end
 local seconds,source=clock:Read(now)
-local timeText=seconds and(format(seconds).." · "..seconds.." giây")or"Chờ nguồn giờ server hợp lệ"
+local timeText=seconds and(format(seconds).." · "..seconds.." giây · Còn "..format(math.max(0,SERVER_LIFETIME-seconds)).." trước shutdown 3h")or"Chờ nguồn giờ server hợp lệ"
 if seconds and source and clock.Kind=="Age.Value"then timeText..="\nAge.Value: "..source:GetFullName()end
 if timeText~=lastTime then lastTime=timeText;timeLabel:SetDesc(timeText)end
 if now>=nextUI then
@@ -7998,7 +8009,11 @@ if seconds then
 local rows={}
 for _,spec in ipairs({{"Jotaro OH / QTaro",1800},{"Johnny",2700},{"STU / TWOH / Dio / Giorno / Chaka",3600}})do
 local at=(math.floor(seconds/spec[2])+1)*spec[2]
+if at>=SERVER_LIFETIME then
+rows[#rows+1]=spec[1].." · mỗi "..(spec[2]/60).." phút: hết lượt trước shutdown 3h"
+else
 rows[#rows+1]=spec[1].." · mỗi "..(spec[2]/60).." phút: "..format(at).." (còn "..format(at-seconds)..")"
+end
 end
 text=table.concat(rows,"\n")
 if text~=lastBoss then lastBoss=text;bossLabel:SetDesc(text)end
@@ -8131,8 +8146,10 @@ if alive(liveModel(entry.Name))then hasLive=true end
 if entry.Period then
 if lastSeconds~=nil then
 local at=(math.floor(lastSeconds/entry.Period)+1)*entry.Period
+if at<SERVER_LIFETIME then
 local rem=at-lastSeconds
 if nextIn==nil or rem<nextIn then nextIn=rem;nextName=entry.Name end
+end
 end
 else
 hasUntimed=true
@@ -8144,6 +8161,7 @@ HasSelected=hasSelected,
 HasLiveBoss=hasLive,
 HasPendingWork=self:HasPendingWork(),
 ServerSeconds=lastSeconds,
+ShutdownIn=lastSeconds~=nil and math.max(0,SERVER_LIFETIME-lastSeconds)or nil,
 NextSelectedIn=nextIn,
 NextSelectedName=nextName,
 HasUntimedSelected=hasUntimed,
