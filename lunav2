@@ -3622,70 +3622,12 @@ end
 return core
 end
 ]]):sub(2),"@EDUHub_New/Luna_Stand_Extras.lua"))()
-local installDungeonLegacyInput=assert(loadstring(([=[!return function(session)
+local installDungeonLegacyInput=assert(loadstring(([[!return function(session)
 local env=getgenv and getgenv()or _G
 local previous=env.EDUDungeonLegacyInputV1
 if previous and type(previous.Destroy)=="function"then previous:Destroy()end
-local self={Running=true,Held={},Generation=0,Cursor=0,NextSummon=0,MobileButtons={},MobileScanAt=0}
+local self={Running=true,Held={},Generation=0}
 env.EDUDungeonLegacyInputV1=self
-local KEY_TO_ABILITY={
-LeftClick="MouseButton1",
-RightClick="MouseButton2",
-MouseButton1="MouseButton1",
-MouseButton2="MouseButton2",
-E="E",R="R",T="T",Y="Y",J="J",H="H",F="F",Z="Z",X="X",C="C",V="V",
-}
-local KEY_ORDER={"E","R","T","Y","J","H","F","Z","X","C","V","RightClick"}
-local KEY_SLOT={E=1,R=2,T=3,Y=4,J=5,H=6,F=7,Z=8,X=9,C=10,V=11}
-local EXCLUDED_FOLDER={
-Block=true,Quote=true,Pose=true,Summon=true,SummonStand=true,Unsummon=true,
-Heal=true,Jump=true,TogglePilot=true,Dash=true,Sprint=true,Run=true,
-Walk=true,Taunt=true,Emote=true,Equip=true,Unequip=true,
-}
-local DEFAULT_KEY_HOLD={
-MouseButton1=.05,
-MouseButton2=.2,
-E=8.0,
-Y=5.0,
-R=.4,
-T=.4,
-F=.4,
-H=.4,
-J=.4,
-Z=.4,
-X=.4,
-C=.4,
-V=.4,
-}
-local STAND_KEY_MOVES={
-HWMR={
-MouseButton1={Name="NormalPunch",Hold=.05},
-MouseButton2={Name="PowerPunch",Hold=.25},
-E={Name="BurningBarrage",Hold=8.0,SendStandEnd=true},
-R={Name="LowSwipe",Hold=.4},
-T={Name="IgnitedChokehold",Hold=.4},
-Y={Name="DragonOfTheWest",Hold=5.0,SendStandEnd=true},
-F={Name="BlazingSkulls",Aim=true,Hold=.35},
-H={Name="FlamingPillars",Hold=.4},
-J={Name="ReleaseThePhoenix",Aim=true,Hold=.35},
-Z={Name="UndeadChariot",Hold=.4},
-},
-HWAnubis={
-MouseButton1={Name="M1",Hold=.05},
-MouseButton2={Name="CursedSlash",Hold=.25},
-E={Name="FlamingEngetsu",Hold=.4},
-R={Name="SpitroastSentence",Hold=.4},
-T={Name="DealWithTheDevil",Hold=.4},
-Y={Name="VolcanicMeteors",Hold=.4},
-F={Name="DemonicAppetite",Hold=8.0,SendStandEnd=true},
-Z={Name="WildfireCyclone",Hold=.35,SendStandEnd=true},
-},
-}
-local function isMobileDevice(environment)
-local g=environment and environment.game or game
-local okUis,uis=pcall(g.GetService,g,"UserInputService")
-return okUis and uis and uis.TouchEnabled==true and not uis.KeyboardEnabled or false
-end
 local function uiClearForKeys(environment)
 local g=environment and environment.game or game
 local okUis,uis=pcall(g.GetService,g,"UserInputService")
@@ -3703,90 +3645,11 @@ and not session.RestoringSettings
 and not(session.IsDungeonActive and session:IsDungeonActive())
 and uiClearForKeys(environment)
 end
-local function modelRootPart(model)
-if not model then return nil end
-local hrp=model:FindFirstChild("HumanoidRootPart")
-if hrp and hrp:IsA("BasePart")then return hrp end
-local pri=model.PrimaryPart
-if pri and pri:IsA("BasePart")then return pri end
-for _,n in ipairs({"Torso","UpperTorso","LowerTorso","Head"})do
-local p=model:FindFirstChild(n)
-if p and p:IsA("BasePart")then return p end
-end
-return nil
-end
-local function resolveAimPosition(char,environment)
-local boss=env.EDUHubBossCombatV1
-if boss and boss.CurrentSession and boss.CurrentSession.Model then
-local bRoot=modelRootPart(boss.CurrentSession.Model)
-if bRoot and bRoot.Position then return bRoot.Position end
-end
-local qTarget=env.EDUHubQuestTargetV1
-if qTarget and type(env.EDUHubQuestCombatAt)=="number"and os.clock()-env.EDUHubQuestCombatAt<=.75 then
-local qHum=qTarget:FindFirstChildOfClass("Humanoid")
-local qRoot=qHum and qHum.Health>0 and modelRootPart(qTarget)
-if qRoot and qRoot.Position then return qRoot.Position end
-end
-local ownRoot=char and modelRootPart(char)
-local ownPos=ownRoot and ownRoot.Position
-local g=environment and environment.game or game
-local okWs,ws=pcall(g.GetService,g,"Workspace")
-ws=okWs and ws or workspace
-local living=ws and ws:FindFirstChild("Living")
-if living and ownPos then
-local bestPart,bestDist=nil,120
-local okPlr,playersService=pcall(g.GetService,g,"Players")
-for _,m in ipairs(living:GetChildren())do
-if m~=char and m:IsA("Model")then
-local isOtherPlr=okPlr and playersService and playersService.GetPlayerFromCharacter and playersService:GetPlayerFromCharacter(m)~=nil
-if not isOtherPlr then
-local hum=m:FindFirstChildOfClass("Humanoid")
-local r=hum and hum.Health>0 and modelRootPart(m)
-if r and r.Position then
-local d=(r.Position-ownPos).Magnitude
-if d<bestDist then bestDist=d;bestPart=r end
-end
-end
-end
-end
-if bestPart then return bestPart.Position end
-end
-if ownRoot and ownRoot.CFrame then
-local look=ownRoot.CFrame.LookVector
-if look and ownPos then return ownPos+look*12 end
-end
-return ownPos or Vector3.new(0,0,0)
-end
-local function getAbilityInputRemote(environment)
-local g=environment and environment.game or game
-local okRs,rs=pcall(g.GetService,g,"ReplicatedStorage")
-if not okRs or not rs then return nil end
-local events=rs:FindFirstChild("Events")
-local remote=events and events:FindFirstChild("AbilityInput")
-if remote and(remote:IsA("RemoteEvent")or remote:IsA("UnreliableRemoteEvent"))then
-return remote
-end
-return nil
-end
-local function getPlayerContext(environment)
+local function activeCombatTarget(environment)
 local g=environment and environment.game or game
 local okPlr,players=pcall(g.GetService,g,"Players")
 local localplr=okPlr and players and players.LocalPlayer
 local char=localplr and localplr.Character
-local events=char and char:FindFirstChild("StandEvents")
-local data=localplr and localplr:FindFirstChild("Data")
-local standVal=data and data:FindFirstChild("Stand")
-local stand=standVal and tostring(standVal.Value)or nil
-return localplr,char,events,stand
-end
-local function punchOnCooldown(localplr)
-local gui=localplr and localplr:FindFirstChild("PlayerGui")
-local cd=gui and gui:FindFirstChild("CDgui")
-local fn=cd and cd:FindFirstChild("fortnite")
-return fn and fn:FindFirstChild("Punch")~=nil or false
-end
-local function activeCombatTarget(environment)
-local _,char=getPlayerContext(environment)
 if not char then return false end
 local boss=env.EDUHubBossCombatV1
 if boss and boss.Running~=false and boss.CurrentSession and boss.CurrentSession.Model then
@@ -3809,250 +3672,16 @@ if qHum and qHum.Health>0 then return true end
 end
 return false
 end
-local function detectSummoned(char)
-if not char then return nil end
-for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
-if type(char.GetAttribute)=="function"then
-local ok,val=pcall(char.GetAttribute,char,attr)
-if ok and type(val)=="boolean"then return val end
-end
-end
-local standModel=char:FindFirstChild("Stand")
-if standModel and type(standModel.GetAttribute)=="function"then
-for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
-local ok,val=pcall(standModel.GetAttribute,standModel,attr)
-if ok and type(val)=="boolean"then return val end
-end
-end
-for _,childName in ipairs({"Aura","Summoned","StandSummoned"})do
-local v=char:FindFirstChild(childName)
-if v and v:IsA("BoolValue")then return v.Value end
-end
-if standModel and standModel:IsA("Model")and type(standModel.GetDescendants)=="function"then
-local sawPart=false
-for _,desc in ipairs(standModel:GetDescendants())do
-if desc:IsA("BasePart")and desc.Name~="HumanoidRootPart"and type(desc.Transparency)=="number"then
-sawPart=true
-if desc.Transparency<0.95 then return true end
-end
-end
-if sawPart then return false end
-end
-return nil
-end
-local function ensureStandSummoned(char,events,now)
-if not char or not events then return true end
-if detectSummoned(char)~=false then return true end
-if now>=(self.NextSummon or 0)then
-self.NextSummon=now+1
-if events:IsA("Folder")then
-local s=events:FindFirstChild("Summon")or events:FindFirstChild("SummonStand")
-if s and s:IsA("RemoteEvent")then pcall(function()s:FireServer()end)end
-elseif events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent")then
-pcall(function()events:FireServer("InitiateMove","SummonStand","Start",nil)end)
-end
-end
-return false
-end
-local function hasListeners(sig)
-if not sig or type(getconnections)~="function"then return nil end
-local ok,list=pcall(getconnections,sig)
-if not ok or type(list)~="table"then return nil end
-for _,c in ipairs(list)do
-if c and c.Enabled~=false then return true end
-end
-return false
-end
-local function fireGuiSignal(sig)
-if not sig then return false end
-if type(firesignal)=="function"then
-local ok=pcall(firesignal,sig)
-if ok then return true end
-end
-if type(getconnections)=="function"then
-local ok,list=pcall(getconnections,sig)
-if ok and type(list)=="table"then
-local fired=false
-for _,c in ipairs(list)do
-if c and c.Enabled~=false and type(c.Function)=="function"then
-if pcall(c.Function)then fired=true end
-end
-end
-return fired
-end
-end
-return false
-end
-local function triggerMobileButton(btn,down,isHold)
-if not btn or not btn.Parent then return false end
-if isHold then
-local sig=down and btn.MouseButton1Down or btn.MouseButton1Up
-if sig and hasListeners(sig)~=false and fireGuiSignal(sig)then return true end
-if down then
-local act=btn.Activated
-if act and hasListeners(act)~=false and fireGuiSignal(act)then return true end
-local clk=btn.MouseButton1Click
-if clk and hasListeners(clk)~=false and fireGuiSignal(clk)then return true end
-end
-return false
-end
-if not down then return true end
-if type(getconnections)=="function"then
-if hasListeners(btn.MouseButton1Down)==true then
-fireGuiSignal(btn.MouseButton1Down)
-if btn.MouseButton1Up then fireGuiSignal(btn.MouseButton1Up)end
-return true
-end
-if hasListeners(btn.Activated)==true then return fireGuiSignal(btn.Activated)end
-if hasListeners(btn.MouseButton1Click)==true then return fireGuiSignal(btn.MouseButton1Click)end
-return false
-end
-local sent=false
-if btn.Activated then sent=fireGuiSignal(btn.Activated)or sent end
-if not sent and btn.MouseButton1Click then sent=fireGuiSignal(btn.MouseButton1Click)or sent end
-return sent
-end
-local function isIgnoredGui(root)
-if not root then return true end
-if type(root.GetAttribute)=="function"then
-local okA,vA=pcall(root.GetAttribute,root,"LunaUIOwner")
-if okA and vA~=nil then return true end
-end
-local low=string.lower(tostring(root.Name or""))
-return low=="menugui"or low=="cdgui"or low=="touchgui"or low=="chat"or low=="bubblechat"
-or low=="freecam"or low=="backpack"or low=="newstatsgui"
-or low:find("slime",1,true)~=nil or low:find("luna",1,true)~=nil or low:find("eduhub",1,true)~=nil
-end
-local function isGuiVisible(obj,host)
-if not obj or not obj.Parent or obj.Active==false then return false end
-local sz=obj.AbsoluteSize
-if not sz or sz.X<10 or sz.Y<10 then return false end
-local node=obj
-while node and node~=host do
-if node:IsA("GuiObject")and node.Visible==false then return false end
-if node:IsA("ScreenGui")and node.Enabled==false then return false end
-node=node.Parent
-end
-return node==host
-end
-local function matchButtonToken(raw)
-if type(raw)~="string"or#raw==0 or#raw>20 then return nil end
-local cleaned=raw:gsub("<[^>]+>",""):upper():gsub("^%s+",""):gsub("%s+$",""):gsub("[%[%]()%s:._-]","")
-if#cleaned==0 or#cleaned>14 then return nil end
-if KEY_TO_ABILITY[cleaned]and#cleaned==1 then return cleaned end
-if cleaned=="M1"or cleaned=="LMB"or cleaned=="PUNCH"or cleaned=="ATTACK"or cleaned=="NORMALPUNCH"or cleaned=="LEFTCLICK"then
-return"MouseButton1"
-end
-if cleaned=="M2"or cleaned=="RMB"or cleaned=="HEAVY"or cleaned=="HEAVYPUNCH"or cleaned=="STRONGPUNCH"or cleaned=="POWERPUNCH"or cleaned=="RIGHTCLICK"then
-return"MouseButton2"
-end
-return cleaned:match("^SKILL([ERTJYHFZXCV])$")or cleaned:match("^KEY([ERTJYHFZXCV])$")or cleaned:match("^([ERTJYHFZXCV])SKILL$")
-end
-local function findMobileSkillButton(localplr,inputToken,now)
-if not localplr then return nil end
-if now>=(self.MobileScanAt or 0)then
-self.MobileScanAt=now+3
-local nextMap,scores={},{}
-pcall(function()
-local gui=localplr:FindFirstChild("PlayerGui")
-if gui and type(gui.GetDescendants)=="function"then
-for _,obj in ipairs(gui:GetDescendants())do
-if obj:IsA("GuiButton")and isGuiVisible(obj,gui)then
-local root=obj
-while root.Parent and root.Parent~=gui do root=root.Parent end
-if not isIgnoredGui(root)then
-local tok=matchButtonToken(obj.Name)
-local score=tok and 3 or 0
-if not tok and obj:IsA("TextButton")then
-tok=matchButtonToken(obj.Text);score=tok and 2 or 0
-end
-if not tok and type(obj.GetChildren)=="function"then
-local kids=obj:GetChildren()
-if#kids<=4 then
-for _,k in ipairs(kids)do
-if k:IsA("TextLabel")and k.Visible~=false then
-tok=matchButtonToken(k.Text)
-if tok then score=1;break end
-end
-end
-end
-end
-if tok and score>(scores[tok]or 0)then
-nextMap[tok]=obj;scores[tok]=score
-end
-end
-end
-end
-end
-end)
-self.MobileButtons=nextMap
-end
-local btn=self.MobileButtons[inputToken]
-if btn and btn.Parent then return btn end
-self.MobileButtons[inputToken]=nil
-return nil
-end
-local function dispatchEntry(entry,down)
-if entry.Mode=="Ability"then
-local stateToken=down and"Begin"or"End"
-if entry.AbilityRemote and entry.AbilityRemote.Parent then
-pcall(function()
-entry.AbilityRemote:FireServer(entry.InputToken,stateToken,nil)
-end)
-end
-local events=entry.StandEvents
-local char=entry.Character
-local move=entry.MoveSpec
-if events and char and events.Parent==char then
-if events:IsA("Folder")then
-if down and move and move.Name then
-local r=events:FindFirstChild(move.Name)
-if r and r:IsA("RemoteEvent")then
-pcall(function()r:FireServer(true)end)
-end
-end
-elseif(events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent"))and move and move.Name then
-if down then
-pcall(function()
-if move.Direct then
-if move.ArgCount==1 and move.StartState==nil then events:FireServer(move.Name)
-else events:FireServer(move.Name,move.StartState)end
+local function dispatch(entry,down)
+if entry.Button~=nil then
+entry.Backend:SendMouseButtonEvent(0,0,entry.Button,down,entry.Game,0)
 else
-local action=move.Action or"InitiateMove"
-if move.Aim then
-local aimPos=resolveAimPosition(char,entry.Environment)
-events:FireServer(action,move.Name,move.StartState or"Start",nil)
-events:FireServer(action,move.Name,"Aim",aimPos,nil)
-elseif move.ArgCount==2 and move.StartState==nil then
-events:FireServer(action,move.Name)
-elseif move.ArgCount==3 and move.Extra4==nil then
-events:FireServer(action,move.Name,move.StartState or"Start")
-else
-events:FireServer(action,move.Name,move.StartState or"Start",move.Extra4)
-end
-end
-end)
-elseif move.SendStandEnd then
-pcall(function()
-if move.Direct then
-events:FireServer(move.Name,move.EndState~=nil and move.EndState or false)
-else
-events:FireServer(move.Action or"InitiateMove",move.Name,move.EndState or"End",nil)
-end
-end)
-end
-end
-end
-if entry.MobileButton and entry.MobileButton.Parent then
-pcall(triggerMobileButton,entry.MobileButton,down,entry.IsHold)
-end
-elseif entry.Backend and entry.Key then
 entry.Backend:SendKeyEvent(down,entry.Key,false,entry.Game)
 end
 end
 local function release(id,entry)
 if self.Held[id]~=entry then return true end
-local ok=pcall(dispatchEntry,entry,false)
+local ok=pcall(dispatch,entry,false)
 if ok and self.Held[id]==entry then self.Held[id]=nil end
 return ok
 end
@@ -4063,184 +3692,20 @@ if not release(id,entry)then ready=false end
 end
 return ready
 end
-local function stepExpiredHolds(now)
-for id,entry in pairs(self.Held)do
-if entry.Until and now>=entry.Until then
-release(id,entry)
-end
-end
-end
-local function pulseKey(backend,key,hold,environment)
-if not allowed(environment)or not backend or key==nil then return false end
-local id="Key:"..tostring(key)
+local function pulse(backend,key,button,hold,environment)
+if not allowed(environment)or not backend then return false end
+local id=button~=nil and("Mouse:"..button)or("Key:"..tostring(key))
 if self.Held[id]then return false end
 local generation=self.Generation
-local entry={Mode="LegacyKey",Backend=backend,Key=key,Game=environment.game}
+local entry={Backend=backend,Key=key,Button=button,Game=(environment and environment.game)or game}
 self.Held[id]=entry
 local ok=pcall(function()
 if not allowed(environment)or generation~=self.Generation then return end
-dispatchEntry(entry,true)
+dispatch(entry,true)
 environment.task.wait(hold)
 end)
 local released=release(id,entry)
 return ok and released and generation==self.Generation and allowed(environment)
-end
-local function resolveMoveSpec(inputToken,stand,events)
-local spec=stand and STAND_KEY_MOVES[stand]and STAND_KEY_MOVES[stand][inputToken]or nil
-if spec then return spec end
-local learned=env.EDUHubLearnedStandsV1 and stand and env.EDUHubLearnedStandsV1[stand]
-if learned and type(learned.Moves)=="table"and#learned.Moves>0 then
-local nonM1,m1Move,m2Move={},nil,nil
-for _,m in ipairs(learned.Moves)do
-if type(m)=="table"and type(m.Name)=="string"and not EXCLUDED_FOLDER[m.Name]then
-local wire=m.RemoteName or m.Name
-if wire=="M1"or wire=="NormalPunch"or m.Name=="M1"then
-m1Move={Name=wire,Hold=.05,Action=m.Action,Direct=m.Direct,StartState=m.StartState,ArgCount=m.ArgCount,Extra4=m.Extra4}
-else
-nonM1[#nonM1+1]=m
-local low=string.lower(wire)
-if not m2Move and(low:find("heavy",1,true)or low:find("strong",1,true)or low:find("power",1,true)or low:find("m2",1,true)or low:find("cursed",1,true))then
-m2Move=m
-end
-end
-end
-end
-if inputToken=="MouseButton1"and m1Move then return m1Move end
-local picked=inputToken=="MouseButton2"and m2Move or(KEY_SLOT[inputToken]and nonM1[KEY_SLOT[inputToken]])
-if picked then
-return{
-Name=picked.RemoteName or picked.Name,
-Aim=picked.Aim,
-Hold=picked.Hold or DEFAULT_KEY_HOLD[inputToken]or.4,
-SendStandEnd=(picked.EndState~=nil),
-Action=picked.Action,
-Direct=picked.Direct,
-StartState=picked.StartState,
-EndState=picked.EndState,
-ArgCount=picked.ArgCount,
-Extra4=picked.Extra4,
-}
-end
-end
-if events and events:IsA("Folder")then
-if inputToken=="MouseButton1"then
-local m1=events:FindFirstChild("M1")and"M1"or(events:FindFirstChild("NormalPunch")and"NormalPunch")or"M1"
-return{Name=m1,Hold=.05}
-elseif inputToken=="MouseButton2"then
-for _,n in ipairs({"HeavyPunch","StrongPunch","PowerPunch","M2"})do
-if events:FindFirstChild(n)then return{Name=n,Hold=.2}end
-end
-else
-local exact=events:FindFirstChild(inputToken)or events:FindFirstChild("Skill"..inputToken)
-if exact and exact:IsA("RemoteEvent")and not EXCLUDED_FOLDER[exact.Name]then
-return{Name=exact.Name,Hold=DEFAULT_KEY_HOLD[inputToken]or.4}
-end
-local slot=KEY_SLOT[inputToken]
-if slot then
-local list={}
-for _,r in ipairs(events:GetChildren())do
-if r:IsA("RemoteEvent")and r.Name~="M1"and r.Name~="NormalPunch"and not EXCLUDED_FOLDER[r.Name]then
-list[#list+1]=r.Name
-end
-end
-table.sort(list)
-if list[slot]then return{Name=list[slot],Hold=DEFAULT_KEY_HOLD[inputToken]or.4}end
-end
-end
-elseif events and(events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent"))then
-if inputToken=="MouseButton1"then
-return{Name=(stand=="HWMR"and"NormalPunch"or"M1"),Hold=.05}
-elseif inputToken=="MouseButton2"then
-return{Name=(stand=="HWMR"and"PowerPunch"or"CursedSlash"),Hold=.2}
-end
-end
-return nil
-end
-local function resolveKeyCode(key)
-local name=tostring(key)
-local ok,code=pcall(function()return Enum and Enum.KeyCode and Enum.KeyCode[name]end)
-if ok and code~=nil then return code end
-return name
-end
-local function getVirtualInput(backend,environment)
-if backend and type(backend.SendKeyEvent)=="function"then return backend end
-local g=environment and environment.game or game
-local ok,vim=pcall(g.GetService,g,"VirtualInputManager")
-if ok and vim and type(vim.SendKeyEvent)=="function"then return vim end
-return nil
-end
-local function startAbilityHold(key,backend,environment,now)
-local inputToken=KEY_TO_ABILITY[key]or tostring(key)
-local localplr,char,events,stand=getPlayerContext(environment)
-if inputToken=="MouseButton1"and punchOnCooldown(localplr)then
-return false
-end
-local isMouse=(inputToken=="MouseButton1"or inputToken=="MouseButton2")
-local moveSpec=resolveMoveSpec(inputToken,stand,events)
-local hold=(moveSpec and moveSpec.Hold)or DEFAULT_KEY_HOLD[inputToken]or.4
-if not isMouse then
-local vim=getVirtualInput(backend,environment)
-if vim then
-local id="Key:"..tostring(inputToken)
-local current=self.Held[id]
-if current then
-if current.Character~=char or(current.Until and now>=current.Until)then
-release(id,current)
-else
-return false
-end
-end
-local entry={
-Mode="LegacyKey",
-Backend=vim,
-Key=resolveKeyCode(inputToken),
-Character=char,
-Game=(environment and environment.game)or game,
-Until=now+hold,
-}
-self.Held[id]=entry
-local ok=pcall(dispatchEntry,entry,true)
-if not ok then
-self.Held[id]=nil
-return false
-end
-return true
-end
-end
-local abilityRemote=getAbilityInputRemote(environment)
-local mobileBtn=isMobileDevice(environment)and findMobileSkillButton(localplr,inputToken,now)or nil
-if not abilityRemote and not events and not mobileBtn then
-if isMouse then return false end
-return pulseKey(backend,key,.08,environment)
-end
-local id="Ability:"..inputToken
-local current=self.Held[id]
-if current then
-if current.Character~=char or(current.Until and now>=current.Until)then
-release(id,current)
-else
-return false
-end
-end
-local entry={
-Mode="Ability",
-InputToken=inputToken,
-AbilityRemote=abilityRemote,
-StandEvents=events,
-Character=char,
-MoveSpec=moveSpec,
-MobileButton=mobileBtn,
-IsHold=hold>=.3,
-Environment=environment,
-Until=now+hold,
-}
-self.Held[id]=entry
-local ok=pcall(dispatchEntry,entry,true)
-if not ok then
-self.Held[id]=nil
-return false
-end
-return true
 end
 function self:CanSpamKeys(environment)
 if not allowed(environment)or not activeCombatTarget(environment)then
@@ -4249,49 +3714,15 @@ return false
 end
 return true
 end
-function self:StepAutoKeys(selectedKeys,upvalues,environment)
-if not self:CanSpamKeys(environment)then
-return false
-end
-local now=os.clock()
-stepExpiredHolds(now)
-local _,char,events=getPlayerContext(environment)
-if not ensureStandSummoned(char,events,now)then
-return false
-end
-local backend=upvalues and upvalues[0]
-local sent=false
-local activeList={}
-if type(selectedKeys)=="table"then
-for _,k in ipairs(KEY_ORDER)do
-if selectedKeys[k]then activeList[#activeList+1]=k end
-end
-end
-local n=#activeList
-if n>0 then
-local startIndex=(self.Cursor%n)+1
-for offset=0,n-1 do
-local idx=((startIndex+offset-1)%n)+1
-local k=activeList[idx]
-if startAbilityHold(k,backend,environment,now)then
-self.Cursor=idx
-sent=true
-break
-end
-end
-end
-if startAbilityHold("LeftClick",backend,environment,now)then
-sent=true
-end
-return sent
-end
 function self:Send80(key,upvalues,environment)
 if not self:CanSpamKeys(environment)then
 return false
 end
-local now=os.clock()
-stepExpiredHolds(now)
-return startAbilityHold(key,upvalues and upvalues[0],environment,now)
+local backend=upvalues and upvalues[0]
+if key=="E"then return pulse(backend,key,nil,4,environment)end
+if key=="LeftClick"then return pulse(backend,nil,0,.05,environment)end
+if key=="RightClick"then return pulse(backend,nil,1,.05,environment)end
+return pulse(backend,key,nil,.1,environment)
 end
 function self:Send15(upvalues,environment)
 while self.Running and session.Running and upvalues[0]do
@@ -4301,7 +3732,7 @@ else
 local character=upvalues[1]()
 if character and allowed(environment)then
 local backend=environment.game:GetService("VirtualInputManager")
-local sent=pulseKey(backend,"W",.1,environment)
+local sent=pulse(backend,"W",nil,.1,environment)
 if sent then environment.task.wait(300)
 else environment.task.wait(5)end
 else
@@ -4320,13 +3751,12 @@ self.Running=false;self.Generation+=1
 local released=releaseAll()
 if not released then released=releaseAll()end
 if not released then warn("[EDU Input] Không gửi được lệnh thả phím khi dọn script")end
-table.clear(self.MobileButtons)
 if env.EDUDungeonLegacyInputV1==self then env.EDUDungeonLegacyInputV1=nil end
 end
 session:Own(self)
 return self
 end
-]=]):sub(2),"@EDUHub_New/Dungeon_Legacy_Input.lua"))()
+]]):sub(2),"@EDUHub_New/Dungeon_Legacy_Input.lua"))()
 local installBossMovement=assert(loadstring(([[!return function(resolveRoot,settings)
 local self={Collisions={}}
 local function heading(cf)
@@ -6043,6 +5473,22 @@ elseif options.EDUSettingsAutoResume and options.EDUSettingsAutoResume.Value the
 error("Chờ hệ thống lưu / chạy lại sẵn sàng")
 end
 if not allowed()then return end
+local okPs,psId=pcall(function()return game.PrivateServerId end)
+local okOwn,ownerId=pcall(function()return game.PrivateServerOwnerId end)
+local inVip=(okPs and type(psId)=="string"and psId~="")or(okOwn and tonumber(ownerId)and tonumber(ownerId)>0)
+if inVip then
+local ownJob=tostring(game.JobId or"")
+self.LastTargetJobId=nil
+if ownJob~=""and type(teleport.TeleportToPlaceInstance)=="function"then
+status("Đang rejoin lại Server VIP · Lần "..self.Attempts)
+local okVip=pcall(function()teleport:TeleportToPlaceInstance(game.PlaceId,ownJob,player)end)
+if okVip then return end
+end
+if not allowed()then return end
+status("Đang yêu cầu rejoin · Lần "..self.Attempts)
+teleport:Teleport(game.PlaceId,player)
+return
+end
 if type(teleport.TeleportToPlaceInstance)=="function"and(self.Attempts%3~=0)then
 local targetJob=pickHealthyServer(self.FailedJobIds)
 if not allowed()then return end
@@ -9499,10 +8945,19 @@ if persistence and not persistence:PrepareTeleport()then status("Chưa chuẩn b
 joining=true;joiningAt=now;nextRejoin=now+15;featureState.halloweenRejoinPending=true
 rejoinPool.Attempts+=1;rejoinPool.LastJob=nil
 if featureState.releaseHalloweenActions then featureState.releaseHalloweenActions(false)end
-status("Đang tìm server khỏe để rejoin · Chạy lại theo Settings")
+local okPs,psId=pcall(function()return game.PrivateServerId end)
+local okOwn,ownerId=pcall(function()return game.PrivateServerOwnerId end)
+local inVip=(okPs and type(psId)=="string"and psId~="")or(okOwn and tonumber(ownerId)and tonumber(ownerId)>0)
+status(inVip and"Đang rejoin lại Server VIP · Chạy lại theo Settings"or"Đang tìm server khỏe để rejoin · Chạy lại theo Settings")
 task.spawn(function()
 if not self.Running or not joining then return end
-if type(TeleportService.TeleportToPlaceInstance)=="function"and(rejoinPool.Attempts%3~=0)then
+if inVip then
+local ownJob=tostring(game.JobId or"")
+if ownJob~=""and type(TeleportService.TeleportToPlaceInstance)=="function"then
+local okVip=pcall(function()TeleportService:TeleportToPlaceInstance(game.PlaceId,ownJob,player)end)
+if okVip then return end
+end
+elseif type(TeleportService.TeleportToPlaceInstance)=="function"and(rejoinPool.Attempts%3~=0)then
 local targetJob=pickHealthyServer(rejoinPool.Failed)
 if not self.Running or not joining then return end
 if targetJob then
@@ -15366,14 +14821,24 @@ eduSession:TrackResult(task.spawn(function()
 local legacyUpvalues={[0]=VirtualInputManager}
 local envTable={game=game,task=task}
 while eduSession.Running and options.UseKeySkills.Value do
+local sentAny=false
+for _,keyName in ipairs(KEY_VALUES)do
+if not eduSession.Running or not options.UseKeySkills.Value then
+break
+end
+if selectedKeys[keyName]then
 local okCan,canSpam=false,false
 if not eduSession:IsDungeonActive()and eduBossCharacter()then
 okCan,canSpam=pcall(eduLegacyInput.CanSpamKeys,eduLegacyInput,envTable)
 end
 if okCan and canSpam then
-pcall(eduLegacyInput.StepAutoKeys,eduLegacyInput,selectedKeys,legacyUpvalues,envTable)
+pcall(eduLegacyInput.Send80,eduLegacyInput,keyName,legacyUpvalues,envTable)
+sentAny=true
 task.wait(0.1)
-else
+end
+end
+end
+if not sentAny then
 task.wait(0.15)
 end
 end
@@ -15405,7 +14870,7 @@ Default=false,
 useKeyToggle:OnChanged(function(enabled)
 if enabled then
 if not eduSession.RestoringSettings then
-fluent:Notify({Title="Info",Content="Auto Key + Auto M1 đã bật!",Duration=3})
+fluent:Notify({Title="Info",Content="Key Skills started via GUI!",Duration=3})
 end
 runKeyWorker()
 else
