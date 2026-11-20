@@ -3628,49 +3628,10 @@ local previous=env.EDUDungeonLegacyInputV1
 if previous and type(previous.Destroy)=="function"then previous:Destroy()end
 local self={Running=true,Held={},Generation=0}
 env.EDUDungeonLegacyInputV1=self
-local function uiClearForKeys(environment)
-local g=environment and environment.game or game
-local okUis,uis=pcall(g.GetService,g,"UserInputService")
-if okUis and uis and type(uis.GetFocusedTextBox)=="function"then
-local okFocus,box=pcall(uis.GetFocusedTextBox,uis)
-if okFocus and box~=nil then return false end
-end
-local okGui,gs=pcall(g.GetService,g,"GuiService")
-if okGui and gs and gs.MenuIsOpen==true then return false end
-return true
-end
-local function allowed(environment)
+local function allowed()
 return self.Running and session.Running and not session.GameMenuBusy
 and not session.RestoringSettings
 and not(session.IsDungeonActive and session:IsDungeonActive())
-and uiClearForKeys(environment)
-end
-local function activeCombatTarget(environment)
-local g=environment and environment.game or game
-local okPlr,players=pcall(g.GetService,g,"Players")
-local localplr=okPlr and players and players.LocalPlayer
-local char=localplr and localplr.Character
-if not char then return false end
-local boss=env.EDUHubBossCombatV1
-if boss and boss.Running~=false and boss.CurrentSession and boss.CurrentSession.Model then
-if type(boss.CanUseSkills)=="function"then
-local ok,can=pcall(boss.CanUseSkills,boss,boss.CurrentSession.Model,char)
-if ok and can==true then return true end
-elseif type(boss.IsEngaged)=="function"and boss:IsEngaged()then
-return true
-end
-end
-local hw=env.EDUHalloweenV1
-if hw and hw.Running~=false and type(hw.IsFightingMob)=="function"and hw:IsFightingMob()then
-return true
-end
-local qAt=env.EDUHubQuestCombatAt
-local qTarget=env.EDUHubQuestTargetV1
-if type(qAt)=="number"and os.clock()-qAt<=.75 and qTarget and qTarget.Parent then
-local qHum=qTarget:FindFirstChildOfClass("Humanoid")
-if qHum and qHum.Health>0 then return true end
-end
-return false
 end
 local function dispatch(entry,down)
 if entry.Button~=nil then
@@ -3707,15 +3668,15 @@ end)
 local released=release(id,entry)
 return ok and released and generation==self.Generation and allowed(environment)
 end
-function self:CanSpamKeys(environment)
-if not allowed(environment)or not activeCombatTarget(environment)then
+function self:CanSpamKeys()
+if not allowed()then
 if next(self.Held)then releaseAll()end
 return false
 end
 return true
 end
 function self:Send80(key,upvalues,environment)
-if not self:CanSpamKeys(environment)then
+if not self:CanSpamKeys()then
 return false
 end
 local backend=upvalues and upvalues[0]
