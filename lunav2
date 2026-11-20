@@ -3654,32 +3654,23 @@ end
 return ready
 end
 local function pulse(backend,key,button,hold,environment)
-if not allowed(environment)or not backend then return false end
+if not allowed()or not backend then return false end
 local id=button~=nil and("Mouse:"..button)or("Key:"..tostring(key))
 if self.Held[id]then return false end
 local generation=self.Generation
-local entry={Backend=backend,Key=key,Button=button,Game=(environment and environment.game)or game}
+local entry={Backend=backend,Key=key,Button=button,Game=environment.game}
 self.Held[id]=entry
 local ok=pcall(function()
-if not allowed(environment)or generation~=self.Generation then return end
+if not allowed()or generation~=self.Generation then return end
 dispatch(entry,true)
 environment.task.wait(hold)
 end)
 local released=release(id,entry)
-return ok and released and generation==self.Generation and allowed(environment)
-end
-function self:CanSpamKeys()
-if not allowed()then
-if next(self.Held)then releaseAll()end
-return false
-end
-return true
+return ok and released and generation==self.Generation and allowed()
 end
 function self:Send80(key,upvalues,environment)
-if not self:CanSpamKeys()then
-return false
-end
-local backend=upvalues and upvalues[0]
+if not allowed()then return false end
+local backend=upvalues[0]
 if key=="E"then return pulse(backend,key,nil,4,environment)end
 if key=="LeftClick"then return pulse(backend,nil,0,.05,environment)end
 if key=="RightClick"then return pulse(backend,nil,1,.05,environment)end
@@ -3687,11 +3678,11 @@ return pulse(backend,key,nil,.1,environment)
 end
 function self:Send15(upvalues,environment)
 while self.Running and session.Running and upvalues[0]do
-if not allowed(environment)then
+if not allowed()then
 environment.task.wait(5)
 else
 local character=upvalues[1]()
-if character and allowed(environment)then
+if character and allowed()then
 local backend=environment.game:GetService("VirtualInputManager")
 local sent=pulse(backend,"W",nil,.1,environment)
 if sent then environment.task.wait(300)
@@ -14780,30 +14771,24 @@ end
 keyWorkerActive=true
 eduSession:TrackResult(task.spawn(function()
 local legacyUpvalues={[0]=VirtualInputManager}
-local envTable={game=game,task=task}
 while eduSession.Running and options.UseKeySkills.Value do
-local sentAny=false
-for _,keyName in ipairs(KEY_VALUES)do
+if not eduSession:IsDungeonActive()and eduBossCharacter()then
+for key,enabled in pairs(selectedKeys)do
 if not eduSession.Running or not options.UseKeySkills.Value then
 break
 end
-if selectedKeys[keyName]then
-local okCan,canSpam=false,false
-if not eduSession:IsDungeonActive()and eduBossCharacter()then
-okCan,canSpam=pcall(eduLegacyInput.CanSpamKeys,eduLegacyInput,envTable)
-end
-if okCan and canSpam then
-pcall(eduLegacyInput.Send80,eduLegacyInput,keyName,legacyUpvalues,envTable)
-sentAny=true
-task.wait(0.1)
+if enabled then
+eduLegacyInput:Send80(key,legacyUpvalues,{game=game,task=task})
+if key=="E"then
+task.wait(0.5)
+elseif key~="LeftClick"and key~="RightClick"then
+task.wait(0.2)
 end
 end
 end
-if not sentAny then
-task.wait(0.15)
 end
+task.wait(0.5)
 end
-eduLegacyInput:YieldForDungeon()
 keyWorkerActive=false
 end))
 end
@@ -14830,15 +14815,17 @@ Default=false,
 })
 useKeyToggle:OnChanged(function(enabled)
 if enabled then
+if next(selectedKeys)==nil then
+fluent:Notify({Title="Error",Content="Please select at least one key first!",Duration=5})
+useKeyToggle:SetValue(false)
+return
+end
 if not eduSession.RestoringSettings then
-fluent:Notify({Title="Info",Content="Key Skills started via GUI!",Duration=3})
+fluent:Notify({Title="Info",Content="Key Skills activated via GUI!",Duration=3})
 end
 runKeyWorker()
-else
-eduLegacyInput:YieldForDungeon()
-if not eduSession.RestoringSettings and eduSession.StartupReady then
+elseif not eduSession.RestoringSettings and eduSession.StartupReady then
 fluent:Notify({Title="Info",Content="Key Skills stopped via GUI!",Duration=3})
-end
 end
 end)
 eduSession:TrackResult(UserInputService.InputBegan:Connect(function(input,gameProcessed)
@@ -14846,6 +14833,10 @@ if gameProcessed or not eduSession.Running then
 return
 end
 if input.KeyCode==Enum.KeyCode.P then
+if not useKeyToggle.Value and next(selectedKeys)==nil then
+fluent:Notify({Title="Error",Content="Please select at least one key first!",Duration=5})
+return
+end
 useKeyToggle:SetValue(not useKeyToggle.Value)
 end
 end))
