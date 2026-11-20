@@ -7440,12 +7440,26 @@ if not wasBossOn then
 wasBossOn=true
 bossEnabledAt=now
 end
-if(options.EDUHW_HalloweenAutoDoor and options.EDUHW_HalloweenAutoDoor.Value==true)
-or(options.EDUHW_HalloweenAutoMob and options.EDUHW_HalloweenAutoMob.Value==true)
-or(options.StartStandFarm and options.StartStandFarm.Value==true)then
+if options.StartStandFarm and options.StartStandFarm.Value==true then
 cancelCountdown()
-setStatus("Tạm dừng Boss Hop · Đang bật Halloween / Auto Stand")
+setStatus("Tạm dừng Boss Hop · Đang bật Auto Stand")
 return
+end
+local hwToggleOn=(options.EDUHW_HalloweenAutoDoor and options.EDUHW_HalloweenAutoDoor.Value==true)
+or(options.EDUHW_HalloweenAutoMob and options.EDUHW_HalloweenAutoMob.Value==true)
+or(options.EDUHW_HalloweenAutoMobAbove and options.EDUHW_HalloweenAutoMobAbove.Value==true)
+if hwToggleOn then
+local hw=env.EDUHalloweenV1
+local hwPending=true
+if hw and type(hw.HasPendingWork)=="function"then
+local okHw,resHw=pcall(hw.HasPendingWork,hw)
+hwPending=(not okHw)or(resHw==true)
+end
+if hwPending then
+cancelCountdown()
+setStatus("Đợi farm xong Halloween rồi mới đổi server")
+return
+end
 end
 if(now-self.StartedAt)<15 or(bossEnabledAt and(now-bossEnabledAt)<15)then
 cancelCountdown()
@@ -10698,6 +10712,7 @@ local callbacks,featureState,commands,pendingCallbacks={},stand and stand.State 
 local controls={}
 local nextScan,nextRejoin,nextStorage=0,0,0
 local nextSlotInfo,lastSlotInfo=0,nil
+local startedAt=os.clock()
 local joining,joiningAt=false,0
 local lastStatus,lastError=nil,-math.huge
 local function status(text)
@@ -10900,6 +10915,26 @@ function self:IsFightingMob()
 if not self.Running or type(featureState.isHalloweenFightingMob)~="function"then return false end
 local ok,active=pcall(featureState.isHalloweenFightingMob)
 return ok and active==true or false
+end
+function self:HasPendingWork()
+if not self.Running then return false end
+local hwOn=(door and door.Value==true)or(mob and mob.Value==true)or(mobAbove and mobAbove.Value==true)
+if not hwOn then return false end
+if joining or featureState.halloweenRejoinPending then return true end
+if self:IsFightingMob()then return true end
+if featureState.hasHalloweenCombat then
+local okC,hasC=pcall(featureState.hasHalloweenCombat)
+if okC and hasC==true then return true end
+end
+if featureState.canCycleRejoin then
+local okR,canR=pcall(featureState.canCycleRejoin)
+if okR and canR==false then return true end
+end
+if door and door.Value==true then
+if featureState.halloweenNight==true and not featureState.halloweenDoorLimited then return true end
+if featureState.halloweenNight==nil and(os.clock()-startedAt)<10 then return true end
+end
+return false
 end
 function self:YieldForDungeon()
 if featureState.pauseHalloweenForActivity then featureState.pauseHalloweenForActivity("Boss")end
