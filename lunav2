@@ -28,10 +28,84 @@ function self:IsDungeonActive()
 local dungeon=env.EDULunaLairV1
 return self.Running and dungeon and dungeon.Running and dungeon:IsRequested()or false
 end
+function self:IsMiasmaHolding()
+local bossCtrl=env.EDUHubBossCombatV1
+if bossCtrl and bossCtrl.Running~=false then
+local lease=bossCtrl.CurrentSession
+if lease and lease.Model then
+if lease.MiasmaPhase=="MIASMA"or lease.MiasmaPhase=="RETRACT"then return true end
+if type(bossCtrl.WaitingForMiasma)=="function"then
+local okWait,waiting=pcall(bossCtrl.WaitingForMiasma,bossCtrl,lease.Model)
+if okWait and waiting then return true end
+end
+end
+end
+return false
+end
+function self:GetCombatState(allowDungeon)
+if not self.Running then return false,nil,nil,"SessionStopped"end
+if self.GameMenuBusy then return false,nil,nil,"GameMenuBusy"end
+if self.RestoringSettings then return false,nil,nil,"RestoringSettings"end
+if self.StartupReady==false then return false,nil,nil,"StartupNotReady"end
+if self.BossTravelBusy then return false,nil,nil,"BossTravelBusy"end
+local okPlr,players=pcall(game.GetService,game,"Players")
+local player=okPlr and players and players.LocalPlayer
+local char=player and player.Character
+local hum=char and char:FindFirstChildOfClass("Humanoid")
+if not char or not char.Parent or not hum or hum.Health<=0 then
+return false,nil,nil,"NoAliveCharacter"
+end
+local combat=env.EDUHubCombatV1
+if combat and combat.Learning then return false,nil,nil,"LearningSkills"end
+if next(env.EDULunaM1Retired or{})then return false,nil,nil,"M1Retired"end
+if self:IsMiasmaHolding()then return false,"Boss",nil,"MiasmaHolding"end
+local dungeon=env.EDULunaLairV1
+if dungeon and dungeon.Running and type(dungeon.IsRequested)=="function"and dungeon:IsRequested()then
+if not allowDungeon then return false,"Dungeon",nil,"DungeonActive"end
+if type(dungeon.Snapshot)=="function"then
+local okSnap,snap=pcall(dungeon.Snapshot,dungeon)
+if okSnap and type(snap)=="table"and snap.AtLock and snap.Target and snap.Target.Parent then
+return true,"Dungeon",snap.Target,"DungeonReady"
+end
+end
+return false,"Dungeon",nil,"DungeonNotReady"
+end
+local bossCtrl=env.EDUHubBossCombatV1
+if bossCtrl and bossCtrl.Running~=false then
+local lease=bossCtrl.CurrentSession
+if lease and lease.Model and lease.Model.Parent then
+if type(bossCtrl.Ready)=="function"then
+local okReady,isReady=pcall(bossCtrl.Ready,bossCtrl,lease.Model,char)
+if okReady and isReady then
+if type(bossCtrl.CanUseSkills)~="function"or bossCtrl:CanUseSkills(lease.Model)then
+return true,"Boss",lease.Model,"BossReady"
+end
+return false,"Boss",lease.Model,"BossCombatHold"
+end
+end
+return false,"Boss",lease.Model,"BossNotReady"
+elseif self.BossQueueBusy then
+return false,"Boss",nil,"BossQueueBusy"
+end
+end
+local hw=env.EDUHalloweenV1
+if hw and hw.Running~=false and type(hw.IsFightingMob)=="function"then
+local okHw,hwActive=pcall(hw.IsFightingMob,hw)
+if okHw and hwActive then return true,"Halloween",nil,"HalloweenReady"end
+end
+local farmTarget=self.ActiveFarmTarget
+if self.ActiveFarmReady and farmTarget and farmTarget.Parent then
+local th=farmTarget:FindFirstChildOfClass("Humanoid")
+if th and th.Health>0 then
+return true,self.ActiveFarmOwner or"Quest",farmTarget,"FarmReady"
+end
+end
+return false,nil,nil,"Idle"
+end
 function self:YieldToDungeon()
 if not self:IsDungeonActive()then return false end
 local ready=true
-for _,key in ipairs({"EDUHubBossCombatV1","EDUBossMiasmaV1","EDUHalloweenV1","EDULunaStandV1","EDUDungeonLegacyInputV1"})do
+for _,key in ipairs({"EDUHubBossCombatV1","EDUBossMiasmaV1","EDUHalloweenV1","EDULunaStandV1","EDUHubCombatV1","EDUDungeonLegacyInputV1"})do
 local owner=env[key]
 if owner and owner.Running and type(owner.YieldForDungeon)=="function"then
 local ok,released=pcall(owner.YieldForDungeon,owner)
@@ -45,7 +119,14 @@ local kind=typeof(value)
 if kind=="RBXScriptConnection"then
 if self.Running then self.Connections[value]=true else pcall(function()value:Disconnect()end)end
 elseif kind=="thread"then
-if self.Running then self.Threads[value]=true
+if self.Running then
+for th in pairs(self.Threads)do
+if type(coroutine)=="table"and type(coroutine.status)=="function"then
+local ok,st=pcall(coroutine.status,th)
+if not ok or st=="dead"then self.Threads[th]=nil end
+end
+end
+self.Threads[value]=true
 elseif value~=coroutine.running()then pcall(task.cancel,value)end
 elseif kind=="Instance"and value:IsA("ScreenGui")then
 if self.Running then self.Guis[value]=true else pcall(function()value:Destroy()end)end
@@ -64,13 +145,19 @@ if self.Running then self.Library=library
 elseif type(library.Destroy)=="function"then pcall(library.Destroy,library)end
 self:TrackResult(rawget(library,"GUI"))
 end
+function self:Untrack(value)
+if value==nil then return end
+self.Connections[value]=nil
+self.Threads[value]=nil
+self.Guis[value]=nil
+end
 function self:Destroy()
 if not self.Running then return end
 self.Running=false
 for connection in pairs(self.Connections)do pcall(function()connection:Disconnect()end)end
 for _,manager in ipairs(self.Managers)do pcall(manager.Destroy,manager)end
 if env.EDUHubSessionV1==self then
-for _,key in ipairs({"EDUHalloweenV1","EDUBossMiasmaV1","EDUAutoRejoinV1"})do
+for _,key in ipairs({"EDUHubCombatV1","EDUHubBossCombatV1","EDUBossMiasmaV1","EDULunaLairV1","EDUHalloweenV1","EDULunaStandV1","EDUDungeonLegacyInputV1","EDUBossLivingCheck","EDUBossServerHopV1","EDUAFKOptimizerV1","EDUHubDashboardV1","EDUAutoRejoinV1","EDUHubPersistenceV1"})do
 local manager=env[key]
 if manager and manager.Running and type(manager.Destroy)=="function"then pcall(manager.Destroy,manager)end
 end
@@ -3630,15 +3717,35 @@ local previous=env.EDUDungeonLegacyInputV1
 if previous and type(previous.Destroy)=="function"then previous:Destroy()end
 local self={Running=true,Held={},Generation=0}
 env.EDUDungeonLegacyInputV1=self
-local function allowed()
+local function isTouchOnly(environment)
+local g=(type(environment)=="table"and environment.game)or game
+local ok,uis=pcall(g.GetService,g,"UserInputService")
+return ok and uis~=nil and uis.TouchEnabled==true and uis.KeyboardEnabled~=true
+end
+local function allowedAfk()
 return self.Running and session.Running and not session.GameMenuBusy
 and not session.RestoringSettings
 and not(session.IsDungeonActive and session:IsDungeonActive())
 end
-local function allowedFast(allowDungeon)
-return self.Running and session.Running and not session.GameMenuBusy
-and not session.RestoringSettings
-and(allowDungeon==true or not(session.IsDungeonActive and session:IsDungeonActive()))
+local function allowedFast(allowDungeon,antiAFK)
+if not self.Running or not session.Running or session.GameMenuBusy
+or session.RestoringSettings or session.StartupReady==false then
+return false
+end
+if antiAFK then
+return not(session.IsDungeonActive and session:IsDungeonActive())
+end
+if session.BossTravelBusy then return false end
+if session.IsMiasmaHolding and session:IsMiasmaHolding()then return false end
+if allowDungeon~=true and session.IsDungeonActive and session:IsDungeonActive()then return false end
+if type(session.GetCombatState)=="function"then
+local okState,canAttack=pcall(session.GetCombatState,session,allowDungeon==true)
+if not okState or not canAttack then return false end
+end
+return true
+end
+local function allowed()
+return allowedFast(false,false)
 end
 local function dispatch(entry,down)
 if entry.Button~=nil then
@@ -3660,26 +3767,72 @@ if not release(id,entry)then ready=false end
 end
 return ready
 end
-local function pulseWith(backend,key,button,hold,environment,allowDungeon)
+local function pulseWith(backend,key,button,hold,environment,allowDungeon,antiAFK)
 if not allowedFast(allowDungeon)or not backend then return false end
 local id=button~=nil and("Mouse:"..button)or("Key:"..tostring(key))
 if self.Held[id]then return false end
+local guard
+if not antiAFK and session.CreateKeyAttackGuard then
+local ok,result=pcall(session.CreateKeyAttackGuard,session,allowDungeon)
+if not ok or type(result)~="function"then return false end
+guard=result
+end
+local function ready()
+if not allowedFast(allowDungeon)then return false end
+if not guard then return true end
+local ok,result=pcall(guard)
+return ok and result==true
+end
+if not ready()then return false end
 local generation=self.Generation
 local entry={Backend=backend,Key=key,Button=button,Game=environment.game}
 self.Held[id]=entry
 local ok=pcall(function()
-if not allowedFast(allowDungeon)or generation~=self.Generation then return end
+if not ready()or generation~=self.Generation then return end
 dispatch(entry,true)
-environment.task.wait(hold)
+local remaining=hold
+repeat
+local slice=math.min(remaining,.1)
+environment.task.wait(slice)
+remaining-=slice
+until remaining<=0 or generation~=self.Generation or not ready()
 end)
 local released=release(id,entry)
-return ok and released and generation==self.Generation and allowedFast(allowDungeon)
+return ok and released and generation==self.Generation and ready()
+end
+local function pulseTouchM1(hold,environment,allowDungeon)
+if not allowedFast(allowDungeon,false)then return false end
+if session.CreateKeyAttackGuard then
+local okGuard,guard=pcall(session.CreateKeyAttackGuard,session,allowDungeon)
+if not okGuard or type(guard)~="function"then return false end
+local okReady,allowedNow=pcall(guard)
+if not okReady or allowedNow~=true then return false end
+end
+local g=(type(environment)=="table"and environment.game)or game
+local combat=env.EDUHubCombatV1 or(type(environment)=="table"and environment.EDUHubCombatV1)
+local fired=false
+if combat and type(combat.FireM1Only)=="function"then
+local okPlr,plrs=pcall(g.GetService,g,"Players")
+local lp=okPlr and plrs and plrs.LocalPlayer
+local char=lp and lp.Character
+if char then
+local okFire,res=pcall(combat.FireM1Only,combat,char)
+fired=okFire and res==true
+end
+end
+if type(environment)=="table"and environment.task and type(environment.task.wait)=="function"then
+environment.task.wait(hold or.05)
+end
+return fired and allowedFast(allowDungeon,false)
 end
 local function pulse(backend,key,button,hold,environment)
 return pulseWith(backend,key,button,hold,environment,false)
 end
 function self:Send80(key,upvalues,environment)
 if not allowed()then return false end
+local touchOnly=isTouchOnly(environment)
+if key=="RightClick"and touchOnly then return false end
+if key=="LeftClick"and touchOnly then return pulseTouchM1(.05,environment,false)end
 local backend=upvalues[0]
 if key=="E"then return pulse(backend,key,nil,4,environment)end
 if key=="LeftClick"then return pulse(backend,nil,0,.05,environment)end
@@ -3688,6 +3841,12 @@ return pulse(backend,key,nil,.1,environment)
 end
 function self:SendFast(key,upvalues,environment,holdOverride,allowDungeon)
 if not allowedFast(allowDungeon)then return false end
+local touchOnly=isTouchOnly(environment)
+if key=="RightClick"and touchOnly then return false end
+if key=="LeftClick"and touchOnly then
+local hold=type(holdOverride)=="number"and math.clamp(holdOverride,.02,1.0)or.035
+return pulseTouchM1(hold,environment,allowDungeon)
+end
 local backend=upvalues[0]
 if key=="LeftClick"then
 local hold=type(holdOverride)=="number"and math.clamp(holdOverride,.02,1.0)or.035
@@ -3706,13 +3865,13 @@ return pulseWith(backend,key,nil,hold,environment,allowDungeon)
 end
 function self:Send15(upvalues,environment)
 while self.Running and session.Running and upvalues[0]do
-if not allowed()then
+if not allowedAfk()then
 environment.task.wait(5)
 else
 local character=upvalues[1]()
-if character and allowed()then
+if character and allowedAfk()then
 local backend=environment.game:GetService("VirtualInputManager")
-local sent=pulse(backend,"W",nil,.1,environment)
+local sent=pulseWith(backend,"W",nil,.1,environment,false,true)
 if sent then environment.task.wait(300)
 else environment.task.wait(5)end
 else
@@ -3852,7 +4011,9 @@ local anchor=free and root.Position or leadPos
 local behind=anchor-direction*config.Behind
 position=Vector3.new(behind.X,floor+(hum.HipHeight or 0)+own.Size.Y*.5,behind.Z)
 if not self.Sample or(behind-self.Sample).Magnitude>2 or(now or 0)>=(self.RayAt or 0)then
-self.Sample=behind;self.RayAt=(now or 0)+.2;self.Floor=nil
+local okUis,uis=pcall(game.GetService,game,"UserInputService")
+local rayGap=(okUis and uis~=nil and uis.TouchEnabled==true and uis.KeyboardEnabled~=true)and.35 or.2
+self.Sample=behind;self.RayAt=(now or 0)+rayGap;self.Floor=nil
 local hit=workspace:Raycast(position+Vector3.new(0,8,0),Vector3.new(0,-24,0),envRayParams(model,char))
 if hit and hit.Normal.Y>.35 then self.Floor=hit.Position.Y end
 end
@@ -4113,7 +4274,7 @@ if options.EDUFarmPoseApplyPostMiasma and options.EDUFarmPoseApplyPostMiasma.Val
 and poseEngine and type(poseEngine.GetModeKey)=="function"then
 mode=poseEngine:GetModeKey()
 else
-mode="Behind"
+mode="Above"
 end
 elseif poseEngine and type(poseEngine.GetModeKey)=="function"then
 mode=poseEngine:GetModeKey()
@@ -4164,8 +4325,8 @@ if not hum or hum.Health<=0 or not root or not target then return false end
 local follow=self.CurrentSession.Follow
 if follow then
 local touchOnly=isTouchOnly()
-local maxAge=touchOnly and 1.5 or 1.0
-local maxDist=touchOnly and 6.0 or 3.5
+local maxAge=touchOnly and 2.0 or 1.0
+local maxDist=touchOnly and 8.0 or 3.5
 if follow.Character~=char or follow.Root~=root or follow.Hum~=hum or follow.TargetRoot~=target
 or follow.Token~=self.RunToken or os.clock()-follow.At>maxAge then return false end
 local desired=follow.Frame
@@ -4219,7 +4380,8 @@ end
 local installCombatSkills=assert(loadstring(([[!return function(tab,options,session,fluent,player)
 local env=getgenv and getgenv()or _G
 local http=game:GetService("HttpService")
-local self={Running=true,Rows={},ByName={},MoveBy={},PendingEnds={},NextAt=0,Learning=false,LearnUntil=0,PendingStart={},Firing=false,SkillCursor=0}
+local unpackArgs=table.unpack or unpack
+local self={Running=true,Rows={},ByName={},MoveBy={},PendingEnds={},NextAt=0,NextM1At=0,Learning=false,LearnUntil=0,PendingStart={},Firing=false,SkillCursor=0,StandPartsCache=nil,SummonAttempts=0,LastError=nil,ErrorAt=0,HoldCooldownUntil={}}
 local excluded={Block=true,Quote=true,Pose=true,Summon=true,SummonStand=true,Heal=true,Jump=true,TogglePilot=true}
 local excludedLower={
 block=true,quote=true,pose=true,summon=true,summonstand=true,unsummon=true,
@@ -4238,6 +4400,9 @@ end})
 section:AddButton({Title="Xóa skill đã học của Stand này",Description="Xóa dữ liệu đã học để quét lại từ đầu",Callback=function()
 self:ClearLearnedStand()
 end})
+section:AddButton({Title="Làm mới skill",Description="Quét lại Stand / vũ khí hiện tại và lọc bỏ skill cũ",Callback=function()
+self:ManualRefresh()
+end})
 local label=section:AddParagraph({Title="M1 + Skill",Content="Dùng chung cho các mục farm · Chọn M1 để đấm"})
 local smartCooldown=section:AddToggle("EDUCombatSmartCooldown",{Title="Lọc Cooldown thông minh (CDgui)",Default=false})
 local autoCancelHold=section:AddToggle("EDUCombatAutoCancelHold",{Title="Tự hủy chiêu giữ (Hold) khi mục tiêu chết",Default=true})
@@ -4247,14 +4412,94 @@ local throttleDrop=section:AddDropdown("EDUCombatThrottle",{Title="Giới hạn 
 local setSelected=selected.SetValue
 local function alive()return self.Running and session.Running and not fluent.Unloaded end
 local function status(text)if self.Last~=text then self.Last=text;label:SetDesc(text)end end
+local function isRemoteEvent(inst)
+if not inst then return false end
+local okR,r=pcall(inst.IsA,inst,"RemoteEvent")
+if okR and r then return true end
+local okU,u=pcall(inst.IsA,inst,"UnreliableRemoteEvent")
+return okU and u==true
+end
+local function isRemoteCallable(inst)
+if isRemoteEvent(inst)then return true end
+local okF,f=pcall(inst.IsA,inst,"RemoteFunction")
+return okF and f==true
+end
+local function isOwnedByChar(inst,char)
+local cur=inst
+local hops=0
+while cur and hops<10 do
+if cur==char then return true end
+cur=cur.Parent
+hops+=1
+end
+return false
+end
+local function relativePathFromChar(char,inst)
+if not char or not inst or not isOwnedByChar(inst,char)then return nil end
+local parts={}
+local cur=inst
+while cur and cur~=char do
+table.insert(parts,1,cur.Name)
+cur=cur.Parent
+end
+return#parts>0 and table.concat(parts,"/")or nil
+end
+local function resolveRelativePath(char,relPath)
+if not char or type(relPath)~="string"or relPath==""then return nil end
+local cur=char
+for seg in string.gmatch(relPath,"[^/]+")do
+cur=cur:FindFirstChild(seg)
+if not cur then return nil end
+end
+return cur
+end
+local function findToolContainer(char)
+if not char then return nil end
+for _,child in ipairs(char:GetChildren())do
+if child.Parent==char then
+local okT,isTool=pcall(child.IsA,child,"Tool")
+if okT and isTool then
+local se=child:FindFirstChild("StandEvents")
+if se then return child,se end
+if type(child.GetDescendants)=="function"then
+for _,desc in ipairs(child:GetDescendants())do
+if isRemoteCallable(desc)then return child,nil end
+end
+elseif type(child.GetChildren)=="function"then
+for _,sub in ipairs(child:GetChildren())do
+if isRemoteCallable(sub)then return child,nil end
+end
+end
+end
+end
+end
+return nil,nil
+end
+local function reportError(msg)
+local now=os.clock()
+self.LastError=tostring(msg or"Lỗi không xác định")
+self.ErrorAt=now
+if now-(self.LastWarnAt or 0)>=3 then
+self.LastWarnAt=now
+status("Cảnh báo skill: "..self.LastError:sub(1,90))
+end
+end
 local function context()
 local char=player.Character
 local hum=char and char:FindFirstChildOfClass("Humanoid")
-return char,hum,char and char:FindFirstChild("StandEvents")
+local events=char and char:FindFirstChild("StandEvents")
+if events then return char,hum,events end
+local tool,toolEvents=findToolContainer(char)
+if toolEvents then return char,hum,toolEvents end
+if tool then return char,hum,tool end
+return char,hum,nil
 end
 local function kindOf(events)
-if events and events:IsA("Folder")then return"Folder"end
-if events and(events:IsA("RemoteEvent")or events:IsA("UnreliableRemoteEvent"))then return"Remote"end
+if not events then return nil end
+if events:IsA("Folder")then return"Folder"end
+if isRemoteCallable(events)then return"Remote"end
+if events:IsA("Tool")then return"Tool"end
+return nil
 end
 local profiles={
 HWAnubis={
@@ -4417,15 +4662,40 @@ if type(stateVal)=="string"and string.lower(stateVal)=="aim"then return true end
 if typeof(extraVal)=="Vector3"then return true end
 return false
 end
-local function normalizeMove(raw)
+local function normalizeArgTemplate(raw)
+if type(raw)~="table"then return nil end
+local count=type(raw.n)=="number"and math.clamp(math.floor(raw.n),0,8)or#raw
+local out={}
+for i=1,count do
+local v=raw[i]
+if v==nil or v=="__NIL__"then
+out[i]="__NIL__"
+elseif v=="__AIM__"or v=="__AIM_CF__"then
+out[i]=v
+else
+local prim=safePrimitive(v)
+if prim==nil then return nil end
+out[i]=prim
+end
+end
+return out
+end
+local function normalizeMove(raw,defaultProtocol,defaultSource)
 if type(raw)~="table"or type(raw.Name)~="string"or raw.Name==""or isExcludedName(raw.Name)then return nil end
 local hold=type(raw.Hold)=="number"and raw.Hold==raw.Hold and raw.Hold>=.25 and math.clamp(raw.Hold,.25,10)or nil
 local aim=raw.Aim==true or nil
 local uiName=raw.Name=="NormalPunch"and"M1"or raw.Name
 local remoteName=type(raw.RemoteName)=="string"and raw.RemoteName~=""and raw.RemoteName or(raw.Name=="NormalPunch"and"NormalPunch"or nil)
+local tpl=normalizeArgTemplate(raw.ArgTemplate)
+local aimTpl=normalizeArgTemplate(raw.AimArgTemplate)
+local endTpl=normalizeArgTemplate(raw.EndArgTemplate)
 return{
 Name=uiName,
 RemoteName=remoteName,
+Protocol=type(raw.Protocol)=="string"and raw.Protocol or defaultProtocol,
+RemotePath=type(raw.RemotePath)=="string"and raw.RemotePath~=""and raw.RemotePath or nil,
+RemoteType=type(raw.RemoteType)=="string"and raw.RemoteType or nil,
+Method=(raw.Method=="InvokeServer"or raw.RemoteType=="RemoteFunction")and"InvokeServer"or nil,
 Action=type(raw.Action)=="string"and raw.Action or nil,
 Direct=raw.Direct==true or nil,
 StartState=safePrimitive(raw.StartState)or(aim and"Start"or nil),
@@ -4433,16 +4703,23 @@ EndState=safePrimitive(raw.EndState),
 Aim=aim,
 Hold=hold,
 TapRelease=(not hold and raw.TapRelease==true)or nil,
-ArgCount=type(raw.ArgCount)=="number"and math.clamp(math.floor(raw.ArgCount),1,5)or nil,
+ArgCount=type(raw.ArgCount)=="number"and math.clamp(math.floor(raw.ArgCount),0,8)or(tpl and#tpl or nil),
 Extra4=safePrimitive(raw.Extra4),
+ArgTemplate=tpl,
+AimArgTemplate=aimTpl,
+EndArgTemplate=endTpl,
+TargetMode=type(raw.TargetMode)=="string"and raw.TargetMode or(aim and"AimPos"or nil),
+Source=type(raw.Source)=="string"and raw.Source or(defaultSource or"Preset"),
 }
 end
-local function normalizeProfile(raw)
+local function normalizeProfile(raw,defaultProtocol,defaultSource)
 if type(raw)~="table"then return nil end
 local list=type(raw.Moves)=="table"and raw.Moves or raw
+local proto=type(raw.Protocol)=="string"and raw.Protocol or defaultProtocol
+local src=type(raw.Source)=="string"and raw.Source or defaultSource
 local moves,seen={},{}
 for _,item in ipairs(list)do
-local move=normalizeMove(item)
+local move=normalizeMove(item,proto,src)
 if move and not seen[move.Name]then
 seen[move.Name]=true;moves[#moves+1]=move
 end
@@ -4453,13 +4730,15 @@ summon={
 Name=raw.Summon.Name,
 Action=type(raw.Summon.Action)=="string"and raw.Summon.Action or nil,
 Direct=raw.Summon.Direct==true or nil,
+RemotePath=type(raw.Summon.RemotePath)=="string"and raw.Summon.RemotePath or nil,
+ArgTemplate=normalizeArgTemplate(raw.Summon.ArgTemplate),
 StartState=safePrimitive(raw.Summon.StartState),
-ArgCount=type(raw.Summon.ArgCount)=="number"and math.clamp(math.floor(raw.Summon.ArgCount),1,4)or nil,
+ArgCount=type(raw.Summon.ArgCount)=="number"and math.clamp(math.floor(raw.Summon.ArgCount),1,6)or nil,
 Extra4=safePrimitive(raw.Summon.Extra4),
 }
 end
 if#moves==0 and not summon then return nil end
-return{Moves=moves,Summon=summon}
+return{Moves=moves,Summon=summon,Protocol=proto,Source=src}
 end
 local function tryDelete(filePath)
 if type(delfile)~="function"or type(filePath)~="string"then return end
@@ -4500,19 +4779,63 @@ pcall(writefile,profilePath..".bak",encoded)
 return wroteMain
 end
 loadLearned()
-local function standName()
+local function standName(char,events)
 local data=player:FindFirstChild("Data")
 local value=data and data:FindFirstChild("Stand")
-return value and tostring(value.Value)or nil
+local rawStand=value and tostring(value.Value)or nil
+local targetChar=char or player.Character
+if targetChar and events and targetChar:FindFirstChild("StandEvents")~=events then
+local okT,isTool=pcall(events.IsA,events,"Tool")
+if okT and isTool and type(events.Name)=="string"and events.Name~=""then
+return events.Name
+end
+local tool=findToolContainer(targetChar)
+if tool and type(tool.Name)=="string"and tool.Name~=""then
+return tool.Name
+end
+end
+if rawStand and rawStand~=""and string.lower(rawStand)~="none"and string.lower(rawStand)~="standless"then
+return rawStand
+end
+local tool=findToolContainer(targetChar)
+if tool and type(tool.Name)=="string"and tool.Name~=""then return tool.Name end
+return rawStand
+end
+local function readReplicatedStandProfile(stand)
+if type(stand)~="string"or stand==""then return nil end
+local okRes,prof=pcall(function()
+local rs=game:GetService("ReplicatedStorage")
+if not rs then return nil end
+for _,folderName in ipairs({"StandMoves","Moves","StandData","Skills","AbilityData"})do
+local root=rs:FindFirstChild(folderName)
+local standObj=root and root:FindFirstChild(stand)
+if standObj and type(standObj.GetChildren)=="function"then
+local moves={}
+for _,item in ipairs(standObj:GetChildren())do
+local n=type(item.Name)=="string"and item.Name or nil
+if n and not isExcludedName(n)then
+moves[#moves+1]={Name=n,Action="InitiateMove",StartState="Start",ArgCount=4,Protocol="SingleRemote",Source="Module"}
+end
+end
+if#moves>0 then return normalizeProfile({Moves=moves,Protocol="SingleRemote",Source="Module"},"SingleRemote","Module")end
+end
+end
+return nil
+end)
+return okRes and prof or nil
 end
 local function activeProfile(stand)
 if type(stand)~="string"or stand==""then return nil,false end
 if learned[stand]and#learned[stand].Moves>0 then return learned[stand],true end
-if profiles[stand]then return profiles[stand],false end
-return nil,false
+if profiles[stand]then return normalizeProfile(profiles[stand],"SingleRemote","Preset"),false end
+return readReplicatedStandProfile(stand),false
 end
-local function summonState(char)
+local function summonState(char,events)
 if not char then return nil end
+if events and char:FindFirstChild("StandEvents")~=events then
+local okT,isTool=pcall(events.IsA,events,"Tool")
+if okT and isTool then return nil end
+end
 for _,attr in ipairs({"Summoned","StandSummoned","IsSummoned"})do
 local ok,value=pcall(char.GetAttribute,char,attr)
 if ok and type(value)=="boolean"then return value end
@@ -4529,9 +4852,21 @@ local v=char:FindFirstChild(childName)
 if v and v:IsA("BoolValue")then return v.Value end
 end
 if standModel and standModel:IsA("Model")and type(standModel.GetDescendants)=="function"then
-local sawPart=false
+local now=os.clock()
+local cache=self.StandPartsCache
+if not cache or cache.Model~=standModel or now>=(cache.ExpiresAt or 0)then
+local parts={}
 for _,desc in ipairs(standModel:GetDescendants())do
-if desc:IsA("BasePart")and desc.Name~="HumanoidRootPart"and type(desc.Transparency)=="number"then
+if desc:IsA("BasePart")and desc.Name~="HumanoidRootPart"then
+parts[#parts+1]=desc
+end
+end
+cache={Model=standModel,Parts=parts,ExpiresAt=now+1.5}
+self.StandPartsCache=cache
+end
+local sawPart=false
+for _,desc in ipairs(cache.Parts)do
+if type(desc.Transparency)=="number"then
 sawPart=true
 if desc.Transparency<0.95 then return true end
 end
@@ -4539,34 +4874,108 @@ end
 if sawPart then return false end
 end
 end
+local function resolveMoveRemote(char,events,move)
+if move and type(move.RemotePath)=="string"and move.RemotePath~=""then
+local byPath=resolveRelativePath(char,move.RemotePath)
+if isRemoteCallable(byPath)and isOwnedByChar(byPath,char)then return byPath end
+end
+if isRemoteCallable(events)and isOwnedByChar(events,char)then return events end
+if events and isOwnedByChar(events,char)then
+local name=(move and(move.RemoteName or move.Name))
+if type(name)=="string"and name~=""then
+local found=events:FindFirstChild(name)
+if isRemoteCallable(found)then return found end
+end
+if events:IsA("Tool")and type(events.GetDescendants)=="function"then
+local fallbackRemote=nil
+for _,d in ipairs(events:GetDescendants())do
+if isRemoteCallable(d)then
+if d.Name==name then return d end
+fallbackRemote=fallbackRemote or d
+end
+end
+if fallbackRemote and move and move.Action then return fallbackRemote end
+end
+end
+return nil
+end
+local function invokeArgTemplate(remote,tpl,char,targetModel,useInvoke)
+local count=#tpl
+local args={}
+for i=1,count do
+local tok=tpl[i]
+if tok=="__NIL__"then
+args[i]=nil
+elseif tok=="__AIM__"then
+args[i]=resolveAimPosition(char,targetModel)
+elseif tok=="__AIM_CF__"then
+args[i]=CFrame.new(resolveAimPosition(char,targetModel))
+else
+args[i]=tok
+end
+end
+if useInvoke or(remote.IsA and remote:IsA("RemoteFunction"))then
+return remote:InvokeServer(unpackArgs(args,1,count))
+end
+return remote:FireServer(unpackArgs(args,1,count))
+end
+local function templateHasAim(tpl)
+if type(tpl)~="table"then return false end
+for i=1,#tpl do
+if tpl[i]=="__AIM__"or tpl[i]=="__AIM_CF__"then return true end
+end
+return false
+end
 local function fireProtocol(events,move,stateOverride,char,targetModel)
-if not events or not events.Parent or events.Parent~=char then return false end
+if not char or not char.Parent then return false end
+local remote=resolveMoveRemote(char,events,move)
+if not remote or not isOwnedByChar(remote,char)then return false end
 local wireName=move.RemoteName or move.Name
 local stateVal=stateOverride~=nil and stateOverride or move.StartState
+local useInvoke=move.Method=="InvokeServer"
 self.Firing=true
-local ok=pcall(function()
+local ok,err=pcall(function()
+if stateOverride~=nil and move.EndArgTemplate and isEndToken(stateOverride)then
+invokeArgTemplate(remote,move.EndArgTemplate,char,targetModel,useInvoke)
+return
+end
+if stateOverride==nil and(move.ArgTemplate or move.AimArgTemplate)then
+if move.ArgTemplate then
+invokeArgTemplate(remote,move.ArgTemplate,char,targetModel,useInvoke)
+end
+if move.AimArgTemplate then
+invokeArgTemplate(remote,move.AimArgTemplate,char,targetModel,useInvoke)
+elseif move.Aim and not move.Direct and not templateHasAim(move.ArgTemplate)then
+local aimPos=resolveAimPosition(char,targetModel)
+remote:FireServer(move.Action or"InitiateMove",wireName,"Aim",aimPos,nil)
+end
+return
+end
 if move.Direct then
 if move.ArgCount==1 and stateVal==nil then
-events:FireServer(wireName)
+remote:FireServer(wireName)
 else
-events:FireServer(wireName,stateVal)
+remote:FireServer(wireName,stateVal)
 end
 else
 local action=move.Action or"InitiateMove"
 if move.Aim and stateOverride==nil then
 local aimPos=resolveAimPosition(char,targetModel)
-events:FireServer(action,wireName,move.StartState or"Start",nil)
-events:FireServer(action,wireName,"Aim",aimPos,nil)
+remote:FireServer(action,wireName,move.StartState or"Start",nil)
+remote:FireServer(action,wireName,"Aim",aimPos,nil)
 elseif move.ArgCount==2 and stateVal==nil then
-events:FireServer(action,wireName)
+remote:FireServer(action,wireName)
 elseif move.ArgCount==3 and move.Extra4==nil then
-events:FireServer(action,wireName,stateVal)
+remote:FireServer(action,wireName,stateVal)
 else
-events:FireServer(action,wireName,stateVal,move.Extra4)
+remote:FireServer(action,wireName,stateVal,move.Extra4)
 end
 end
 end)
 self.Firing=false
+if not ok then
+reportError(tostring(wireName or move.Name)..": "..tostring(err))
+end
 return ok
 end
 local function flushPendingEnds(force)
@@ -4575,9 +4984,9 @@ local now=os.clock()
 local keep={}
 for _,item in ipairs(self.PendingEnds)do
 if force or now>=item.Until then
-if item.Remote and item.Char and item.Char.Parent and item.Remote.Parent==item.Char
-and item.Hum and item.Hum.Health>0 and item.Move and item.Move.EndState~=nil then
-fireProtocol(item.Remote,item.Move,item.Move.EndState,item.Char)
+if item.Remote and item.Char and item.Char.Parent and isOwnedByChar(item.Remote,item.Char)
+and item.Hum and item.Hum.Health>0 and item.Move and(item.Move.EndState~=nil or item.Move.EndArgTemplate~=nil)then
+fireProtocol(item.Remote,item.Move,item.Move.EndState or"End",item.Char)
 end
 else
 keep[#keep+1]=item
@@ -4589,12 +4998,17 @@ function self:Reset()
 self.NextAt=0
 flushPendingEnds(true)
 if self.Held then self:Release()end
+if self.HoldCooldownUntil then table.clear(self.HoldCooldownUntil)end
 end
 function self:Release()
 local held=self.Held
 if not held then return end
 self.Held=nil
-if held.Remote and held.Char and held.Char.Parent and held.Remote.Parent==held.Char
+if held.Name then
+self.HoldCooldownUntil=self.HoldCooldownUntil or{}
+self.HoldCooldownUntil[held.Name]=os.clock()+1.5
+end
+if held.Remote and held.Char and held.Char.Parent and isOwnedByChar(held.Remote,held.Char)
 and held.Hum and held.Hum.Health>0 then
 if held.Move then
 fireProtocol(held.Remote,held.Move,held.Move.EndState or"End",held.Char)
@@ -4611,29 +5025,86 @@ if bridge and bridge.Owner==self then
 bridge.Owner=nil;bridge.Sink=nil;bridge.Until=0
 end
 end
-local function ensureLearnedEntry(stand)
+local function ensureLearnedEntry(stand,proto)
 local entry=learned[stand]
 if not entry then
-entry={Moves={},Summon=nil}
+entry={Moves={},Summon=nil,Protocol=proto,Source="Learned"}
 if profiles[stand]then
-for _,m in ipairs(profiles[stand].Moves)do entry.Moves[#entry.Moves+1]=normalizeMove(m)end
+for _,m in ipairs(profiles[stand].Moves)do entry.Moves[#entry.Moves+1]=normalizeMove(m,proto or"SingleRemote","Preset")end
 entry.Summon=profiles[stand].Summon
 end
 learned[stand]=entry
 end
 return entry
 end
-local function findMove(entry,name)
+local function findMove(entry,name,relPath)
 local uiName=name=="NormalPunch"and"M1"or name
-for _,m in ipairs(entry.Moves)do if m.Name==uiName or m.RemoteName==name then return m end end
+for _,m in ipairs(entry.Moves)do
+if(m.Name==uiName or m.RemoteName==name)and(not relPath or not m.RemotePath or m.RemotePath==relPath)then
+return m
 end
-local function parseMoveArgs(...)
+end
+end
+local function encodeArgTemplate(args,n)
+local out={}
+for i=1,n do
+local v=args[i]
+if v==nil then
+out[i]="__NIL__"
+elseif typeof(v)=="Vector3"then
+out[i]="__AIM__"
+elseif typeof(v)=="CFrame"then
+out[i]="__AIM_CF__"
+else
+local prim=safePrimitive(v)
+if prim~=nil then
+out[i]=prim
+elseif typeof(v)=="Instance"and v:IsA("Model")then
+out[i]="__AIM__"
+else
+return nil
+end
+end
+end
+return out
+end
+local function countContainerRemotes(container)
+if not container then return 0 end
+local n=0
+if type(container.GetDescendants)=="function"then
+for _,d in ipairs(container:GetDescendants())do if isRemoteCallable(d)then n+=1 end end
+elseif type(container.GetChildren)=="function"then
+for _,c in ipairs(container:GetChildren())do if isRemoteCallable(c)then n+=1 end end
+end
+return n
+end
+local function parseMoveArgs(remote,events,kind,...)
 local args=table.pack(...)
-if args.n<1 then return nil end
 local a1,a2,a3,a4=args[1],args[2],args[3],args[4]
+local tpl=encodeArgTemplate(args,args.n)
+local dedicatedChild=remote~=events and((kind=="Folder")or(kind=="Tool"and countContainerRemotes(events)>1 and not(type(a1)=="string"and a1=="InitiateMove")))
+if dedicatedChild then
+local aimFollow=type(a1)=="string"and string.lower(a1)=="aim"
+local aim=aimFollow or isAimToken(a1,a2)or isAimToken(a2,a3)
+return{
+Direct=true,
+Action=nil,
+Name=remote.Name,
+State=aim and"Start"or safePrimitive(a1),
+IsEnd=isEndToken(a1),
+IsAim=aim,
+IsAimFollowup=aimFollow,
+ArgCount=args.n,
+Extra4=nil,
+ArgTemplate=tpl,
+Protocol=kind,
+}
+end
+if args.n<1 then return nil end
 if type(a1)~="string"or a1==""then return nil end
 if type(a2)=="string"and a2~=""and not isEndToken(a2)and string.lower(a2)~="start"then
-local aim=isAimToken(a3,a4)
+local aimFollow=type(a3)=="string"and string.lower(a3)=="aim"
+local aim=aimFollow or isAimToken(a3,a4)
 if a1=="InitiateMove"or aim or a3==nil or type(a3)=="boolean"or type(a3)=="string"then
 return{
 Direct=false,
@@ -4642,8 +5113,11 @@ Name=a2,
 State=aim and"Start"or safePrimitive(a3),
 IsEnd=isEndToken(a3),
 IsAim=aim,
-ArgCount=math.min(args.n,4),
+IsAimFollowup=aimFollow,
+ArgCount=math.min(args.n,8),
 Extra4=not aim and safePrimitive(a4)or nil,
+ArgTemplate=tpl,
+Protocol=kind=="Tool"and"Tool"or"SingleRemote",
 }
 end
 end
@@ -4655,31 +5129,40 @@ Name=a1,
 State=safePrimitive(a2),
 IsEnd=isEndToken(a2),
 IsAim=false,
-ArgCount=math.min(args.n,2),
+ArgCount=math.min(args.n,8),
 Extra4=nil,
+ArgTemplate=tpl,
+Protocol=kind=="Tool"and"Tool"or"SingleRemote",
 }
 end
 return nil
 end
 function self:ObserveFire(remote,method,...)
 if not self.Learning or not alive()or self.Firing then return end
-if method~="FireServer"then return end
+if method~="FireServer"and method~="InvokeServer"then return end
 local char,hum,events=context()
-if not char or not hum or hum.Health<=0 or not events or remote~=events then return end
-if kindOf(events)~="Remote"then return end
-local stand=standName()
+local kind=kindOf(events)
+if not char or not hum or hum.Health<=0 or not events or not kind then return end
+if not remote or not isRemoteCallable(remote)or not isOwnedByChar(remote,char)then return end
+if kind=="Remote"and remote~=events then
+local toolContainer=findToolContainer(char)
+if not(toolContainer and isOwnedByChar(remote,toolContainer))then return end
+end
+local stand=standName(char,events)
 if not stand or stand==""then return end
-local parsed=parseMoveArgs(...)
+local parsed=parseMoveArgs(remote,events,kind,...)
 if not parsed then return end
+local relPath=relativePathFromChar(char,remote)
 local now=os.clock()
 self.LearnUntil=math.max(self.LearnUntil,now+25)
 local bridge=env.LunaStandRemoteObserverV1
 if bridge and bridge.Owner==self then bridge.Until=self.LearnUntil end
 if isSummonName(parsed.Name)then
 if not parsed.IsEnd then
-local entry=ensureLearnedEntry(stand)
+local entry=ensureLearnedEntry(stand,parsed.Protocol)
 entry.Summon={
 Name=parsed.Name,Action=parsed.Action,Direct=parsed.Direct or nil,
+RemotePath=relPath,ArgTemplate=parsed.ArgTemplate,
 StartState=parsed.State,ArgCount=parsed.ArgCount,Extra4=parsed.Extra4,
 }
 saveLearned()
@@ -4687,8 +5170,8 @@ end
 return
 end
 if isExcludedName(parsed.Name)then return end
-local entry=ensureLearnedEntry(stand)
-local existing=findMove(entry,parsed.Name)
+local entry=ensureLearnedEntry(stand,parsed.Protocol)
+local existing=findMove(entry,parsed.Name,relPath)
 local changed=false
 local uiName=parsed.Name=="NormalPunch"and"M1"or parsed.Name
 local remoteName=parsed.Name=="NormalPunch"and"NormalPunch"or nil
@@ -4697,6 +5180,7 @@ if existing then
 local startedAt=self.PendingStart[uiName]
 self.PendingStart[uiName]=nil
 if existing.EndState~=parsed.State then existing.EndState=parsed.State;changed=true end
+if parsed.ArgTemplate and not existing.EndArgTemplate then existing.EndArgTemplate=parsed.ArgTemplate;changed=true end
 if startedAt then
 local dur=now-startedAt
 if dur>=.25 then
@@ -4708,27 +5192,42 @@ end
 end
 end
 else
-if not parsed.IsAim or not self.PendingStart[uiName]then
+if not parsed.IsAimFollowup or not self.PendingStart[uiName]then
 self.PendingStart[uiName]=now
 end
 if not existing then
 entry.Moves[#entry.Moves+1]={
 Name=uiName,
 RemoteName=remoteName,
+Protocol=parsed.Protocol,
+RemotePath=relPath,
+RemoteType=remote.ClassName,
+Method=method=="InvokeServer"and"InvokeServer"or nil,
 Action=parsed.Action,
 Direct=parsed.Direct or nil,
 StartState=parsed.State,
 Aim=parsed.IsAim or nil,
+TargetMode=parsed.IsAim and"AimPos"or nil,
 ArgCount=parsed.ArgCount,
 Extra4=parsed.Extra4,
+ArgTemplate=(not parsed.IsAimFollowup)and parsed.ArgTemplate or nil,
+AimArgTemplate=parsed.IsAimFollowup and parsed.ArgTemplate or nil,
+Source="Learned",
 }
 changed=true
 else
 if parsed.IsAim and not existing.Aim then
-existing.Aim=true;changed=true
+existing.Aim=true;existing.TargetMode="AimPos";changed=true
+end
+if parsed.IsAimFollowup then
+if parsed.ArgTemplate and not existing.AimArgTemplate then existing.AimArgTemplate=parsed.ArgTemplate;changed=true end
+else
+if parsed.ArgTemplate and not existing.ArgTemplate then existing.ArgTemplate=parsed.ArgTemplate;changed=true end
 end
 if existing.StartState==nil and parsed.State~=nil then existing.StartState=parsed.State;changed=true end
 if existing.Action==nil and parsed.Action~=nil then existing.Action=parsed.Action;changed=true end
+if existing.RemotePath==nil and relPath~=nil then existing.RemotePath=relPath;changed=true end
+if existing.Source~="Learned"then existing.Source="Learned";changed=true end
 end
 end
 if changed then
@@ -4744,23 +5243,20 @@ self:Refresh(true)
 end
 function self:StartLearning()
 if not alive()then return false end
+self:Refresh(true)
 local char,hum,events=context()
 local kind=kindOf(events)
-local stand=standName()
+local stand=standName(char,events)
 if not char or not hum or hum.Health<=0 or not events then
 status("Chưa có nhân vật / Stand để học");return false
 end
-if kind=="Folder"then
-status("Stand cũ ("..tostring(stand or"Folder")..") đã tự quét đủ "..#self.Rows.." skill · Không cần học tay")
-return false
-end
-if kind~="Remote"then
+if not kind then
 status("StandEvents là "..events.ClassName.." · chưa hỗ trợ học");return false
 end
 local bridge=env.LunaStandRemoteObserverV1
 if not bridge or not bridge.Installed then
 if type(hookmetamethod)~="function"or type(getnamecallmethod)~="function"then
-status("Executor không hỗ trợ hookmetamethod để tự học Stand mới");return false
+status("Executor mobile không hỗ trợ hookmetamethod · Dùng hồ sơ có sẵn hoặc chọn skill từ danh sách");return false
 end
 bridge={Installed=false,Busy=false,Until=0}
 local old
@@ -4805,56 +5301,100 @@ self:Refresh(true)
 return true
 end
 function self:ClearLearnedStand()
-local stand=standName()
+local char,_,events=context()
+local stand=standName(char,events)
 if not stand or stand==""then status("Chưa nhận diện được tên Stand");return false end
 if learned[stand]then
 learned[stand]=nil
 saveLearned()
 self:Reset()
-self:Refresh(true)
+self:Refresh(true,true)
 status("Đã xóa skill đã học của "..stand.." · Bấm 'Quét / Học skill Stand mới' để học lại")
 return true
 end
 status("Stand "..stand.." chưa có dữ liệu học tay nào để xóa")
 return false
 end
-function self:Refresh(force)
+function self:Refresh(force,pruneStale)
 if not alive()then return end
 local char,hum,events=context()
 local kind=kindOf(events)
-local stand=standName()
+local stand=standName(char,events)
 local changed=char~=self.Char or hum~=self.Hum or events~=self.Events
 or kind~=self.Kind or stand~=self.Stand
 if changed then
 self:Release();flushPendingEnds(true)
 if self.Learning and stand~=self.Stand then self:StopLearning()end
 self.Char=char;self.Hum=hum;self.Events=events;self.Kind=kind;self.Stand=stand
-self.NextAt=0;self.NextSummon=0;self.ScanAt=0
+self.NextAt=0;self.NextSummon=0;self.ScanAt=0;self.StandPartsCache=nil;self.SummonAttempts=0;self.NeedPrune=true
+elseif pruneStale then
+self.NeedPrune=true
 end
 local now=os.clock()
 if not changed and not force and now<(self.ScanAt or 0)then return end
 self.ScanAt=now+.5
 local rows,byName,moves={},{},{}
 local profile,isLearned=nil,false
-if char and char.Parent and hum and hum.Health>0 then
+if char and char.Parent and hum and hum.Health>0 and events then
+profile,isLearned=activeProfile(stand)
 if kind=="Folder"then
+local overrideByName={}
+if profile and isLearned and type(profile.Moves)=="table"then
+for _,m in ipairs(profile.Moves)do overrideByName[m.Name]=m end
+end
 for _,remote in ipairs(events:GetChildren())do
-if remote:IsA("RemoteEvent")and not excluded[remote.Name]and not byName[remote.Name]then
+if isRemoteCallable(remote)and not isExcludedName(remote.Name)and not byName[remote.Name]then
+local ov=overrideByName[remote.Name]
 rows[#rows+1]=remote.Name;byName[remote.Name]=remote
+if ov then
+moves[remote.Name]=ov
+else
+moves[remote.Name]={
+Name=remote.Name,Protocol="Folder",RemotePath=relativePathFromChar(char,remote),
+RemoteType=remote.ClassName,Direct=true,ArgTemplate={true},ArgCount=1,Source="Scanned",
+}
+end
 end
 end
 elseif kind=="Remote"then
-profile,isLearned=activeProfile(stand)
 if profile and type(profile.Moves)=="table"then
 for _,move in ipairs(profile.Moves)do
 if not isExcludedName(move.Name)and not byName[move.Name]then
-rows[#rows+1]=move.Name;byName[move.Name]=events;moves[move.Name]=move
+local targetRemote=resolveMoveRemote(char,events,move)or events
+rows[#rows+1]=move.Name;byName[move.Name]=targetRemote;moves[move.Name]=move
+end
+end
+end
+elseif kind=="Tool"then
+local usedRemotes={}
+if profile and type(profile.Moves)=="table"then
+for _,move in ipairs(profile.Moves)do
+if not isExcludedName(move.Name)and not byName[move.Name]then
+local targetRemote=resolveMoveRemote(char,events,move)or events
+rows[#rows+1]=move.Name;byName[move.Name]=targetRemote;moves[move.Name]=move
+if targetRemote~=events then usedRemotes[targetRemote]=true end
+end
+end
+end
+local toolRemotes={}
+if type(events.GetDescendants)=="function"then
+for _,d in ipairs(events:GetDescendants())do if isRemoteCallable(d)then toolRemotes[#toolRemotes+1]=d end end
+elseif type(events.GetChildren)=="function"then
+for _,c in ipairs(events:GetChildren())do if isRemoteCallable(c)then toolRemotes[#toolRemotes+1]=c end end
+end
+for _,remote in ipairs(toolRemotes)do
+if not usedRemotes[remote]and not isExcludedName(remote.Name)and not byName[remote.Name]then
+rows[#rows+1]=remote.Name;byName[remote.Name]=remote
+moves[remote.Name]={
+Name=remote.Name,Protocol="Tool",RemotePath=relativePathFromChar(char,remote),
+RemoteType=remote.ClassName,Method=remote:IsA("RemoteFunction")and"InvokeServer"or nil,
+Direct=true,ArgTemplate={},ArgCount=0,Source="Scanned",
+}
 end
 end
 end
 end
-end
-if kind=="Folder"or(kind=="Remote"and isLearned)then
+if kind=="Folder"or isLearned or kind=="Tool"then
 table.sort(rows,function(a,b)
 if a==b then return false end
 if isBasicPunch(a)and not isBasicPunch(b)then return true end
@@ -4865,10 +5405,31 @@ end
 local different=#rows~=#self.Rows
 if not different then for i,name in ipairs(rows)do if name~=self.Rows[i]then different=true;break end end end
 self.Rows=rows;self.ByName=byName;self.MoveBy=moves;self.ActiveProfile=profile
-if different and#rows>0 then
+local shouldPrune=char~=nil and events~=nil and(pruneStale==true or((changed or self.NeedPrune)and#rows>0))
+if shouldPrune and(self.Pending or type(selected.Value)=="table")then
+self.NeedPrune=false
+local srcSel=self.Pending or selected.Value
+local kept={}
+for k,on in pairs(srcSel)do
+if on and type(k)=="string"and(byName[k]~=nil or(isBasicPunch(k)and(byName["M1"]~=nil or byName["NormalPunch"]~=nil)))then
+kept[k]=true
+end
+end
+self.Pending=kept
+self.Syncing=true
+selected:SetValues(rows)
+setSelected(selected,kept);selected.Value=table.clone(kept)
+self.Syncing=false
+elseif shouldPrune then
+self.NeedPrune=false
+if different then self.Syncing=true;selected:SetValues(rows);self.Syncing=false end
+elseif different and#rows>0 then
 self.Syncing=true;selected:SetValues(rows)
 if self.Pending then setSelected(selected,self.Pending);selected.Value=table.clone(self.Pending)end
 self.Syncing=false
+end
+if not force and not changed and not self.Learning and(self.ErrorAt or 0)>0 and(now-self.ErrorAt)<2.5 then
+return
 end
 if self.Learning then
 local left=math.max(0,math.ceil(self.LearnUntil-now))
@@ -4878,17 +5439,27 @@ elseif not char or not hum or hum.Health<=0 or not events then
 status("Chờ nhân vật / Stand")
 elseif not kind then
 status("StandEvents là "..events.ClassName.." · chưa hỗ trợ")
-elseif kind=="Remote"then
+elseif kind=="Remote"or kind=="Tool"then
 if profile and isLearned then
-status("Stand mới "..tostring(stand).." · Đã học "..#rows.." skill (tự lưu)")
+status(tostring(stand).." · Đã học "..#rows.." skill (tự lưu)")
 elseif profile then
-status("Stand mới "..tostring(stand).." · "..#rows.." skill sẵn có")
+status(tostring(stand).." · "..#rows.." skill sẵn có")
+elseif kind=="Tool"and#rows>0 then
+status("Vũ khí "..tostring(stand or"Tool").." · Quét "..#rows.." remote · Có thể bấm Học để lưu tham số")
 else
 status("Stand mới "..tostring(stand or"?").." · Chưa có skill · Bấm 'Quét / Học skill Stand mới' rồi bấm tay từng chiêu")
 end
 else
 status("Stand cũ (tự quét "..#rows.." skill) · Chọn M1 / skill hoặc bật tất cả")
 end
+end
+function self:ManualRefresh()
+self.StandPartsCache=nil
+self.SummonAttempts=0
+self.LastError=nil
+self.ErrorAt=0
+self:Refresh(true,true)
+return self.Rows
 end
 local manager=self
 function selected:SetValue(value)
@@ -4906,8 +5477,9 @@ end
 local function ready(char,hum,events,guard,owner)
 if not alive()or self.Learning or session.GameMenuBusy or session.RestoringSettings or session.StartupReady==false
 or char~=player.Character or not char or not char.Parent or not hum or hum.Health<=0
-or char:FindFirstChildOfClass("Humanoid")~=hum or char:FindFirstChild("StandEvents")~=events
+or char:FindFirstChildOfClass("Humanoid")~=hum or not events or not isOwnedByChar(events,char)
 or not kindOf(events)or next(env.EDULunaM1Retired or{})then return false end
+if session.IsMiasmaHolding and session:IsMiasmaHolding()then return false end
 local dungeon=session.IsDungeonActive and session:IsDungeonActive()
 if dungeon and owner~="Lair"or owner=="Lair"and not dungeon then return false end
 local boss=env.EDUHubBossCombatV1
@@ -4990,21 +5562,30 @@ if kind=="Folder"then
 local aura=char:FindFirstChild("Aura")
 if aura and aura:IsA("BoolValue")and not aura.Value then
 local summon=events:FindFirstChild("Summon")
-if summon and summon:IsA("RemoteEvent")and now>=(self.NextSummon or 0)then
-self.NextSummon=now+1;pcall(function()summon:FireServer()end)
+if summon and isRemoteCallable(summon)and now>=(self.NextSummon or 0)then
+self.SummonAttempts=(self.SummonAttempts or 0)+1
+self.NextSummon=now+(self.SummonAttempts>3 and 5 or 1)
+local okSum,errSum=pcall(function()summon:FireServer()end)
+if not okSum then reportError("Summon: "..tostring(errSum))end
 end
-return false
+if(self.SummonAttempts or 0)<=3 then return false end
+else
+self.SummonAttempts=0
 end
 else
-local summoned=summonState(char)
+local summoned=summonState(char,events)
 if summoned==false then
 if now>=(self.NextSummon or 0)then
-self.NextSummon=now+1
+self.SummonAttempts=(self.SummonAttempts or 0)+1
+self.NextSummon=now+(self.SummonAttempts>3 and 5 or 1)
+self.StandPartsCache=nil
 local summonMove=(self.ActiveProfile and self.ActiveProfile.Summon)
 or{Action="InitiateMove",Name="SummonStand",StartState="Start",ArgCount=4}
 fireProtocol(events,summonMove,nil,char,targetModel)
 end
-return false
+if(self.SummonAttempts or 0)<=3 then return false end
+else
+self.SummonAttempts=0
 end
 end
 local activeTarget=resolveActiveTarget(targetModel)
@@ -5022,8 +5603,19 @@ if not ready(char,hum,events,guard,owner)then break end
 if isMoveOnCooldown(cdSet,name,nil)then continue end
 if not withinSkillRange(char,activeTarget,false)then continue end
 local remote=self.ByName[name]
-if not remote or remote.Parent~=events or events:FindFirstChild(name)~=remote then self.ScanAt=0;continue end
-if pcall(function()remote:FireServer(true)end)then sent=true;count+=1 end
+if not remote or not isOwnedByChar(remote,char)or events:FindFirstChild(name)~=remote then self.ScanAt=0;continue end
+local move=self.MoveBy[name]
+if move and(move.ArgTemplate or move.EndArgTemplate or move.Aim or move.Action)then
+if fireProtocol(remote,move,nil,char,activeTarget)then
+sent=true;count+=1
+if move.TapRelease and(move.EndState~=nil or move.EndArgTemplate~=nil)then
+self.PendingEnds[#self.PendingEnds+1]={Move=move,Remote=remote,Char=char,Hum=hum,Until=now+.08}
+end
+end
+else
+local okFire,errFire=pcall(function()remote:FireServer(true)end)
+if okFire then sent=true;count+=1 else reportError(name..": "..tostring(errFire))end
+end
 end
 return sent
 end
@@ -5045,7 +5637,8 @@ if not move then continue end
 if isBasicPunch(name)then
 m1Move=move
 elseif move.Hold then
-if not isMoveOnCooldown(cdSet,move.Name,move.RemoteName)then
+if not isMoveOnCooldown(cdSet,move.Name,move.RemoteName)
+and now>=(self.HoldCooldownUntil and self.HoldCooldownUntil[move.Name]or 0)then
 holdCandidates[#holdCandidates+1]=move
 end
 elseif not isMoveOnCooldown(cdSet,move.Name,move.RemoteName)then
@@ -5065,8 +5658,9 @@ local move=activeSkills[idx]
 if withinSkillRange(char,activeTarget,move.Aim==true)and fireProtocol(events,move,nil,char,activeTarget)then
 sent=true
 firedCount+=1
-if move.TapRelease and move.EndState~=nil then
-self.PendingEnds[#self.PendingEnds+1]={Move=move,Remote=events,Char=char,Hum=hum,Until=now+.08}
+if move.TapRelease and(move.EndState~=nil or move.EndArgTemplate~=nil)then
+local resolvedRemote=resolveMoveRemote(char,events,move)or events
+self.PendingEnds[#self.PendingEnds+1]={Move=move,Remote=resolvedRemote,Char=char,Hum=hum,Until=now+.08}
 end
 end
 end
@@ -5080,17 +5674,52 @@ self.HoldCursor=idx
 local pick=holdCandidates[idx]
 if withinSkillRange(char,activeTarget,pick.Aim==true)and fireProtocol(events,pick,nil,char,activeTarget)then
 sent=true
+local resolvedRemote=resolveMoveRemote(char,events,pick)or events
 self.Held={
-Name=pick.Name,Move=pick,Remote=events,Char=char,Hum=hum,Until=now+pick.Hold,
+Name=pick.Name,Move=pick,Remote=resolvedRemote,Char=char,Hum=hum,Until=now+pick.Hold,
 TargetModel=trackedTarget,TargetParent=trackedTarget and trackedTarget.Parent or nil,
 }
 end
 end
-if m1Move and ready(char,hum,events,guard,owner)and not isMoveOnCooldown(cdSet,m1Move.Name,m1Move.RemoteName)
+if m1Move and not self.Held and ready(char,hum,events,guard,owner)and not isMoveOnCooldown(cdSet,m1Move.Name,m1Move.RemoteName)
 and withinSkillRange(char,activeTarget,false)then
 if fireProtocol(events,m1Move,nil,char,activeTarget)then sent=true end
 end
 return sent
+end
+function self:YieldForDungeon()
+self:Release()
+flushPendingEnds(true)
+self.NextAt=0
+return true
+end
+function self:FireM1Only(char)
+if not alive()or self.Learning or self.Held then return false end
+if session.GameMenuBusy or session.RestoringSettings or session.StartupReady==false then return false end
+if session.IsMiasmaHolding and session:IsMiasmaHolding()then return false end
+if next(env.EDULunaM1Retired or{})then return false end
+self:Refresh()
+local actor,hum,events=context()
+if not char or actor~=char or not char.Parent or not hum or hum.Health<=0 or not events or not kindOf(events)then return false end
+local now=os.clock()
+if now<(self.NextM1At or 0)then return false end
+if punchOnCooldown()then return false end
+self.NextM1At=now+.06
+local kind=kindOf(events)
+local move=self.MoveBy["M1"]or self.MoveBy["NormalPunch"]or self.MoveBy["Punch"]
+if move then
+return fireProtocol(events,move,nil,char,resolveActiveTarget(nil))
+end
+if kind=="Folder"then
+local remote=self.ByName["M1"]or self.ByName["NormalPunch"]or self.ByName["Punch"]
+or events:FindFirstChild("M1")or events:FindFirstChild("NormalPunch")or events:FindFirstChild("Punch")
+if isRemoteCallable(remote)and isOwnedByChar(remote,char)then
+local okFire,errFire=pcall(function()remote:FireServer(true)end)
+if not okFire then reportError("M1: "..tostring(errFire))end
+return okFire
+end
+end
+return false
 end
 function self:Step(model,guard)return self:Fire(player.Character,guard,"Boss",model)end
 selected:OnChanged(function()
@@ -5359,7 +5988,8 @@ end
 local workerOrder={"AutoFarmDungeon","EDULAIR_BossLockAura",
 "AutoFarm","AutoFarmLevels","FarmItems","StartStandFarm",
 "EDUHW_HalloweenAutoMob","EDUHW_HalloweenAutoMobAbove","EDUHW_HalloweenAutoDoor","AutoFarmBoss","EDUHWAutoRoll","EDUAutoReset",
-"EDULuna_AutoSummonStand","EDULuna_AutoSummonY","EDULuna_AntiAFK","EDUAutoRejoin"}
+"EDULuna_AutoSummonStand","EDULuna_AutoSummonY","EDULuna_AntiAFK","EDUAutoRejoin",
+"UseKeySkills","EDUBossServerHop","EDUAFKAntiStuck"}
 local workers={};for _,key in ipairs(workerOrder)do workers[key]=true end
 function self:Start()
 self.StartRequested=true
@@ -6421,15 +7051,31 @@ end
 end
 return pos
 end
+self.HeightCache=self.HeightCache or{}
 function self:TargetHeight(model)
 if not model then return 5 end
+local now=os.clock()
+local cached=self.HeightCache[model]
+if cached and model.Parent and now<cached.ExpiresAt then
+return cached.Height
+end
+local h=5
 local ok,size=pcall(function()
 return type(model.GetExtentsSize)=="function"and model:GetExtentsSize()or nil
 end)
 if ok and size and type(size.Y)=="number"and size.Y==size.Y and size.Y>0 then
-return math.clamp(size.Y,4,24)
+h=math.clamp(size.Y,4,24)
 end
-return 5
+local count=0
+for k,entry in pairs(self.HeightCache)do
+count+=1
+if not k.Parent or now>=entry.ExpiresAt then
+self.HeightCache[k]=nil
+end
+end
+if count>32 then table.clear(self.HeightCache)end
+self.HeightCache[model]={Height=h,ExpiresAt=now+8}
+return h
 end
 function self:ComputeQuestFrame(targetModel,char,rangeOffset,yOffset,zOffset,now)
 if not current()or not targetModel or not char then
@@ -6541,6 +7187,10 @@ local players=game:GetService("Players")
 local player=players.LocalPlayer
 local http=game:GetService("HttpService")
 local runService=game:GetService("RunService")
+local function isTouchOnly()
+local ok,uis=pcall(game.GetService,game,"UserInputService")
+return ok and uis~=nil and uis.TouchEnabled==true and uis.KeyboardEnabled~=true
+end
 local self={
 Running=true,
 StartedAt=os.clock(),
@@ -7074,7 +7724,7 @@ return
 end
 local now=os.clock()
 if now<nextStepAt then return end
-nextStepAt=now+1
+nextStepAt=now+(isTouchOnly()and 2.0 or 1.0)
 pcall(self.Step,self,now)
 end)
 function self:Destroy()
@@ -7956,7 +8606,7 @@ end
 end
 local function yieldOwners()
 local ready=true
-for _,key in ipairs({"EDUBossMiasmaV1","EDUHubBossCombatV1","EDUHalloweenV1","EDULunaStandV1","EDUDungeonLegacyInputV1"})do
+for _,key in ipairs({"EDUBossMiasmaV1","EDUHubBossCombatV1","EDUHalloweenV1","EDULunaStandV1","EDUHubCombatV1","EDUDungeonLegacyInputV1"})do
 local owner=env[key]
 if owner and owner.Running~=false and type(owner.YieldForDungeon)=="function"then
 local ok,released=pcall(owner.YieldForDungeon,owner)
@@ -8352,7 +9002,7 @@ return false
 end
 if self.Phase=="SKILL_FINISH"then
 if not restore()then hpStatus(model,hum,"Chờ thu hồi Miasma");return false end
-hpStatus(model,hum,"Đứng sau · Skill Settings đến khi chết")
+hpStatus(model,hum,"Pha kết liễu · Skill Settings đến khi chết")
 return true
 end
 orbit(model,root,hum,os.clock())
@@ -8775,7 +9425,7 @@ local lockedMobModel=nil
 local mobTrialTrackers={}
 local streamPoints,streamIndex,streamPending,streamRun={},0,false,nil
 local nextStreamAt=0
-local nextDoorAt,nextScanAt,elapsed=0,0,0
+local nextDoorAt,nextScanAt,elapsed,nextRegionReturnAt=0,0,0,0
 local recoverAt,lastRecoveryWarning=0,-math.huge
 local indexedLiving,indexedDoors,livingAdded,doorsAdded
 featureState.halloweenStatus="Đã tắt"
@@ -9370,6 +10020,8 @@ local pending=awaitingCandy
 releaseActions(naturalEnd)
 if not naturalEnd then awaitingCandy=pending end
 activityPausedAt=os.clock()
+nextRegionReturnAt=0
+nextScanAt=0
 inUndergroundSession=false
 preFarmOriginCFrame,preFarmRoot=nil,nil
 lastKnownGroundPos,lastValidUndergroundCFrame=nil,nil
@@ -9943,7 +10595,11 @@ end
 local live,groupPending=halloweenGroup:Entries(now)
 banditEntries,bossEntries={},{}
 for _,entry in ipairs(live)do
-if entry.isBoss then bossEntries[#bossEntries+1]=entry else banditEntries[#banditEntries+1]=entry end
+if isMobInFailedBackoff(entry.model,now)then
+local tracker=mobTrialTrackers[entry.model]
+if tracker.failReason then failedReasons[#failedReasons+1]=tracker.failReason end
+elseif entry.isBoss then bossEntries[#bossEntries+1]=entry
+else banditEntries[#banditEntries+1]=entry end
 end
 allAliveCount=#live;pending=groupPending
 if not halloweenGroup.Members then failedReasons={}end
@@ -10029,8 +10685,9 @@ local mModel=entry.model
 local mHum=entry.humanoid
 local mRoot=entry.root
 local tracker=mobTrialTrackers[mModel]
-if not tracker then
+if not tracker or tracker.humanoid~=mHum or tracker.root~=mRoot then
 tracker={
+humanoid=mHum,root=mRoot,
 lastHealth=mHum.Health,
 lastDamageAt=now,
 lastCheckAt=now,
@@ -10053,6 +10710,9 @@ tracker.backoffUntil=nil
 tracker.failReason=nil
 tracker.observedSnapback=false
 end
+local attacking=featureState.isHalloweenFightingMob and featureState.isHalloweenFightingMob()
+and featureState.hasHalloweenAttackSelection and featureState.hasHalloweenAttackSelection()
+if not attacking then tracker.lastDamageAt=now end
 local snappedBackNow=(tracker.observedSnapback==true)
 tracker.observedSnapback=false
 if not snappedBackNow and tracker.lastPlacedPos then
@@ -10097,6 +10757,8 @@ return tracker,not tracker.failed
 end
 local function stepCombatPositioning(character,humanoid,root,primaryEntry,banditEntries,now)
 local model,targetRoot=primaryEntry.model,primaryEntry.root
+local primaryTracker,primaryReady=inspectAndUpdateMobTrackerBeforePlace(primaryEntry,true,now)
+if not primaryReady then return false,primaryTracker.failReason end
 local ground=findRealGroundPosition(targetRoot.Position)
 if not ground then return false,"Chờ mặt sàn tại chân mục tiêu"end
 local approach=targetRoot.Position-root.Position
@@ -10157,7 +10819,10 @@ end
 local frames={}
 local count=0
 for _,entry in ipairs(banditEntries)do
-if isBanditModel(entry.model)and isAliveMobHumanoid(entry.humanoid)
+local tracker,canPlace
+if entry.model==model then tracker,canPlace=primaryTracker,true
+else tracker,canPlace=inspectAndUpdateMobTrackerBeforePlace(entry,false,now)end
+if canPlace and isBanditModel(entry.model)and isAliveMobHumanoid(entry.humanoid)
 and(entry.root.Position-targetRoot.Position).Magnitude<=BANDIT_GATHER_RADIUS then
 count+=1
 local right=forward:Cross(Vector3.new(0,1,0))
@@ -10167,9 +10832,7 @@ local desired=CFrame.lookAt(position,position+forward)
 applyMobNoCollision(entry.model)
 entry.root.CFrame=desired;entry.root.AssemblyLinearVelocity=Vector3.zero;entry.root.AssemblyAngularVelocity=Vector3.zero
 mobPulledHistory[entry.model]=true
-local tracker=mobTrialTrackers[entry.model]or{}
-mobTrialTrackers[entry.model]=tracker
-tracker.failed=false;tracker.lastPlacedPos=position
+tracker.lastPlacedPos=position
 frames[entry.model]={model=entry.model,humanoid=entry.humanoid,root=entry.root,cframe=desired,pos=position}
 end
 end
@@ -10219,7 +10882,7 @@ end
 heldPrompt,promptEndAt=chosenDoor,now+chosenDoor.HoldDuration+0.05
 chosenDoor:InputHoldBegin()
 end
-local nextRegionReturnAt=0
+nextRegionReturnAt=nextRegionReturnAt or 0
 local mainlandEntry=Vector3.new(111.568245,67.8253555,-504.725433)
 local function returnToHalloweenRegion(root,now)
 if not autoDoor or featureState.halloweenNight==false or featureState.halloweenDoorLimited then return false end
@@ -10925,6 +11588,18 @@ end
 local delay=slider("HalloweenEDelay","Khoảng cách gõ E (giây)",.1,.1,3,1)
 local depth=slider("HalloweenMobDistance","Độ sâu khi gõ cửa",7,6,10,1)
 local distance=slider("HalloweenFarmDistance","Độ sâu khi đánh mob",3.2,2,10,1)
+featureState.hasHalloweenAttackSelection=function()
+if options.UseAllSkills and options.UseAllSkills.Value==true then return true end
+for _,keys in ipairs({"SelectedSkills","SelectKeySkills"})do
+if keys~="SelectKeySkills"or(options.UseKeySkills and options.UseKeySkills.Value==true)then
+local selected=options[keys]and options[keys].Value
+for k,v in pairs(type(selected)=="table"and selected or{})do
+if(type(k)=="number"and type(v)=="string")or v==true then return true end
+end
+end
+end
+return false
+end
 installCombat(engine,featureState,player,function()return not otherFarm()and not joining end,combat)
 function self:YieldToBoss()
 if self.Running and featureState.pauseHalloweenForActivity then featureState.pauseHalloweenForActivity("Boss")end
@@ -16305,23 +16980,31 @@ end)
 end
 return true
 end
-local function runFarmStep(state,questKey,questInfo)
-if not eduSession.Running or eduSession:IsDungeonActive()or eduSession.GameMenuBusy or eduSession.RestoringSettings or bossHasPriority()then
+local function clearFarmCombatState()
 env.EDUHubQuestCombatAt=nil
 env.EDUHubQuestTargetV1=nil
+eduSession.ActiveFarmOwner=nil
+eduSession.ActiveFarmTarget=nil
+eduSession.ActiveFarmReady=false
+end
+local function isMobAliveForLock(mob)
+local hum=mob and mob.Parent and mob:FindFirstChildOfClass("Humanoid")
+return hum~=nil and hum.Health>0 and mob:FindFirstChild("HumanoidRootPart")~=nil
+end
+local function runFarmStep(state,questKey,questInfo)
+if not eduSession.Running or eduSession:IsDungeonActive()or eduSession.GameMenuBusy or eduSession.RestoringSettings or bossHasPriority()then
+clearFarmCombatState()
 return
 end
 local char=eduBossCharacter()
 if not char then
-env.EDUHubQuestCombatAt=nil
-env.EDUHubQuestTargetV1=nil
+clearFarmCombatState()
 return
 end
 local root=char:FindFirstChild("HumanoidRootPart")
 local hum=char:FindFirstChildOfClass("Humanoid")
 if not root or not hum then
-env.EDUHubQuestCombatAt=nil
-env.EDUHubQuestTargetV1=nil
+clearFarmCombatState()
 return
 end
 if not state.Loaded or state.LastQuest~=questKey or state.LastChar~=char then
@@ -16329,6 +17012,9 @@ teleportPart(root,questInfo.loadCFrame)
 state.Loaded=true
 state.LastQuest=questKey
 state.LastChar=char
+state.CurrentTarget=nil
+state.LastTargetHP=nil
+state.LastProgressAt=nil
 end
 local now=os.clock()
 if now-(state.LastQuestCheck or 0)>=0.4 then
@@ -16344,27 +17030,62 @@ end
 end
 local enemies=findQuestEnemies(questInfo.enemy,5)
 if#enemies>0 then
+local target=isMobAliveForLock(state.CurrentTarget)and state.CurrentTarget or nil
+if target then
+local curHum=target:FindFirstChildOfClass("Humanoid")
+local hp=curHum and curHum.Health or 0
+if state.LastTargetHP==nil or hp<state.LastTargetHP then
+state.LastTargetHP=hp
+state.LastProgressAt=now
+elseif now-(state.LastProgressAt or now)>=12 then
+local alt=nil
+for _,e in ipairs(enemies)do
+if e~=target then
+alt=e
+break
+end
+end
+target=alt or target
+state.CurrentTarget=target
+local nh=target and target:FindFirstChildOfClass("Humanoid")
+state.LastTargetHP=nh and nh.Health or nil
+state.LastProgressAt=now
+end
+end
+if not target then
 state.TargetIdx=((state.TargetIdx or 0)%#enemies)+1
-local target=enemies[state.TargetIdx]
+target=enemies[state.TargetIdx]
+state.CurrentTarget=target
+local nh=target and target:FindFirstChildOfClass("Humanoid")
+state.LastTargetHP=nh and nh.Health or nil
+state.LastProgressAt=now
+end
 if target and attachAboveTarget(target,questInfo.range)then
 env.EDUHubQuestCombatAt=now
 env.EDUHubQuestTargetV1=target
+eduSession.ActiveFarmOwner=questKey
+eduSession.ActiveFarmTarget=target
+eduSession.ActiveFarmReady=true
 eduBossCombat(char,nil,nil,"EDU",target)
 else
 env.EDUHubQuestCombatAt=nil
 env.EDUHubQuestTargetV1=nil
+eduSession.ActiveFarmOwner=questKey
+eduSession.ActiveFarmTarget=target
+eduSession.ActiveFarmReady=false
 end
 else
-env.EDUHubQuestCombatAt=nil
-env.EDUHubQuestTargetV1=nil
+state.CurrentTarget=nil
+state.LastTargetHP=nil
+clearFarmCombatState()
 hum.Sit=false
 teleportPart(root,questInfo.loadCFrame*CFrame.new(0,25,0))
 end
 end
 local function stopQuestFarm()
-env.EDUHubQuestCombatAt=nil
-env.EDUHubQuestTargetV1=nil
+clearFarmCombatState()
 if questConn then
+eduSession:Untrack(questConn)
 questConn:Disconnect()
 questConn=nil
 end
@@ -16375,9 +17096,9 @@ hum.Sit=false
 end
 end
 local function stopLevelFarm()
-env.EDUHubQuestCombatAt=nil
-env.EDUHubQuestTargetV1=nil
+clearFarmCombatState()
 if levelConn then
+eduSession:Untrack(levelConn)
 levelConn:Disconnect()
 levelConn=nil
 end
@@ -16514,12 +17235,6 @@ end
 pcall(function()
 ownRoot.CFrame=desiredFrame
 ownRoot.AssemblyLinearVelocity=Vector3.zero
-local stand=char:FindFirstChild("Stand")
-local standRoot=stand and stand:FindFirstChild("HumanoidRootPart")
-if standRoot and standRoot:IsA("BasePart")then
-standRoot.CFrame=desiredFrame
-standRoot.AssemblyLinearVelocity=Vector3.zero
-end
 end)
 eduBossController:RecordFollow(model,bossRoot,ownRoot,desiredFrame)
 end
@@ -16532,6 +17247,7 @@ eduBossController:Refresh()
 end
 if not autoFarmBoss.Value then
 if bossTickConn then
+eduSession:Untrack(bossTickConn)
 bossTickConn:Disconnect()
 bossTickConn=nil
 end
@@ -16540,9 +17256,11 @@ return
 end
 local char=eduBossCharacter()
 if not char then
+bossTickNext=os.clock()+0.2
 return
 end
 if eduSession.GameMenuBusy or eduSession.RestoringSettings or eduSession:IsDungeonActive()then
+bossTickNext=os.clock()+0.2
 return
 end
 local schedule=eduSession.BossSchedule
@@ -16552,6 +17270,9 @@ if lease and eduBossRoot(lease.Model)and(#candidates==0 or candidates[1]~=lease.
 candidates={lease.Model}
 end
 local waitingForBoss=schedule and schedule:HasPendingWork()and#candidates==0
+if not waitingForBoss and#candidates==0 and not lease and not bossLoopActive then
+bossTickNext=os.clock()+0.2
+end
 if eduBossController and eduBossController:IsEngaged()and not eduBossController:CanFollow()then
 return
 end
@@ -16657,6 +17378,7 @@ bossTickConn=eduSession:TrackResult(RunService.Heartbeat:Connect(stepBossControl
 end
 else
 if bossTickConn then
+eduSession:Untrack(bossTickConn)
 bossTickConn:Disconnect()
 bossTickConn=nil
 end
@@ -16805,6 +17527,7 @@ end
 end
 local function stopItemFarm()
 if itemConn then
+eduSession:Untrack(itemConn)
 itemConn:Disconnect()
 itemConn=nil
 end
@@ -16945,6 +17668,17 @@ local keyAllowDungeon=tabs.Settings:AddToggle("EDUKeyAllowDungeon",{
 Title="Cho phép Auto Key chạy trong Lair / Dungeon",
 Default=false,
 })
+function eduSession:CreateKeyAttackGuard(allowDungeon)
+local char=LocalPlayer.Character
+local inDungeon=self:IsDungeonActive()
+return function()
+if not char or LocalPlayer.Character~=char then return false end
+if self:IsDungeonActive()~=inDungeon then return false end
+if inDungeon and allowDungeon~=true then return false end
+local canAttack=self:GetCombatState(allowDungeon==true)
+return canAttack==true
+end
+end
 local function stopKeyWorkers()
 keyWorkerGen+=1
 eduLegacyInput:YieldForDungeon()
@@ -16959,14 +17693,18 @@ if mode=="EDU Gốc (100% cũ)"then
 eduSession:TrackResult(task.spawn(function()
 while eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen do
 local allowDung=keyAllowDungeon.Value==true
-local inDung=eduSession:IsDungeonActive()
-if(allowDung or not inDung)and eduBossCharacter()then
+local canAttack=eduSession:GetCombatState(allowDung)
+if canAttack then
 for key,enabled in pairs(selectedKeys)do
 if not eduSession.Running or not options.UseKeySkills.Value or keyWorkerGen~=myGen then
 break
 end
 if enabled then
-if allowDung and inDung then
+if not eduSession:GetCombatState(allowDung)then
+eduLegacyInput:YieldForDungeon()
+break
+end
+if allowDung and eduSession:IsDungeonActive()then
 local hold=(key=="E"and 4)or((key=="LeftClick"or key=="RightClick")and 0.05)or 0.1
 eduLegacyInput:SendFast(key,legacyUpvalues,envTbl,hold,true)
 else
@@ -16979,8 +17717,11 @@ task.wait(0.2)
 end
 end
 end
-end
 task.wait(0.5)
+else
+eduLegacyInput:YieldForDungeon()
+task.wait(0.25)
+end
 end
 end))
 return
@@ -16995,9 +17736,9 @@ local loopGap=isTurbo and 0.04 or 0.08
 eduSession:TrackResult(task.spawn(function()
 while eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen do
 local allowDung=keyAllowDungeon.Value==true
-local inDung=eduSession:IsDungeonActive()
+local canAttack=eduSession:GetCombatState(allowDung)
 local fired=false
-if(allowDung or not inDung)and eduBossCharacter()then
+if canAttack then
 if selectedKeys["LeftClick"]then
 if eduLegacyInput:SendFast("LeftClick",legacyUpvalues,envTbl,m1Hold,allowDung)then
 fired=true
@@ -17008,6 +17749,8 @@ if eduLegacyInput:SendFast("RightClick",legacyUpvalues,envTbl,m1Hold,allowDung)t
 fired=true
 end
 end
+else
+eduLegacyInput:YieldForDungeon()
 end
 task.wait(fired and m1Gap or 0.15)
 end
@@ -17015,14 +17758,18 @@ end))
 eduSession:TrackResult(task.spawn(function()
 while eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen do
 local allowDung=keyAllowDungeon.Value==true
-local inDung=eduSession:IsDungeonActive()
+local canAttack=eduSession:GetCombatState(allowDung)
 local fired=false
-if(allowDung or not inDung)and eduBossCharacter()then
+if canAttack then
 for _,key in ipairs(TURBO_SKILL_ORDER)do
 if not eduSession.Running or not options.UseKeySkills.Value or keyWorkerGen~=myGen then
 break
 end
 if selectedKeys[key]then
+if not eduSession:GetCombatState(allowDung)then
+eduLegacyInput:YieldForDungeon()
+break
+end
 local hold=(key=="E")and math.clamp(tonumber(keyEHold.Value)or 1.5,0.1,4.0)or keyHold
 if eduLegacyInput:SendFast(key,legacyUpvalues,envTbl,hold,allowDung)then
 fired=true
@@ -17030,6 +17777,8 @@ end
 task.wait(key=="E"and eGap or keyGap)
 end
 end
+else
+eduLegacyInput:YieldForDungeon()
 end
 task.wait(fired and loopGap or 0.15)
 end
