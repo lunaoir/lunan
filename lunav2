@@ -2786,6 +2786,8 @@ if not ok then warn("[Luna Stand UI] "..tostring(why))end
 end
 local connection=engine:Subscribe("Changed",render)
 local notice=engine:Subscribe("Notice",function(data)
+local env=getgenv and getgenv()or _G
+if env.EDUHubDashboardV1 and type(env.EDUHubDashboardV1.OnStandNotice)=="function"then pcall(env.EDUHubDashboardV1.OnStandNotice,env.EDUHubDashboardV1,data)end
 if current()then fluent:Notify({Title=data.Title,Content=data.Content,Duration=4})end
 end)
 local oldDestroy=core.Destroy
@@ -3633,6 +3635,11 @@ return self.Running and session.Running and not session.GameMenuBusy
 and not session.RestoringSettings
 and not(session.IsDungeonActive and session:IsDungeonActive())
 end
+local function allowedFast(allowDungeon)
+return self.Running and session.Running and not session.GameMenuBusy
+and not session.RestoringSettings
+and(allowDungeon==true or not(session.IsDungeonActive and session:IsDungeonActive()))
+end
 local function dispatch(entry,down)
 if entry.Button~=nil then
 entry.Backend:SendMouseButtonEvent(0,0,entry.Button,down,entry.Game,0)
@@ -3653,20 +3660,23 @@ if not release(id,entry)then ready=false end
 end
 return ready
 end
-local function pulse(backend,key,button,hold,environment)
-if not allowed()or not backend then return false end
+local function pulseWith(backend,key,button,hold,environment,allowDungeon)
+if not allowedFast(allowDungeon)or not backend then return false end
 local id=button~=nil and("Mouse:"..button)or("Key:"..tostring(key))
 if self.Held[id]then return false end
 local generation=self.Generation
 local entry={Backend=backend,Key=key,Button=button,Game=environment.game}
 self.Held[id]=entry
 local ok=pcall(function()
-if not allowed()or generation~=self.Generation then return end
+if not allowedFast(allowDungeon)or generation~=self.Generation then return end
 dispatch(entry,true)
 environment.task.wait(hold)
 end)
 local released=release(id,entry)
-return ok and released and generation==self.Generation and allowed()
+return ok and released and generation==self.Generation and allowedFast(allowDungeon)
+end
+local function pulse(backend,key,button,hold,environment)
+return pulseWith(backend,key,button,hold,environment,false)
 end
 function self:Send80(key,upvalues,environment)
 if not allowed()then return false end
@@ -3675,6 +3685,24 @@ if key=="E"then return pulse(backend,key,nil,4,environment)end
 if key=="LeftClick"then return pulse(backend,nil,0,.05,environment)end
 if key=="RightClick"then return pulse(backend,nil,1,.05,environment)end
 return pulse(backend,key,nil,.1,environment)
+end
+function self:SendFast(key,upvalues,environment,holdOverride,allowDungeon)
+if not allowedFast(allowDungeon)then return false end
+local backend=upvalues[0]
+if key=="LeftClick"then
+local hold=type(holdOverride)=="number"and math.clamp(holdOverride,.02,1.0)or.035
+return pulseWith(backend,nil,0,hold,environment,allowDungeon)
+end
+if key=="RightClick"then
+local hold=type(holdOverride)=="number"and math.clamp(holdOverride,.02,1.0)or.035
+return pulseWith(backend,nil,1,hold,environment,allowDungeon)
+end
+if key=="E"then
+local hold=type(holdOverride)=="number"and math.clamp(holdOverride,.05,4.0)or 1.5
+return pulseWith(backend,key,nil,hold,environment,allowDungeon)
+end
+local hold=type(holdOverride)=="number"and math.clamp(holdOverride,.03,4.0)or.05
+return pulseWith(backend,key,nil,hold,environment,allowDungeon)
 end
 function self:Send15(upvalues,environment)
 while self.Running and session.Running and upvalues[0]do
@@ -3710,11 +3738,53 @@ return self
 end
 ]]):sub(2),"@EDUHub_New/Dungeon_Legacy_Input.lua"))()
 local installBossMovement=assert(loadstring(([[!return function(resolveRoot,settings)
+local env=getgenv and getgenv()or _G
 local self={Collisions={}}
 local function heading(cf)
 local v=cf.LookVector
 local flat=Vector3.new(v.X,0,v.Z)
 return flat.Magnitude>.01 and flat.Unit or Vector3.new(0,0,-1)
+end
+local function safeLookAt(eye,target,preferredUp)
+local diff=target-eye
+local dist=diff and diff.Magnitude or 0
+if not dist or dist<1e-3 then
+return CFrame.lookAt(eye,eye-Vector3.yAxis,Vector3.xAxis)
+end
+local up=(math.abs(diff.Y/dist)>.92)and Vector3.xAxis or(preferredUp or Vector3.yAxis)
+return CFrame.lookAt(eye,target,up)
+end
+local function envRayParams(model,char)
+local params=self.Params or RaycastParams.new()
+self.Params=params;params.FilterType=Enum.RaycastFilterType.Exclude;params.RespectCanCollide=true
+local exclude={char,model}
+local living=workspace:FindFirstChild("Living")
+if living then exclude[#exclude+1]=living end
+local map=workspace:FindFirstChild("Map")
+local quest=map and map:FindFirstChild("MiasmaQuest")
+if quest then exclude[#exclude+1]=quest end
+params.FilterDescendantsInstances=exclude
+return params
+end
+local function clampWall(origin,desiredPos,model,char)
+local dir=desiredPos-origin
+local dist=dir and dir.Magnitude or 0
+if not dist or dist<=2.5 then return desiredPos end
+local ok,hit=pcall(function()
+return workspace:Raycast(origin,dir,envRayParams(model,char))
+end)
+if ok and hit and hit.Position then
+local normalY=hit.Normal and math.abs(hit.Normal.Y)or 0
+if normalY<0.6 then
+local u=dir.Unit
+local d=hit.Position-origin
+local along=d.X*u.X+d.Y*u.Y+d.Z*u.Z
+if along>0.5 and along<dist-1.2 then
+return origin+u*math.max(2,along-1.2)
+end
+end
+end
+return desiredPos
 end
 function self:Cleanup()
 if self.PartConnection then self.PartConnection:Disconnect();self.PartConnection=nil end
@@ -3740,34 +3810,57 @@ if self.Target and self.Target~=model or self.Pose and(self.Pose.Char~=char or s
 if not self:Cleanup()then return nil,"Chờ phục hồi tư thế trước"end
 end
 local config=settings()
+local poseEngine=env.EDUFarmPoseV1
+local poseCfg=(not free and poseEngine and type(poseEngine.GetConfig)=="function")and poseEngine:GetConfig()or nil
+local leadPos=(not free and poseEngine and type(poseEngine.LeadPosition)=="function")and poseEngine:LeadPosition(root)or root.Position
 local direction=heading(root.CFrame)
-local position
-if mode=="Above"then
+local fallen=workspace.FallenPartsDestroyHeight
+local function abovePosition()
 local head=model:FindFirstChild("Head")
-local center=head and head:IsA("BasePart")and head.Position or root.Position+Vector3.new(0,3,0)
-position=center+Vector3.new(0,config.Above,0)
+local targetH=(poseEngine and type(poseEngine.TargetHeight)=="function")and poseEngine:TargetHeight(model)or 5
+local center=(head and head:IsA("BasePart")and head.Position)or(root.Position+Vector3.new(0,math.max(3,targetH*.45),0))
+local delta=leadPos-root.Position
+return center+Vector3.new(delta.X,config.Above,delta.Z)
+end
+local effectiveMode=mode
+local position
+if effectiveMode=="Above"then
+position=abovePosition()
+elseif effectiveMode=="Underground"then
+local bossHum=model:FindFirstChildOfClass("Humanoid")
+local floor=root.Position.Y-(bossHum and bossHum.HipHeight or 0)-root.Size.Y*.5
+local depth=poseCfg and poseCfg.UndergroundDepth or 6
+position=Vector3.new(leadPos.X,floor-depth,leadPos.Z)
+if type(fallen)=="number"and position.Y<=fallen+12 then
+effectiveMode="Above"
+position=abovePosition()
+end
+elseif effectiveMode=="Orbit"then
+local radius=poseCfg and poseCfg.OrbitRadius or 7
+local speed=poseCfg and poseCfg.OrbitSpeed or 2.5
+local angle=(now or os.clock())*speed
+position=Vector3.new(leadPos.X+math.cos(angle)*radius,leadPos.Y+1.5,leadPos.Z+math.sin(angle)*radius)
+position=clampWall(Vector3.new(leadPos.X,position.Y,leadPos.Z),position,model,char)
+if type(fallen)=="number"and position.Y<=fallen+5 then
+effectiveMode="Above"
+position=abovePosition()
+end
 else
 local bossHum=model:FindFirstChildOfClass("Humanoid")
 local floor=root.Position.Y-(bossHum and bossHum.HipHeight or 0)-root.Size.Y*.5
-local behind=root.Position-direction*config.Behind
+local anchor=free and root.Position or leadPos
+local behind=anchor-direction*config.Behind
 position=Vector3.new(behind.X,floor+(hum.HipHeight or 0)+own.Size.Y*.5,behind.Z)
-if not self.Sample or(behind-self.Sample).Magnitude>2 or now>=(self.RayAt or 0)then
-self.Sample=behind;self.RayAt=now+.2;self.Floor=nil
-local params=self.Params or RaycastParams.new()
-self.Params=params;params.FilterType=Enum.RaycastFilterType.Exclude;params.RespectCanCollide=true
-local exclude={char,model}
-local living=workspace:FindFirstChild("Living")
-if living then exclude[#exclude+1]=living end
-local map=workspace:FindFirstChild("Map")
-local quest=map and map:FindFirstChild("MiasmaQuest")
-if quest then exclude[#exclude+1]=quest end
-params.FilterDescendantsInstances=exclude
-local hit=workspace:Raycast(position+Vector3.new(0,8,0),Vector3.new(0,-24,0),params)
+if not self.Sample or(behind-self.Sample).Magnitude>2 or(now or 0)>=(self.RayAt or 0)then
+self.Sample=behind;self.RayAt=(now or 0)+.2;self.Floor=nil
+local hit=workspace:Raycast(position+Vector3.new(0,8,0),Vector3.new(0,-24,0),envRayParams(model,char))
 if hit and hit.Normal.Y>.35 then self.Floor=hit.Position.Y end
 end
 if self.Floor then position=Vector3.new(position.X,math.max(position.Y,self.Floor+(hum.HipHeight or 0)+own.Size.Y*.5+.05),position.Z)end
+if not free then
+position=clampWall(Vector3.new(leadPos.X,position.Y,leadPos.Z),position,model,char)
 end
-local fallen=workspace.FallenPartsDestroyHeight
+end
 if type(fallen)=="number"and position.Y<=fallen+5 then return nil,"Chờ boss rời vùng hủy nhân vật"end
 if free then return CFrame.lookAt(position,position+direction,Vector3.yAxis)end
 self.Target=model
@@ -3790,10 +3883,23 @@ elseif part.CanCollide then part.CanCollide=false end
 end
 if hum.AutoRotate then hum.AutoRotate=false end
 if hum.PlatformStand then hum.PlatformStand=false end
-local sit=mode=="Above"
+local sit=(effectiveMode=="Above")and((poseCfg==nil)or(poseCfg.SitAbove~=false))
 if hum.Sit~=sit then hum.Sit=sit end
-return mode=="Above"and CFrame.lookAt(position,position-Vector3.yAxis,Vector3.xAxis)
-or CFrame.lookAt(position,position+direction,Vector3.yAxis)
+if effectiveMode=="Above"then
+if poseCfg and poseCfg.AutoFace then
+return safeLookAt(position,leadPos,Vector3.xAxis)
+end
+return CFrame.lookAt(position,position-Vector3.yAxis,Vector3.xAxis)
+elseif effectiveMode=="Underground"then
+return safeLookAt(position,leadPos,Vector3.xAxis)
+elseif effectiveMode=="Orbit"then
+return safeLookAt(position,Vector3.new(leadPos.X,position.Y,leadPos.Z),Vector3.yAxis)
+else
+if poseCfg and poseCfg.AutoFace then
+return safeLookAt(position,Vector3.new(leadPos.X,position.Y,leadPos.Z),Vector3.yAxis)
+end
+return CFrame.lookAt(position,position+direction,Vector3.yAxis)
+end
 end
 return self
 end
@@ -4000,7 +4106,18 @@ local desired,why=movement:Frame(lease.Model,char,"Behind",os.clock(),true)
 self.PositionStatus=why or"TP một lần tới boss · Không bám khi đặt Miasma"
 return desired
 end
-local mode=self:IsMiasmaBoss(lease.Model)and"Behind"or"Above"
+local poseEngine=env.EDUFarmPoseV1
+local mode="Above"
+if self:IsMiasmaBoss(lease.Model)then
+if options.EDUFarmPoseApplyPostMiasma and options.EDUFarmPoseApplyPostMiasma.Value==true
+and poseEngine and type(poseEngine.GetModeKey)=="function"then
+mode=poseEngine:GetModeKey()
+else
+mode="Behind"
+end
+elseif poseEngine and type(poseEngine.GetModeKey)=="function"then
+mode=poseEngine:GetModeKey()
+end
 local desired,why=movement:Frame(lease.Model,char,mode,os.clock())
 self.PositionStatus=why
 if not desired then lease.Follow=nil end
@@ -4020,12 +4137,17 @@ end
 lease.Follow={Character=char,Root=characterRoot,TargetRoot=targetRoot,
 Hum=char:FindFirstChildOfClass("Humanoid"),Frame=frame,At=os.clock(),Token=self.RunToken}
 characterRoot.AssemblyLinearVelocity=Vector3.zero;characterRoot.AssemblyAngularVelocity=Vector3.zero
+local poseEngine=env.EDUFarmPoseV1
+if poseEngine and type(poseEngine.SyncStand)=="function"then
+poseEngine:SyncStand(char,frame,targetRoot.Position)
+else
 local stand=char:FindFirstChild("Stand")
 if stand and stand:IsA("Model")then
 local part=stand:FindFirstChild("HumanoidRootPart")or stand.PrimaryPart
 or stand:FindFirstChild("Torso")or stand:FindFirstChild("UpperTorso")
 if part and part:IsA("BasePart")and part:IsDescendantOf(stand)then
 part.CFrame=frame;part.AssemblyLinearVelocity=Vector3.zero;part.AssemblyAngularVelocity=Vector3.zero
+end
 end
 end
 end
@@ -4117,6 +4239,11 @@ section:AddButton({Title="Xóa skill đã học của Stand này",Description="X
 self:ClearLearnedStand()
 end})
 local label=section:AddParagraph({Title="M1 + Skill",Content="Dùng chung cho các mục farm · Chọn M1 để đấm"})
+local smartCooldown=section:AddToggle("EDUCombatSmartCooldown",{Title="Lọc Cooldown thông minh (CDgui)",Default=false})
+local autoCancelHold=section:AddToggle("EDUCombatAutoCancelHold",{Title="Tự hủy chiêu giữ (Hold) khi mục tiêu chết",Default=true})
+local leadAimToggle=section:AddToggle("EDUCombatLeadAim",{Title="Lead Aim · Đón đầu mục tiêu",Default=true})
+local rangeGateToggle=section:AddToggle("EDUCombatRangeGate",{Title="Chỉ xả skill khi áp sát mục tiêu",Default=false})
+local throttleDrop=section:AddDropdown("EDUCombatThrottle",{Title="Giới hạn bắn Remote mỗi nhịp",Values={"Tất cả (Mặc định)","2 skill / nhịp","3 skill / nhịp"},Multi=false,Default="Tất cả (Mặc định)"})
 local setSelected=selected.SetValue
 local function alive()return self.Running and session.Running and not fluent.Unloaded end
 local function status(text)if self.Last~=text then self.Last=text;label:SetDesc(text)end end
@@ -4174,13 +4301,33 @@ if p and p:IsA("BasePart")then return p end
 end
 return nil
 end
-local function resolveAimPosition(char)
+local function resolveActiveTarget(explicitTarget)
+if explicitTarget~=nil then return explicitTarget end
 local boss=env.EDUHubBossCombatV1
 if boss and boss.CurrentSession and boss.CurrentSession.Model then
-local bRoot=modelRootPart(boss.CurrentSession.Model)
-if bRoot and bRoot.Position then return bRoot.Position end
+return boss.CurrentSession.Model
 end
+if env.EDUHubQuestTargetV1 and type(env.EDUHubQuestCombatAt)=="number"
+and os.clock()-env.EDUHubQuestCombatAt<=1.5 then
+return env.EDUHubQuestTargetV1
+end
+return nil
+end
+local function isTargetAlive(model,expectedParent)
+local ok,aliveTarget=pcall(function()
+if not model then return false end
+if expectedParent~=nil and model.Parent~=expectedParent then return false end
+local hum=model:FindFirstChildOfClass("Humanoid")
+if not hum or(type(hum.Health)=="number"and hum.Health<=0)then return false end
+return true
+end)
+return ok and aliveTarget==true
+end
+local function resolveAimPosition(char,targetModel)
 local ownRoot=char and modelRootPart(char)
+local activeTarget=resolveActiveTarget(targetModel)
+local bRoot=activeTarget and modelRootPart(activeTarget)
+if not bRoot or not bRoot.Position then
 local ownPos=ownRoot and ownRoot.Position
 local living=workspace and workspace:FindFirstChild("Living")
 if living and ownPos then
@@ -4199,13 +4346,45 @@ end
 end
 end
 end
-if bestPart then return bestPart.Position end
+bRoot=bestPart
+end
+end
+if bRoot and bRoot.Position then
+if leadAimToggle.Value==true then
+local okLead,leadPos=pcall(function()
+local vel=bRoot.AssemblyLinearVelocity or bRoot.Velocity
+if vel and type(vel.X)=="number"and type(vel.Y)=="number"and type(vel.Z)=="number"then
+local spd=math.sqrt(vel.X*vel.X+vel.Y*vel.Y+vel.Z*vel.Z)
+if spd>1 and spd<200 then
+local dist=(ownRoot and ownRoot.Position)and(bRoot.Position-ownRoot.Position).Magnitude or 15
+local leadTime=math.clamp(dist/90,0.05,0.28)
+return bRoot.Position+vel*leadTime
+end
+end
+return nil
+end)
+if okLead and leadPos then return leadPos end
+end
+return bRoot.Position
 end
 if ownRoot and ownRoot.CFrame then
 local look=ownRoot.CFrame.LookVector
-if look and ownPos then return ownPos+look*12 end
+if look and ownRoot.Position then return ownRoot.Position+look*12 end
 end
-return ownPos or Vector3.new(0,0,0)
+return(ownRoot and ownRoot.Position)or Vector3.new(0,0,0)
+end
+local function withinSkillRange(char,targetModel,isRangedAim)
+if rangeGateToggle.Value~=true then return true end
+local activeTarget=resolveActiveTarget(targetModel)
+if not activeTarget then return true end
+local ownRoot=char and modelRootPart(char)
+local tRoot=modelRootPart(activeTarget)
+local op=ownRoot and ownRoot.Position
+local tp=tRoot and tRoot.Position
+if not op or not tp or type(op.X)~="number"or type(tp.X)~="number"then return true end
+local dx,dy,dz=op.X-tp.X,op.Y-tp.Y,op.Z-tp.Z
+local dist=math.sqrt(dx*dx+dy*dy+dz*dz)
+return dist<=(isRangedAim and 45 or 22)
 end
 local function safePrimitive(value)
 local kind=type(value)
@@ -4360,7 +4539,7 @@ end
 if sawPart then return false end
 end
 end
-local function fireProtocol(events,move,stateOverride,char)
+local function fireProtocol(events,move,stateOverride,char,targetModel)
 if not events or not events.Parent or events.Parent~=char then return false end
 local wireName=move.RemoteName or move.Name
 local stateVal=stateOverride~=nil and stateOverride or move.StartState
@@ -4375,7 +4554,7 @@ end
 else
 local action=move.Action or"InitiateMove"
 if move.Aim and stateOverride==nil then
-local aimPos=resolveAimPosition(char)
+local aimPos=resolveAimPosition(char,targetModel)
 events:FireServer(action,wireName,move.StartState or"Start",nil)
 events:FireServer(action,wireName,"Aim",aimPos,nil)
 elseif move.ArgCount==2 and stateVal==nil then
@@ -4742,14 +4921,61 @@ return true
 end
 return false
 end
+local function normCdKey(s)
+return string.lower(tostring(s or"")):gsub("[%s_%-%p]+","")
+end
 local function punchOnCooldown()
+local ok,found=pcall(function()
 local gui=player:FindFirstChild("PlayerGui")
 local cd=gui and gui:FindFirstChild("CDgui")
 local active=cd and cd:FindFirstChild("fortnite")
 return active and active:FindFirstChild("Punch")~=nil or false
+end)
+return ok and found==true
 end
-function self:Fire(char,guard,owner)
+local function snapshotCooldowns()
+local set={}
+if smartCooldown.Value~=true then return set end
+pcall(function()
+local gui=player:FindFirstChild("PlayerGui")
+local cd=gui and gui:FindFirstChild("CDgui")
+if not cd then return end
+local holder=cd:FindFirstChild("fortnite")or cd
+if holder and type(holder.GetChildren)=="function"then
+for _,child in ipairs(holder:GetChildren())do
+local okGui,isGui=pcall(child.IsA,child,"GuiObject")
+if okGui and isGui then
+local okVis,vis=pcall(function()return child.Visible end)
+if(not okVis or vis~=false)and type(child.Name)=="string"and child.Name~=""then
+set[normCdKey(child.Name)]=true
+end
+end
+end
+end
+end)
+return set
+end
+local function isMoveOnCooldown(cdSet,name,remoteName)
+if isBasicPunch(name)then
+return punchOnCooldown()
+end
+if smartCooldown.Value~=true then return false end
+if cdSet[normCdKey(name)]==true then return true end
+if remoteName and cdSet[normCdKey(remoteName)]==true then return true end
+return false
+end
+local function maxSkillsPerTick()
+local raw=tostring(throttleDrop.Value or"")
+if raw=="2 skill / nhịp"then return 2 end
+if raw=="3 skill / nhịp"then return 3 end
+return math.huge
+end
+function self:Fire(char,guard,owner,targetModel)
 self:Refresh()
+if autoCancelHold.Value==true and self.Held and self.Held.TargetModel
+and not isTargetAlive(self.Held.TargetModel,self.Held.TargetParent)then
+self:Release()
+end
 local actor,hum,events=context()
 local kind=kindOf(events)
 if actor~=char or not ready(char,hum,events,guard,owner)then
@@ -4776,28 +5002,40 @@ if now>=(self.NextSummon or 0)then
 self.NextSummon=now+1
 local summonMove=(self.ActiveProfile and self.ActiveProfile.Summon)
 or{Action="InitiateMove",Name="SummonStand",StartState="Start",ArgCount=4}
-fireProtocol(events,summonMove,nil,char)
+fireProtocol(events,summonMove,nil,char,targetModel)
 end
 return false
 end
 end
+local activeTarget=resolveActiveTarget(targetModel)
+local trackedTarget=(activeTarget and activeTarget.Parent~=nil and isTargetAlive(activeTarget,activeTarget.Parent))and activeTarget or nil
+local cdSet=snapshotCooldowns()
 local wanted=type(selected.Value)=="table"and selected.Value or{}
 local sent=false
 if kind=="Folder"then
+local budget=maxSkillsPerTick()
+local count=0
 for _,name in ipairs(self.Rows)do
+if count>=budget then break end
 if not all.Value and not isWanted(wanted,name)then continue end
 if not ready(char,hum,events,guard,owner)then break end
-if isBasicPunch(name)and punchOnCooldown()then continue end
+if isMoveOnCooldown(cdSet,name,nil)then continue end
+if not withinSkillRange(char,activeTarget,false)then continue end
 local remote=self.ByName[name]
 if not remote or remote.Parent~=events or events:FindFirstChild(name)~=remote then self.ScanAt=0;continue end
-if pcall(function()remote:FireServer(true)end)then sent=true end
+if pcall(function()remote:FireServer(true)end)then sent=true;count+=1 end
 end
 return sent
 end
 local held=self.Held
 if held then
-if now<held.Until then return false end
+if autoCancelHold.Value==true and held.TargetModel and not isTargetAlive(held.TargetModel,held.TargetParent)then
 self:Release()
+elseif now<held.Until then
+return false
+else
+self:Release()
+end
 end
 local activeSkills,holdCandidates,m1Move={},{},nil
 for _,name in ipairs(self.Rows)do
@@ -4807,41 +5045,54 @@ if not move then continue end
 if isBasicPunch(name)then
 m1Move=move
 elseif move.Hold then
+if not isMoveOnCooldown(cdSet,move.Name,move.RemoteName)then
 holdCandidates[#holdCandidates+1]=move
-else
+end
+elseif not isMoveOnCooldown(cdSet,move.Name,move.RemoteName)then
 activeSkills[#activeSkills+1]=move
 end
 end
 local nSkills=#activeSkills
 if nSkills>0 then
-self.SkillCursor=(self.SkillCursor%nSkills)+1
+local budget=maxSkillsPerTick()
+local startCursor=(self.SkillCursor%nSkills)+1
+local firedCount=0
 for offset=0,nSkills-1 do
+if firedCount>=budget then break end
 if not ready(char,hum,events,guard,owner)then break end
-local idx=((self.SkillCursor+offset-1)%nSkills)+1
+local idx=((startCursor+offset-1)%nSkills)+1
 local move=activeSkills[idx]
-if fireProtocol(events,move,nil,char)then
+if withinSkillRange(char,activeTarget,move.Aim==true)and fireProtocol(events,move,nil,char,activeTarget)then
 sent=true
+firedCount+=1
 if move.TapRelease and move.EndState~=nil then
 self.PendingEnds[#self.PendingEnds+1]={Move=move,Remote=events,Char=char,Hum=hum,Until=now+.08}
 end
 end
 end
+self.SkillCursor=(budget<math.huge and firedCount>0)
+and(((startCursor+firedCount-2)%nSkills)+1)
+or startCursor
 end
 if#holdCandidates>0 and ready(char,hum,events,guard,owner)then
 local idx=((self.HoldCursor or 0)%#holdCandidates)+1
 self.HoldCursor=idx
 local pick=holdCandidates[idx]
-if fireProtocol(events,pick,nil,char)then
+if withinSkillRange(char,activeTarget,pick.Aim==true)and fireProtocol(events,pick,nil,char,activeTarget)then
 sent=true
-self.Held={Name=pick.Name,Move=pick,Remote=events,Char=char,Hum=hum,Until=now+pick.Hold}
+self.Held={
+Name=pick.Name,Move=pick,Remote=events,Char=char,Hum=hum,Until=now+pick.Hold,
+TargetModel=trackedTarget,TargetParent=trackedTarget and trackedTarget.Parent or nil,
+}
 end
 end
-if m1Move and ready(char,hum,events,guard,owner)and not punchOnCooldown()then
-if fireProtocol(events,m1Move,nil,char)then sent=true end
+if m1Move and ready(char,hum,events,guard,owner)and not isMoveOnCooldown(cdSet,m1Move.Name,m1Move.RemoteName)
+and withinSkillRange(char,activeTarget,false)then
+if fireProtocol(events,m1Move,nil,char,activeTarget)then sent=true end
 end
 return sent
 end
-function self:Step(_,guard)return self:Fire(player.Character,guard,"Boss")end
+function self:Step(model,guard)return self:Fire(player.Character,guard,"Boss",model)end
 selected:OnChanged(function()
 if self.Syncing then return end
 self.Pending=table.clone(type(selected.Value)=="table"and selected.Value or{})
@@ -4854,7 +5105,7 @@ if self.Learning and now>=self.LearnUntil then
 self:StopLearning("Đã tự dừng học sau khi hết thời gian chờ")
 end
 flushPendingEnds(session.GameMenuBusy or session.RestoringSettings or not alive())
-if self.Held and(now>=self.Held.Until or session.GameMenuBusy or session.RestoringSettings or not alive())then
+if self.Held and(now>=self.Held.Until or(autoCancelHold.Value==true and self.Held.TargetModel and not isTargetAlive(self.Held.TargetModel,self.Held.TargetParent))or session.GameMenuBusy or session.RestoringSettings or not alive())then
 self:Release()
 end
 if alive()and now>=(self.ScanAt or 0)then self:Refresh()end
@@ -5428,6 +5679,7 @@ if not allowed()then return end
 local okPs,psId=pcall(function()return game.PrivateServerId end)
 local okOwn,ownerId=pcall(function()return game.PrivateServerOwnerId end)
 local inVip=(okPs and type(psId)=="string"and psId~="")or(okOwn and tonumber(ownerId)and tonumber(ownerId)>0)
+if env.EDUHubDashboardV1 and type(env.EDUHubDashboardV1.RecordRejoin)=="function"then pcall(env.EDUHubDashboardV1.RecordRejoin,env.EDUHubDashboardV1,inVip and"Rejoin Server VIP"or"Rejoin Server Public")end
 if inVip then
 local ownJob=tostring(game.JobId or"")
 self.LastTargetJobId=nil
@@ -5534,6 +5786,1785 @@ end
 return self
 end
 ]]):sub(2),"@EDUHub_New/Auto_Rejoin.lua"))()
+local installAFKOptimizer=assert(loadstring(([[!return function(tab,options,fluent,session)
+local env=getgenv and getgenv()or _G
+local previous=env.EDUAFKOptimizerV1
+if previous and type(previous.Destroy)=="function"then
+pcall(previous.Destroy,previous)
+end
+local players=game:GetService("Players")
+local player=players.LocalPlayer
+local runService=game:GetService("RunService")
+local lighting=game:GetService("Lighting")
+local self={
+Running=true,
+VoidRescues=0,
+StuckRescues=0,
+LastStatus=nil,
+}
+env.EDUAFKOptimizerV1=self
+session:Own(self)
+local section=tab:AddSection("Treo máy 24/7 · AFK Siêu nhẹ")
+local fpsBoostToggle=section:AddToggle("EDUAFKFpsBoost",{
+Title="FPS Booster (Tắt VFX / Bóng đổ)",
+Default=false,
+})
+local blackToggle=section:AddToggle("EDUAFKBlackScreen",{
+Title="Màn hình đen AFK (Tắt Render 3D)",
+Default=false,
+})
+local fpsCapDrop=section:AddDropdown("EDUAFKFpsCap",{
+Title="Giới hạn FPS khi treo",
+Values={"Mặc định","60","30","15","10"},
+Multi=false,
+Default="Mặc định",
+})
+local antiStuckToggle=section:AddToggle("EDUAFKAntiStuck",{
+Title="Anti-Stuck Watchdog (Tự cứu khi kẹt)",
+Default=false,
+})
+local statusLabel=section:AddParagraph({
+Title="Trạng thái AFK",
+Content="Đã tắt · Mọi tối ưu đang nghỉ",
+})
+local SAFE_ZONE_CFRAME=CFrame.new(3343.3833,98.8131409,-143.222626)
+local VFX_CLASSES={
+ParticleEmitter=true,
+Trail=true,
+Beam=true,
+Fire=true,
+Smoke=true,
+Sparkles=true,
+Explosion=true,
+}
+local POST_EFFECT_CLASSES={
+BlurEffect=true,
+BloomEffect=true,
+SunRaysEffect=true,
+ColorCorrectionEffect=true,
+DepthOfFieldEffect=true,
+}
+local FARM_TOGGLES={
+"AutoFarmBoss",
+"AutoFarm",
+"AutoFarmLevels",
+"FarmItems",
+"EDUHW_HalloweenAutoDoor",
+"EDUHW_HalloweenAutoMob",
+}
+local lightingSnap=nil
+local postEffectSnap={}
+local vfxConn=nil
+local overlayGui=nil
+local overlayStatsText=nil
+local overlayConn=nil
+local fpsCapped=false
+local deadSince=nil
+local stillSince=nil
+local lastPos=nil
+local lastChar=nil
+local lastVoidRescue=-math.huge
+local lastResetAt=-math.huge
+local nextVfxSweep=0
+local nextStepAt=0
+local function current()
+return self.Running and session.Running and not fluent.Unloaded and env.EDUAFKOptimizerV1==self
+end
+local function setStatus(text)
+if current()and text~=self.LastStatus then
+self.LastStatus=text
+statusLabel:SetDesc(text)
+end
+end
+local function summarizeStatus()
+local active={}
+if fpsBoostToggle.Value then active[#active+1]="FPS Boost"end
+if blackToggle.Value then active[#active+1]="Màn hình đen"end
+if fpsCapDrop.Value and fpsCapDrop.Value~="Mặc định"then
+active[#active+1]=tostring(fpsCapDrop.Value).." FPS"
+end
+if antiStuckToggle.Value then
+active[#active+1]=string.format("Anti-Stuck (Void %d · Kẹt %d)",self.VoidRescues,self.StuckRescues)
+end
+if#active==0 then
+setStatus("Đã tắt · Mọi tối ưu đang nghỉ")
+else
+setStatus("Đang bật: "..table.concat(active," · "))
+end
+end
+local function isPostEffect(inst)
+if not inst then return false end
+local okCls,cls=pcall(function()return inst.ClassName end)
+if okCls and POST_EFFECT_CLASSES[cls]then return true end
+local okIs,res=pcall(inst.IsA,inst,"PostEffect")
+return okIs and res==true
+end
+local function suppressVfxInstance(inst)
+if not inst then return end
+local okCls,cls=pcall(function()return inst.ClassName end)
+if not okCls or not VFX_CLASSES[cls]then return end
+pcall(function()
+if inst.Enabled~=nil then
+inst.Enabled=false
+end
+end)
+end
+local function sweepWorkspaceVfx()
+pcall(function()
+for _,desc in ipairs(workspace:GetDescendants())do
+suppressVfxInstance(desc)
+end
+end)
+end
+local function restoreLighting()
+if lightingSnap then
+pcall(function()
+if lightingSnap.GlobalShadows~=nil then lighting.GlobalShadows=lightingSnap.GlobalShadows end
+if lightingSnap.FogEnd~=nil then lighting.FogEnd=lightingSnap.FogEnd end
+if lightingSnap.Brightness~=nil then lighting.Brightness=lightingSnap.Brightness end
+end)
+lightingSnap=nil
+end
+for inst,prevEnabled in pairs(postEffectSnap)do
+pcall(function()
+if inst and inst.Parent then
+inst.Enabled=prevEnabled
+end
+end)
+end
+table.clear(postEffectSnap)
+end
+local function applyFpsBoost(enabled)
+if vfxConn then
+pcall(function()vfxConn:Disconnect()end)
+vfxConn=nil
+end
+if not enabled then
+restoreLighting()
+summarizeStatus()
+return
+end
+if not lightingSnap then
+local snap={}
+pcall(function()snap.GlobalShadows=lighting.GlobalShadows end)
+pcall(function()snap.FogEnd=lighting.FogEnd end)
+pcall(function()snap.Brightness=lighting.Brightness end)
+lightingSnap=snap
+end
+pcall(function()
+lighting.GlobalShadows=false
+lighting.FogEnd=9e9
+end)
+pcall(function()
+for _,child in ipairs(lighting:GetDescendants())do
+if isPostEffect(child)then
+if postEffectSnap[child]==nil then
+local okE,prevE=pcall(function()return child.Enabled end)
+if okE and type(prevE)=="boolean"then
+postEffectSnap[child]=prevE
+end
+end
+pcall(function()child.Enabled=false end)
+end
+end
+end)
+sweepWorkspaceVfx()
+local okAdd,conn=pcall(function()
+return workspace.DescendantAdded:Connect(function(inst)
+if self.Running and fpsBoostToggle.Value then
+suppressVfxInstance(inst)
+end
+end)
+end)
+if okAdd and conn then
+vfxConn=conn
+end
+summarizeStatus()
+end
+local function resolveSetFpsCap()
+if type(setfpscap)=="function"then return setfpscap end
+if type(env.setfpscap)=="function"then return env.setfpscap end
+return nil
+end
+local function applyFpsCap(choice)
+local fn=resolveSetFpsCap()
+local num=tonumber(choice)
+if num and num>=5 then
+fpsCapped=true
+if fn then pcall(fn,num)end
+elseif fpsCapped then
+fpsCapped=false
+if fn then pcall(fn,60)end
+end
+summarizeStatus()
+end
+local function set3DRendering(enabled)
+pcall(function()
+if type(runService.Set3dRenderingEnabled)=="function"then
+runService:Set3dRenderingEnabled(enabled==true)
+end
+end)
+end
+local function destroyOverlay()
+if overlayConn then
+pcall(function()overlayConn:Disconnect()end)
+overlayConn=nil
+end
+overlayStatsText=nil
+if overlayGui then
+pcall(function()overlayGui:Destroy()end)
+overlayGui=nil
+end
+end
+local function formatOverlayText()
+local dash=env.EDUHubDashboardV1
+if dash and type(dash.GetSummary)=="function"then
+local ok,s=pcall(dash.GetSummary,dash)
+if ok and type(s)=="table"then
+return string.format(
+"Thời gian treo: %s\nTrạng thái: %s\nBoss đã hạ: %d  |  Stand: %s\nCandy +%d  |  Hop: %d  |  Rejoin: %d",
+tostring(s.UptimeText or"00:00:00"),
+tostring(s.ActiveMode or"Đang chờ"),
+tonumber(s.BossKills)or 0,
+tostring(s.StandName or"?"),
+tonumber(s.CandyDelta)or 0,
+tonumber(s.Hops)or 0,
+tonumber(s.Rejoins)or 0
+)
+end
+end
+return"Đang tắt Render 3D để tiết kiệm GPU/Pin\nAuto Farm vẫn hoạt động bình thường"
+end
+local function buildOverlay()
+destroyOverlay()
+local parentHost=nil
+pcall(function()
+parentHost=game:GetService("CoreGui")
+end)
+if not parentHost then
+parentHost=player:FindFirstChildOfClass("PlayerGui")or player:FindFirstChild("PlayerGui")
+end
+if not parentHost then return end
+local okBuild=pcall(function()
+local gui=Instance.new("ScreenGui")
+gui.Name="EDUHubAFKOverlay"
+gui.IgnoreGuiInset=true
+gui.DisplayOrder=500
+gui.ResetOnSpawn=false
+local bg=Instance.new("Frame")
+bg.Name="Backdrop"
+bg.Size=UDim2.fromScale(1,1)
+bg.BackgroundColor3=Color3.fromRGB(10,10,16)
+bg.BorderSizePixel=0
+bg.Parent=gui
+local title=Instance.new("TextLabel")
+title.Name="Title"
+title.Size=UDim2.new(1,-40,0,36)
+title.Position=UDim2.new(0,20,0.32,0)
+title.BackgroundTransparency=1
+title.Text="LUNA HUB · CHẾ ĐỘ TREO MÁY AFK"
+title.TextColor3=Color3.fromRGB(184,152,255)
+title.TextSize=20
+title.Parent=bg
+local statsLbl=Instance.new("TextLabel")
+statsLbl.Name="Stats"
+statsLbl.Size=UDim2.new(1,-40,0,110)
+statsLbl.Position=UDim2.new(0,20,0.32,44)
+statsLbl.BackgroundTransparency=1
+statsLbl.Text=formatOverlayText()
+statsLbl.TextColor3=Color3.fromRGB(228,232,244)
+statsLbl.TextSize=15
+statsLbl.Parent=bg
+local btn=Instance.new("TextButton")
+btn.Name="DisableBlackScreen"
+btn.Size=UDim2.fromOffset(250,44)
+btn.Position=UDim2.new(0.5,-125,0.32,170)
+btn.BackgroundColor3=Color3.fromRGB(115,86,224)
+btn.BorderSizePixel=0
+btn.Text="Tắt màn hình đen (Bật lại 3D)"
+btn.TextColor3=Color3.fromRGB(255,255,255)
+btn.TextSize=15
+btn.Parent=bg
+overlayConn=btn.MouseButton1Click:Connect(function()
+if self.Running and blackToggle.Value then
+blackToggle:SetValue(false)
+else
+destroyOverlay()
+set3DRendering(true)
+end
+end)
+gui.Parent=parentHost
+overlayGui=gui
+overlayStatsText=statsLbl
+end)
+if not okBuild then
+destroyOverlay()
+end
+end
+local function applyBlackScreen(enabled)
+if enabled then
+set3DRendering(false)
+buildOverlay()
+else
+destroyOverlay()
+set3DRendering(true)
+end
+summarizeStatus()
+end
+local function hasAnyFarmOn()
+for _,key in ipairs(FARM_TOGGLES)do
+local opt=options[key]
+if opt and opt.Value==true then
+return true
+end
+end
+return false
+end
+local function triggerReset(char,hum)
+if not char then return false end
+local okBreak=pcall(function()char:BreakJoints()end)
+if hum then
+local okHp=pcall(function()hum.Health=0 end)
+local okSt=pcall(function()hum:ChangeState(Enum.HumanoidStateType.Dead)end)
+return okBreak or okHp or okSt
+end
+return okBreak
+end
+local function stepAntiStuck(now)
+deadSince=deadSince or nil
+if not antiStuckToggle.Value then
+deadSince,stillSince,lastPos,lastChar=nil,nil,nil,nil
+return
+end
+if session.StartupReady==false or session.GameMenuBusy or session.RestoringSettings
+or(session.IsDungeonActive and session:IsDungeonActive())or not hasAnyFarmOn()then
+deadSince,stillSince,lastPos=nil,nil,nil
+return
+end
+local char=player.Character
+local hum=char and char:FindFirstChildOfClass("Humanoid")
+local root=char and char:FindFirstChild("HumanoidRootPart")
+if root and root.Position then
+local floor=tonumber(workspace.FallenPartsDestroyHeight)or-500
+if root.Position.Y<=floor+25 and now-lastVoidRescue>=5 then
+lastVoidRescue=now
+pcall(function()
+root.CFrame=SAFE_ZONE_CFRAME
+root.AssemblyLinearVelocity=Vector3.zero
+root.AssemblyAngularVelocity=Vector3.zero
+end)
+self.VoidRescues+=1
+stillSince=nil
+lastPos=nil
+local dash=env.EDUHubDashboardV1
+if dash and type(dash.RecordEvent)=="function"then
+pcall(dash.RecordEvent,dash,"Anti-Stuck","Cứu nhân vật rơi Void về Safe Zone")
+end
+summarizeStatus()
+return
+end
+end
+local bossCtrl=env.EDUHubBossCombatV1
+if bossCtrl and bossCtrl.Running~=false and bossCtrl.CurrentSession
+and type(bossCtrl.WaitingForMiasma)=="function"then
+local okWait,waiting=pcall(bossCtrl.WaitingForMiasma,bossCtrl,bossCtrl.CurrentSession.Model)
+if okWait and waiting then
+deadSince,stillSince,lastPos=nil,nil,nil
+return
+end
+end
+if not char or not char.Parent or not hum or hum.Health<=0 or not root then
+stillSince,lastPos=nil,nil
+deadSince=deadSince or now
+if now-deadSince>=45 and now-lastResetAt>=60 then
+lastResetAt=now
+deadSince=now
+if char then
+triggerReset(char,hum)
+end
+self.StuckRescues+=1
+local dash=env.EDUHubDashboardV1
+if dash and type(dash.RecordEvent)=="function"then
+pcall(dash.RecordEvent,dash,"Anti-Stuck","Reset nhân vật do kẹt hồi sinh (>45s)")
+end
+summarizeStatus()
+end
+return
+end
+deadSince=nil
+if char~=lastChar then
+lastChar=char
+lastPos=root.Position
+stillSince=now
+return
+end
+local curPos=root.Position
+if lastPos and curPos then
+local moved=(curPos-lastPos).Magnitude
+if moved>=1.5 then
+lastPos=curPos
+stillSince=now
+return
+end
+else
+lastPos=curPos
+stillSince=now
+return
+end
+local bossBusy=bossCtrl and bossCtrl.Running~=false and type(bossCtrl.IsEngaged)=="function"and bossCtrl:IsEngaged()
+local activeMovingFarm=(options.AutoFarm and options.AutoFarm.Value==true)
+or(options.AutoFarmLevels and options.AutoFarmLevels.Value==true)
+or(options.FarmItems and options.FarmItems.Value==true)
+or(options.EDUHW_HalloweenAutoDoor and options.EDUHW_HalloweenAutoDoor.Value==true)
+or(options.EDUHW_HalloweenAutoMob and options.EDUHW_HalloweenAutoMob.Value==true)
+or bossBusy
+if not activeMovingFarm then
+stillSince=now
+return
+end
+if stillSince and now-stillSince>=45 and now-lastResetAt>=60 then
+lastResetAt=now
+stillSince=now
+lastPos=nil
+triggerReset(char,hum)
+self.StuckRescues+=1
+local dash=env.EDUHubDashboardV1
+if dash and type(dash.RecordEvent)=="function"then
+pcall(dash.RecordEvent,dash,"Anti-Stuck","Reset nhân vật do kẹt đứng im (>45s)")
+end
+summarizeStatus()
+end
+end
+function self:Step(now)
+if not current()then return end
+now=now or os.clock()
+if overlayStatsText and blackToggle.Value then
+pcall(function()
+overlayStatsText.Text=formatOverlayText()
+end)
+end
+if fpsBoostToggle.Value and now>=nextVfxSweep then
+nextVfxSweep=now+30
+sweepWorkspaceVfx()
+end
+stepAntiStuck(now)
+end
+fpsBoostToggle:OnChanged(function(value)
+if self.Running then applyFpsBoost(value==true)end
+end)
+blackToggle:OnChanged(function(value)
+if self.Running then applyBlackScreen(value==true)end
+end)
+fpsCapDrop:OnChanged(function(value)
+if self.Running then applyFpsCap(value)end
+end)
+antiStuckToggle:OnChanged(function()
+deadSince,stillSince,lastPos,lastChar=nil,nil,nil,nil
+if self.Running then summarizeStatus()end
+end)
+local connection=runService.Heartbeat:Connect(function()
+if not current()then
+if not self.Running then return end
+self:Destroy()
+return
+end
+local now=os.clock()
+if now<nextStepAt then return end
+nextStepAt=now+1
+pcall(self.Step,self,now)
+end)
+function self:Destroy()
+if not self.Running then return end
+self.Running=false
+if connection then
+pcall(function()connection:Disconnect()end)
+connection=nil
+end
+if vfxConn then
+pcall(function()vfxConn:Disconnect()end)
+vfxConn=nil
+end
+destroyOverlay()
+set3DRendering(true)
+restoreLighting()
+if fpsCapped then
+local fn=resolveSetFpsCap()
+if fn then pcall(fn,60)end
+fpsCapped=false
+end
+if env.EDUAFKOptimizerV1==self then
+env.EDUAFKOptimizerV1=nil
+end
+end
+summarizeStatus()
+return self
+end
+]]):sub(2),"@EDUHub_New/AFK_Optimizer.lua"))()
+local installFarmPose=assert(loadstring(([[!return function(tab,options,fluent,session)
+local env=getgenv and getgenv()or _G
+local previous=env.EDUFarmPoseV1
+if previous and type(previous.Destroy)=="function"then
+pcall(previous.Destroy,previous)
+end
+local self={
+Running=true,
+}
+env.EDUFarmPoseV1=self
+session:Own(self)
+local section=tab:AddSection("Dáng Farm PC · Boss & Quest")
+local modeDrop=section:AddDropdown("EDUFarmPoseMode",{
+Title="Dáng farm (Boss thường & Quest)",
+Values={"Trên đầu (Above)","Sau lưng (Behind)","Dưới đất (Underground)","Xoay vòng (Orbit)"},
+Multi=false,
+Default="Trên đầu (Above)",
+})
+local sitAboveToggle=section:AddToggle("EDUFarmPoseSitAbove",{
+Title="Ngồi (Sit) khi đứng trên đầu",
+Default=true,
+})
+local undergroundDepth=section:AddSlider("EDUFarmPoseUndergroundDepth",{
+Title="Độ sâu dưới đất (Underground)",
+Default=6,
+Min=3,
+Max=14,
+Rounding=1,
+})
+local orbitRadius=section:AddSlider("EDUFarmPoseOrbitRadius",{
+Title="Bán kính xoay vòng (Orbit)",
+Default=7,
+Min=3,
+Max=16,
+Rounding=1,
+})
+local orbitSpeed=section:AddSlider("EDUFarmPoseOrbitSpeed",{
+Title="Tốc độ xoay vòng (rad/s)",
+Default=2.5,
+Min=0.5,
+Max=6.0,
+Rounding=1,
+})
+local velocityLeadToggle=section:AddToggle("EDUFarmPoseVelocityLead",{
+Title="Dự đoán hướng chạy mục tiêu (Velocity Lead)",
+Default=false,
+})
+local autoFaceToggle=section:AddToggle("EDUFarmPoseAutoFace",{
+Title="Tự xoay mặt nhân vật & Stand vào mục tiêu",
+Default=true,
+})
+local applyPostMiasmaToggle=section:AddToggle("EDUFarmPoseApplyPostMiasma",{
+Title="Áp dụng dáng này cho pha đánh xong Miasma",
+Default=false,
+})
+local MODE_MAP={
+["Trên đầu (Above)"]="Above",
+["Sau lưng (Behind)"]="Behind",
+["Dưới đất (Underground)"]="Underground",
+["Xoay vòng (Orbit)"]="Orbit",
+}
+local function current()
+return self.Running and session.Running and not fluent.Unloaded and env.EDUFarmPoseV1==self
+end
+local function safeLookAt(eye,target)
+local diff=target-eye
+local dist=diff and diff.Magnitude or 0
+if not dist or dist<1e-3 then
+return CFrame.new(eye)
+end
+local unitY=math.abs(diff.Y/dist)
+local up=unitY>0.92 and Vector3.xAxis or Vector3.yAxis
+return CFrame.lookAt(eye,target,up)
+end
+local function flatHeading(cf)
+local v=cf and cf.LookVector
+if not v then return Vector3.new(0,0,-1)end
+local flat=Vector3.new(v.X,0,v.Z)
+return flat.Magnitude>0.01 and flat.Unit or Vector3.new(0,0,-1)
+end
+function self:GetModeKey()
+local raw=tostring(modeDrop.Value or"Trên đầu (Above)")
+return MODE_MAP[raw]or"Above"
+end
+function self:GetConfig()
+return{
+Mode=self:GetModeKey(),
+SitAbove=sitAboveToggle.Value==true,
+UndergroundDepth=math.clamp(tonumber(undergroundDepth.Value)or 6,3,14),
+OrbitRadius=math.clamp(tonumber(orbitRadius.Value)or 7,3,16),
+OrbitSpeed=math.clamp(tonumber(orbitSpeed.Value)or 2.5,0.5,6.0),
+VelocityLead=velocityLeadToggle.Value==true,
+AutoFace=autoFaceToggle.Value==true,
+ApplyPostMiasma=applyPostMiasmaToggle.Value==true,
+}
+end
+function self:LeadPosition(root)
+if not root or not root.Position then
+return Vector3.zero
+end
+local pos=root.Position
+if velocityLeadToggle.Value~=true then
+return pos
+end
+local okVel,vel=pcall(function()
+return root.AssemblyLinearVelocity or root.Velocity
+end)
+if okVel and vel and type(vel.X)=="number"and type(vel.Z)=="number"then
+local vx,vz=vel.X,vel.Z
+local speed=math.sqrt(vx*vx+vz*vz)
+if speed>1 and speed<140 then
+local lead=Vector3.new(vx,0,vz)*0.12
+local mag=lead.Magnitude
+if mag>5 then
+lead=lead*(5/mag)
+end
+return pos+lead
+end
+end
+return pos
+end
+function self:TargetHeight(model)
+if not model then return 5 end
+local ok,size=pcall(function()
+return type(model.GetExtentsSize)=="function"and model:GetExtentsSize()or nil
+end)
+if ok and size and type(size.Y)=="number"and size.Y==size.Y and size.Y>0 then
+return math.clamp(size.Y,4,24)
+end
+return 5
+end
+function self:ComputeQuestFrame(targetModel,char,rangeOffset,yOffset,zOffset,now)
+if not current()or not targetModel or not char then
+return nil
+end
+local targetRoot=targetModel.PrimaryPart or targetModel:FindFirstChild("HumanoidRootPart")
+local hum=char:FindFirstChildOfClass("Humanoid")
+if not targetRoot or not targetRoot.CFrame or not targetRoot.Position then
+return nil
+end
+local cfg=self:GetConfig()
+local mode=cfg.Mode
+local leadPos=self:LeadPosition(targetRoot)
+local heading=flatHeading(targetRoot.CFrame)
+local rOff=tonumber(rangeOffset)or 8
+local yOff=tonumber(yOffset)or-5
+local zOff=tonumber(zOffset)or 0
+local fallen=workspace and workspace.FallenPartsDestroyHeight
+local function makeAboveFrame()
+if hum then
+pcall(function()hum.Sit=cfg.SitAbove end)
+end
+if cfg.AutoFace then
+local pos=Vector3.new(leadPos.X,targetRoot.Position.Y+rOff+yOff,leadPos.Z)-heading*zOff
+return safeLookAt(pos,leadPos)
+end
+return targetRoot.CFrame*CFrame.new(0,rOff+yOff,zOff)*CFrame.Angles(math.rad(-90),0,0)
+end
+if mode=="Above"then
+return makeAboveFrame()
+elseif mode=="Behind"then
+local dist=math.clamp(math.abs(zOff)>0 and math.abs(zOff)or 5,3,12)
+local pos=Vector3.new(leadPos.X-heading.X*dist,targetRoot.Position.Y,leadPos.Z-heading.Z*dist)
+if hum then
+pcall(function()hum.Sit=false end)
+end
+return safeLookAt(pos,leadPos)
+elseif mode=="Underground"then
+local pos=Vector3.new(leadPos.X,targetRoot.Position.Y-cfg.UndergroundDepth,leadPos.Z)
+if type(fallen)=="number"and pos.Y<=fallen+12 then
+return makeAboveFrame()
+end
+if hum then
+pcall(function()hum.Sit=false end)
+end
+return safeLookAt(pos,leadPos)
+elseif mode=="Orbit"then
+local t=now or os.clock()
+local angle=t*cfg.OrbitSpeed
+local pos=Vector3.new(
+leadPos.X+math.cos(angle)*cfg.OrbitRadius,
+leadPos.Y+1.5,
+leadPos.Z+math.sin(angle)*cfg.OrbitRadius
+)
+if type(fallen)=="number"and pos.Y<=fallen+12 then
+return makeAboveFrame()
+end
+if hum then
+pcall(function()hum.Sit=false end)
+end
+return safeLookAt(pos,leadPos)
+end
+return makeAboveFrame()
+end
+function self:SyncStand(char,ownFrame,targetPos)
+if not char or not ownFrame then return end
+local stand=char:FindFirstChild("Stand")
+if not stand or not stand:IsA("Model")then return end
+local part=stand:FindFirstChild("HumanoidRootPart")or stand.PrimaryPart
+or stand:FindFirstChild("Torso")or stand:FindFirstChild("UpperTorso")
+if not part or not part:IsA("BasePart")or not part:IsDescendantOf(stand)then return end
+local standFrame=ownFrame
+if targetPos and ownFrame.Position then
+local diff=targetPos-ownFrame.Position
+local dist=diff.Magnitude
+if dist>5 then
+local step=math.min(2.5,math.max(0,dist-2))
+if step>0.05 then
+local standPos=ownFrame.Position+diff.Unit*step
+standFrame=safeLookAt(standPos,targetPos)
+end
+elseif self:GetConfig().AutoFace and dist>1e-3 then
+standFrame=safeLookAt(ownFrame.Position,targetPos)
+end
+end
+pcall(function()
+part.CFrame=standFrame
+part.AssemblyLinearVelocity=Vector3.zero
+part.AssemblyAngularVelocity=Vector3.zero
+end)
+end
+function self:Destroy()
+if not self.Running then return end
+self.Running=false
+if env.EDUFarmPoseV1==self then
+env.EDUFarmPoseV1=nil
+end
+end
+return self
+end
+]]):sub(2),"@EDUHub_New/Farm_Pose.lua"))()
+local installWebhookDashboard=assert(loadstring(([[!return function(tab,options,fluent,session)
+local env=getgenv and getgenv()or _G
+local previous=env.EDUHubDashboardV1
+if previous and type(previous.Destroy)=="function"then
+pcall(previous.Destroy,previous)
+end
+local players=game:GetService("Players")
+local player=players.LocalPlayer
+local http=game:GetService("HttpService")
+local runService=game:GetService("RunService")
+local self={
+Running=true,
+StartedAt=os.clock(),
+BossKills=0,
+StandChanges=0,
+StandMatches=0,
+Hops=0,
+Rejoins=0,
+Events={},
+SentWebhooks=0,
+FailedWebhooks=0,
+}
+env.EDUHubDashboardV1=self
+session:Own(self)
+local left=tab:AddSection({Title="Thống kê phiên AFK",Column=1})
+local statsLabel=left:AddParagraph({
+Title="Tổng quan phiên",
+Content="Đang khởi tạo…",
+})
+local eventsLabel=left:AddParagraph({
+Title="Hoạt động gần nhất",
+Content="Chưa có sự kiện nào",
+})
+left:AddButton({
+Title="Reset thống kê phiên",
+Callback=function()
+self:ResetStats()
+end,
+})
+local right=tab:AddSection({Title="Discord Webhook",Column=2})
+local whEnabled=right:AddToggle("EDUWebhookEnabled",{
+Title="Bật gửi Discord Webhook",
+Default=false,
+})
+local whUrl=right:AddInput("EDUWebhookURL",{
+Title="Discord Webhook URL",
+Default="",
+Placeholder="https://discord.com/api/webhooks/...",
+})
+local whPing=right:AddInput("EDUWebhookPingId",{
+Title="Ping khi trúng Stand hiếm",
+Default="",
+Placeholder="User ID hoặc @everyone (tùy chọn)",
+})
+local whEvents=right:AddDropdown("EDUWebhookEvents",{
+Title="Sự kiện gửi Webhook",
+Values={"Stand mục tiêu","Hạ Boss","Đổi server / Rejoin","Tổng kết định kỳ"},
+Multi=true,
+Default={["Stand mục tiêu"]=true,["Hạ Boss"]=true},
+})
+local whInterval=right:AddSlider("EDUWebhookInterval",{
+Title="Chu kỳ tổng kết (phút)",
+Default=30,
+Min=10,
+Max=120,
+Rounding=0,
+})
+right:AddButton({
+Title="Gửi tin nhắn test Webhook",
+Callback=function()
+self:SendTest()
+end,
+})
+local whStatus=right:AddParagraph({
+Title="Trạng thái Webhook",
+Content="Đã tắt",
+})
+local candyBase,candyNow=nil,nil
+local cashBase,cashNow=nil,nil
+local lastStandKey=nil
+local standNameNow,attrNameNow=nil,nil
+local trackedBoss=nil
+local countedModels={}
+local countedOrder={}
+local lastNoticeKey,lastNoticeAt=nil,-math.huge
+local queue={}
+local MAX_QUEUE=20
+local workerActive=false
+local nextSendAt=0
+local lastSummaryAt=os.clock()
+local nextStepAt=0
+local lastStatsText,lastEventsText,lastWhText=nil,nil,nil
+local function current()
+return self.Running and session.Running and not fluent.Unloaded and env.EDUHubDashboardV1==self
+end
+local function setStatsText(text)
+if current()and text~=lastStatsText then
+lastStatsText=text
+statsLabel:SetDesc(text)
+end
+end
+local function setEventsText(text)
+if current()and text~=lastEventsText then
+lastEventsText=text
+eventsLabel:SetDesc(text)
+end
+end
+local function setWhStatus(text)
+if current()and text~=lastWhText then
+lastWhText=text
+whStatus:SetDesc(text)
+end
+end
+local function formatUptime(sec)
+sec=math.max(0,math.floor(tonumber(sec)or 0))
+local h=math.floor(sec/3600)
+local m=math.floor(sec/60)%60
+local s=sec%60
+return string.format("%02d:%02d:%02d",h,m,s)
+end
+local function validWebhookUrl(url)
+if type(url)~="string"then return false end
+local trimmed=url:match("^%s*(.-)%s*$")or""
+if trimmed==""then return false end
+return trimmed:match("^https://discord%.com/api/webhooks/.")~=nil
+or trimmed:match("^https://discordapp%.com/api/webhooks/.")~=nil
+or trimmed:match("^https://ptb%.discord%.com/api/webhooks/.")~=nil
+or trimmed:match("^https://canary%.discord%.com/api/webhooks/.")~=nil
+end
+local function cleanUrl()
+local raw=tostring(whUrl.Value or"")
+return raw:match("^%s*(.-)%s*$")or""
+end
+local function eventSelected(name)
+local vals=whEvents.Value
+if type(vals)~="table"then return false end
+return vals[name]==true or table.find(vals,name)~=nil
+end
+local function resolveHttpRequest()
+if type(env.EDUWebhookHttpOverride)=="function"then
+return env.EDUWebhookHttpOverride
+end
+if type(request)=="function"then return request end
+if type(http_request)=="function"then return http_request end
+if syn and type(syn.request)=="function"then return syn.request end
+if http and type(http.request)=="function"then return http.request end
+return nil
+end
+local function readNumberAttrOrChild()
+local candy=nil
+local okCandy,attrCandy=pcall(function()
+return type(player.GetAttribute)=="function"and player:GetAttribute("Candy")or nil
+end)
+if okCandy and type(attrCandy)=="number"and attrCandy==attrCandy then
+candy=attrCandy
+end
+local cash=nil
+local stand,att=nil,nil
+local data=player:FindFirstChild("Data")
+if data then
+local standObj=data:FindFirstChild("Stand")
+if standObj and standObj.Value~=nil then
+stand=tostring(standObj.Value)
+end
+local attObj=data:FindFirstChild("Attribute")or data:FindFirstChild("StandAttribute")
+if attObj and attObj.Value~=nil then
+att=tostring(attObj.Value)
+end
+local cashObj=data:FindFirstChild("Cash")or data:FindFirstChild("Money")or data:FindFirstChild("Yen")
+if cashObj and type(cashObj.Value)=="number"and cashObj.Value==cashObj.Value then
+cash=cashObj.Value
+end
+end
+if cash==nil then
+local stats=player:FindFirstChild("leaderstats")
+local cashObj=stats and(stats:FindFirstChild("Cash")or stats:FindFirstChild("Money"))
+if cashObj and type(cashObj.Value)=="number"and cashObj.Value==cashObj.Value then
+cash=cashObj.Value
+end
+end
+return candy,cash,stand,att
+end
+local function detectActiveMode()
+if session.IsDungeonActive and session:IsDungeonActive()then
+return"Auto Lair"
+end
+if options.AutoFarmBoss and options.AutoFarmBoss.Value then
+local boss=env.EDUHubBossCombatV1
+if boss and boss.CurrentSession and boss.CurrentSession.Model then
+return"Boss: "..tostring(boss.CurrentSession.Model.Name)
+end
+return"Auto Boss (Chờ)"
+end
+if options.EDUHW_HalloweenAutoDoor and options.EDUHW_HalloweenAutoDoor.Value then
+return"Halloween"
+end
+if options.StartStandFarm and options.StartStandFarm.Value then
+return"Auto Stand"
+end
+if options.AutoFarm and options.AutoFarm.Value then
+return"Auto Quest"
+end
+if options.AutoFarmLevels and options.AutoFarmLevels.Value then
+return"Auto Level"
+end
+if options.FarmItems and options.FarmItems.Value then
+return"Farm Items"
+end
+return"Đang chờ"
+end
+local function sampleTelemetry(now)
+local candy,cash,stand,att=readNumberAttrOrChild()
+if type(candy)=="number"then
+if candyBase==nil then candyBase=candy end
+candyNow=candy
+end
+if type(cash)=="number"then
+if cashBase==nil then cashBase=cash end
+cashNow=cash
+end
+if stand and stand~=""then
+standNameNow=stand
+attrNameNow=(att and att~="")and att or"None"
+local combined=standNameNow.."|"..attrNameNow
+if lastStandKey~=nil and lastStandKey~=combined and standNameNow~="None"then
+self.StandChanges+=1
+end
+lastStandKey=combined
+end
+local bossCtrl=env.EDUHubBossCombatV1
+local lease=bossCtrl and bossCtrl.Running~=false and bossCtrl.CurrentSession
+local activeModel=lease and lease.Model
+if activeModel and(not trackedBoss or trackedBoss.Model~=activeModel)then
+trackedBoss={
+Model=activeModel,
+Name=tostring(activeModel.Name or"Boss"),
+StartedAt=now,
+}
+elseif trackedBoss and trackedBoss.Model~=activeModel then
+local prev=trackedBoss
+trackedBoss=nil
+local m=prev.Model
+if m and not countedModels[m]then
+local hum=m:FindFirstChildOfClass("Humanoid")
+local living=workspace and workspace:FindFirstChild("Living")
+local dead=hum and hum.Health<=0
+local gone=not m.Parent or(living~=nil and m.Parent~=living)
+local bossOn=options.AutoFarmBoss and options.AutoFarmBoss.Value==true
+if bossOn and(dead or gone)then
+countedModels[m]=true
+countedOrder[#countedOrder+1]=m
+if#countedOrder>50 then
+local oldest=table.remove(countedOrder,1)
+countedModels[oldest]=nil
+end
+self:RecordBossKill(prev.Name,math.max(1,math.floor(now-(prev.StartedAt or now))))
+end
+end
+end
+end
+function self:GetSummary()
+local now=os.clock()
+sampleTelemetry(now)
+local uptime=math.max(0,now-self.StartedAt)
+local cDelta=(candyNow and candyBase)and(candyNow-candyBase)or 0
+local mDelta=(cashNow and cashBase)and(cashNow-cashBase)or 0
+local standDisplay=standNameNow and(standNameNow..(attrNameNow and attrNameNow~="None"and(" ("..attrNameNow..")")or""))or"Chưa có"
+return{
+UptimeSeconds=uptime,
+UptimeText=formatUptime(uptime),
+BossKills=self.BossKills,
+StandChanges=self.StandChanges,
+StandMatches=self.StandMatches,
+CandyDelta=cDelta,
+CashDelta=mDelta,
+Hops=self.Hops,
+Rejoins=self.Rejoins,
+ActiveMode=detectActiveMode(),
+StandName=standDisplay,
+}
+end
+local function refreshDashboardText()
+local s=self:GetSummary()
+local text=string.format(
+"Thời gian treo: %s · %s\nStand: %s (Đổi: %d · Trúng: %d)\nBoss đã hạ: %d\nCandy phiên: %+d  |  Cash phiên: %+d\nHop server: %d  |  Rejoin: %d",
+s.UptimeText,
+s.ActiveMode,
+s.StandName,
+s.StandChanges,
+s.StandMatches,
+s.BossKills,
+s.CandyDelta,
+s.CashDelta,
+s.Hops,
+s.Rejoins
+)
+setStatsText(text)
+if#self.Events==0 then
+setEventsText("Chưa có sự kiện nào")
+else
+setEventsText(table.concat(self.Events,"\n"))
+end
+end
+local function formatPingPrefix()
+local raw=tostring(whPing.Value or""):match("^%s*(.-)%s*$")or""
+if raw==""then return nil end
+if raw:find("@everyone",1,true)or raw:find("@here",1,true)then
+return raw
+end
+local digits=raw:match("^<?@?!?(%d+)>?$")
+if digits then
+return"<@"..digits..">"
+end
+return raw
+end
+local function startWorker()
+if workerActive or not current()then return end
+workerActive=true
+session:TrackResult(task.spawn(function()
+while current()and#queue>0 do
+local now=os.clock()
+if now<nextSendAt then
+task.wait(math.min(3,math.max(0.05,nextSendAt-now)))
+continue
+end
+local item=table.remove(queue,1)
+if not item then break end
+local url=cleanUrl()
+local req=resolveHttpRequest()
+if not validWebhookUrl(url)or not req then
+self.FailedWebhooks+=1
+setWhStatus(not validWebhookUrl(url)and"Lỗi: URL Webhook Discord không hợp lệ"or"Lỗi: Executor thiếu hàm request()")
+else
+local okEnc,body=pcall(http.JSONEncode,http,item.Payload)
+if okEnc and type(body)=="string"then
+local okReq,resp=pcall(req,{
+Url=url,
+Method="POST",
+Headers={["Content-Type"]="application/json"},
+Body=body,
+})
+local code=okReq and type(resp)=="table"and tonumber(resp.StatusCode or resp.status_code or resp.Status)or nil
+if okReq and(code==nil or(code>=200 and code<300))then
+self.SentWebhooks+=1
+nextSendAt=os.clock()+3
+setWhStatus(string.format("Đã gửi %d tin (Hàng đợi: %d)",self.SentWebhooks,#queue))
+elseif code==429 then
+local retry=5
+if type(resp)=="table"and type(resp.Body)=="string"then
+local okDec,decoded=pcall(http.JSONDecode,http,resp.Body)
+if okDec and type(decoded)=="table"and type(decoded.retry_after)=="number"then
+retry=math.clamp(decoded.retry_after,3,15)
+end
+end
+nextSendAt=os.clock()+retry
+if#queue<MAX_QUEUE then
+table.insert(queue,1,item)
+end
+setWhStatus("Discord giới hạn tốc độ (429) · Tự chờ "..math.ceil(retry).."s")
+else
+self.FailedWebhooks+=1
+nextSendAt=os.clock()+3
+setWhStatus("Gửi Webhook lỗi (HTTP "..tostring(code or"err")..") · Đã gửi: "..self.SentWebhooks)
+end
+else
+self.FailedWebhooks+=1
+end
+end
+end
+workerActive=false
+end))
+end
+local function enqueueWebhook(title,desc,color,contentPing,fields)
+if not current()then return false end
+local url=cleanUrl()
+if not validWebhookUrl(url)then
+setWhStatus("Chưa có URL Webhook Discord hợp lệ")
+return false
+end
+if#queue>=MAX_QUEUE then
+table.remove(queue,1)
+end
+local embed={
+title=tostring(title or"LUNA HUB"),
+description=tostring(desc or""),
+color=tonumber(color)or 8359167,
+fields=fields,
+footer={text="LUNA HUB · Stand Upright Rebooted"},
+}
+queue[#queue+1]={
+Payload={
+username="LUNA HUB Notifier",
+content=contentPing,
+embeds={embed},
+},
+}
+startWorker()
+return true
+end
+function self:RecordEvent(kind,text)
+if not current()then return end
+local stamp=formatUptime(os.clock()-self.StartedAt)
+local line=string.format("[%s] %s: %s",stamp,tostring(kind or"Info"),tostring(text or""))
+table.insert(self.Events,1,line)
+while#self.Events>5 do
+table.remove(self.Events)
+end
+refreshDashboardText()
+end
+function self:RecordBossKill(bossName,durationSec)
+if not current()then return end
+self.BossKills+=1
+local dur=math.max(1,math.floor(tonumber(durationSec)or 1))
+self:RecordEvent("Boss",string.format("Hạ %s (%ds)",tostring(bossName or"Boss"),dur))
+if whEnabled.Value and eventSelected("Hạ Boss")then
+local s=self:GetSummary()
+enqueueWebhook("Đã hạ Boss: "..tostring(bossName or"Boss"),"Hoàn tất mục tiêu Auto Boss.",3198344,nil,{
+{name="Thời gian hạ",value=dur.."s",inline=true},
+{name="Tổng Boss phiên",value=tostring(s.BossKills),inline=true},
+{name="Treo máy",value=s.UptimeText,inline=true},
+})
+end
+end
+function self:RecordStandMatch(standName,attrName,detail)
+if not current()then return end
+self.StandMatches+=1
+local label=tostring(standName or"?").." · "..tostring(attrName or"None")
+self:RecordEvent("Stand","Trúng mục tiêu "..label)
+if whEnabled.Value and eventSelected("Stand mục tiêu")then
+enqueueWebhook("Trúng Stand mục tiêu!",tostring(detail or label),15844367,formatPingPrefix(),{
+{name="Stand",value=tostring(standName or"?"),inline=true},
+{name="Attribute",value=tostring(attrName or"None"),inline=true},
+{name="Tổng trúng",value=tostring(self.StandMatches),inline=true},
+})
+end
+end
+function self:OnStandNotice(data)
+if not current()or type(data)~="table"then return end
+local title=tostring(data.Title or"")
+local content=tostring(data.Content or"")
+local lowerTitle=string.lower(title)
+local isMatch=title=="MATCH!"
+or lowerTitle:find("match",1,true)~=nil
+or lowerTitle:find("trúng mục tiêu",1,true)~=nil
+or lowerTitle:find("trúng",1,true)~=nil
+if not isMatch then return end
+local key=title.."|"..content
+local now=os.clock()
+if lastNoticeKey==key and now-lastNoticeAt<10 then return end
+lastNoticeKey=key
+lastNoticeAt=now
+local _,_,stand,att=readNumberAttrOrChild()
+self:RecordStandMatch(stand or standNameNow or content,att or attrNameNow or"None",content~=""and content or title)
+end
+function self:RecordServerHop(reason,targetJobId)
+if not current()then return end
+self.Hops+=1
+local info=tostring(reason or"Đổi server")..(targetJobId and(" -> "..tostring(targetJobId))or"")
+self:RecordEvent("Hop",info)
+if whEnabled.Value and eventSelected("Đổi server / Rejoin")then
+enqueueWebhook("Đổi server Public",info,5814783,nil)
+end
+end
+function self:RecordRejoin(reason)
+if not current()then return end
+self.Rejoins+=1
+local info=tostring(reason or"Tự rejoin")
+self:RecordEvent("Rejoin",info)
+if whEnabled.Value and eventSelected("Đổi server / Rejoin")then
+enqueueWebhook("Auto Rejoin kích hoạt",info,15105570,nil)
+end
+end
+function self:ResetStats()
+if not current()then return end
+self.StartedAt=os.clock()
+self.BossKills=0
+self.StandChanges=0
+self.StandMatches=0
+self.Hops=0
+self.Rejoins=0
+table.clear(self.Events)
+local candy,cash=readNumberAttrOrChild()
+candyBase,candyNow=candy,candy
+cashBase,cashNow=cash,cash
+lastSummaryAt=os.clock()
+refreshDashboardText()
+end
+function self:SendTest()
+if not current()then return false end
+local url=cleanUrl()
+if not validWebhookUrl(url)then
+setWhStatus("URL chưa hợp lệ (phải là link https://discord.com/api/webhooks/...)")
+fluent:Notify({Title="Webhook",Content="Vui lòng nhập Discord Webhook URL hợp lệ trước!",Duration=4})
+return false
+end
+local s=self:GetSummary()
+local queued=enqueueWebhook("LUNA HUB · Kiểm tra Webhook","Kết nối Discord Webhook thành công!",5763719,nil,{
+{name="Trạng thái",value=s.ActiveMode,inline=true},
+{name="Thời gian treo",value=s.UptimeText,inline=true},
+{name="Stand",value=s.StandName,inline=true},
+})
+if queued then
+self:RecordEvent("Webhook","Đã gửi tin nhắn kiểm tra")
+end
+return queued
+end
+function self:Step(now)
+if not current()then return end
+now=now or os.clock()
+refreshDashboardText()
+if whEnabled.Value and eventSelected("Tổng kết định kỳ")then
+local mins=math.clamp(tonumber(whInterval.Value)or 30,10,120)
+if now-lastSummaryAt>=mins*60 then
+lastSummaryAt=now
+local s=self:GetSummary()
+enqueueWebhook("Tổng kết phiên AFK","Báo cáo định kỳ từ LUNA HUB.",9807270,nil,{
+{name="Thời gian treo",value=s.UptimeText,inline=true},
+{name="Boss đã hạ",value=tostring(s.BossKills),inline=true},
+{name="Candy / Cash",value=string.format("%+d Candy | %+d Cash",s.CandyDelta,s.CashDelta),inline=true},
+{name="Stand hiện tại",value=s.StandName,inline=true},
+{name="Hop / Rejoin",value=string.format("%d / %d",s.Hops,s.Rejoins),inline=true},
+})
+end
+else
+lastSummaryAt=now
+end
+end
+whEnabled:OnChanged(function(enabled)
+if not current()then return end
+if enabled then
+lastSummaryAt=os.clock()
+setWhStatus(validWebhookUrl(cleanUrl())and("Đang bật · Đã gửi: "..self.SentWebhooks)or"Đang bật · Chờ nhập Webhook URL")
+else
+setWhStatus("Đã tắt")
+end
+end)
+local connection=runService.Heartbeat:Connect(function()
+if not current()then
+if self.Running then self:Destroy()end
+return
+end
+local now=os.clock()
+if now<nextStepAt then return end
+nextStepAt=now+1
+pcall(self.Step,self,now)
+end)
+function self:Destroy()
+if not self.Running then return end
+self.Running=false
+if connection then
+pcall(function()connection:Disconnect()end)
+connection=nil
+end
+table.clear(queue)
+workerActive=false
+if env.EDUHubDashboardV1==self then
+env.EDUHubDashboardV1=nil
+end
+end
+refreshDashboardText()
+return self
+end
+]]):sub(2),"@EDUHub_New/Webhook_Dashboard.lua"))()
+local installBossServerHop=assert(loadstring(([[!return function(tab,options,fluent,session)
+local env=getgenv and getgenv()or _G
+local previous=env.EDUBossServerHopV1
+if previous and type(previous.Destroy)=="function"then
+pcall(previous.Destroy,previous)
+end
+local players=game:GetService("Players")
+local player=players.LocalPlayer
+local teleport=game:GetService("TeleportService")
+local http=game:GetService("HttpService")
+local runService=game:GetService("RunService")
+local visitedPath="EDUHub_BossHopVisited_"..tostring(tonumber(game.PlaceId)or 0)..".json"
+local VISIT_TTL=900
+local MAX_VISITED=30
+local self={
+Running=true,
+StartedAt=os.clock(),
+CountdownUntil=nil,
+InFlight=false,
+Teleporting=false,
+NextRetryAt=0,
+Attempts=0,
+FailedJobIds={},
+FailedCount=0,
+LastTargetJobId=nil,
+HopsExecuted=0,
+Connections={},
+}
+env.EDUBossServerHopV1=self
+session:Own(self)
+local section=tab:AddSection("Săn Boss xuyên server (Public)")
+local hopToggle=section:AddToggle("EDUBossServerHop",{
+Title="Tự đổi server Public khi hết Boss",
+Default=false,
+})
+local minWaitSlider=section:AddSlider("EDUBossHopMinWait",{
+Title="Hop nếu Boss gần nhất còn lâu hơn (giây)",
+Default=180,
+Min=60,
+Max=1800,
+Rounding=0,
+})
+local cooldownSlider=section:AddSlider("EDUBossHopCooldown",{
+Title="Nghỉ tối thiểu giữa 2 lần hop (giây)",
+Default=60,
+Min=45,
+Max=300,
+Rounding=0,
+})
+section:AddButton({
+Title="Đổi server săn Boss ngay",
+Callback=function()
+self:RequestManualHop()
+end,
+})
+local hopLabel=section:AddParagraph({
+Title="Trạng thái Boss Hop",
+Content="Đã tắt",
+})
+local visitedLoaded=false
+local visitedMap={}
+local persistedHopEpoch=0
+local lastHopClock=-math.huge
+local bossEnabledAt=nil
+local wasBossOn=false
+local generation=0
+local lastText=nil
+local nextStepAt=0
+local function current()
+return self.Running and session.Running and not fluent.Unloaded and env.EDUBossServerHopV1==self
+end
+local function setStatus(text)
+if current()and text~=lastText then
+lastText=text
+hopLabel:SetDesc(text)
+end
+end
+local function epochNow()
+local ok,val=pcall(os.time)
+return(ok and type(val)=="number")and val or 0
+end
+local function inVipServer()
+local okPs,psId=pcall(function()return game.PrivateServerId end)
+local okOwn,ownerId=pcall(function()return game.PrivateServerOwnerId end)
+return(okPs and type(psId)=="string"and psId~="")
+or(okOwn and tonumber(ownerId)and tonumber(ownerId)>0)
+or false
+end
+local function pruneVisited(nowEpoch)
+local list={}
+for jobId,ts in pairs(visitedMap)do
+if type(jobId)=="string"and jobId~=""and type(ts)=="number"and nowEpoch-ts<VISIT_TTL then
+list[#list+1]={id=jobId,ts=ts}
+else
+visitedMap[jobId]=nil
+end
+end
+if#list>MAX_VISITED then
+table.sort(list,function(a,b)return a.ts>b.ts end)
+table.clear(visitedMap)
+for i=1,MAX_VISITED do
+visitedMap[list[i].id]=list[i].ts
+end
+end
+end
+local function ensureVisitedLoaded()
+if visitedLoaded then return end
+visitedLoaded=true
+if type(readfile)~="function"then return end
+local okRead,raw=pcall(readfile,visitedPath)
+if not okRead or type(raw)~="string"or raw==""then return end
+local okDec,data=pcall(http.JSONDecode,http,raw)
+if not okDec or type(data)~="table"then return end
+if type(data.LastHopEpoch)=="number"then
+persistedHopEpoch=data.LastHopEpoch
+end
+if type(data.Visited)=="table"then
+for k,v in pairs(data.Visited)do
+if type(k)=="string"and type(v)=="number"then
+visitedMap[k]=v
+end
+end
+end
+pruneVisited(epochNow())
+end
+local function saveVisitedOnHop()
+ensureVisitedLoaded()
+local nowEpoch=epochNow()
+local ownJob=tostring(game.JobId or"")
+if ownJob~=""then
+visitedMap[ownJob]=nowEpoch
+end
+persistedHopEpoch=nowEpoch
+pruneVisited(nowEpoch)
+if type(writefile)~="function"then return end
+local okEnc,encoded=pcall(http.JSONEncode,http,{
+LastHopEpoch=persistedHopEpoch,
+Visited=visitedMap,
+})
+if okEnc and type(encoded)=="string"then
+pcall(writefile,visitedPath,encoded)
+end
+end
+local function markFailedJob(jobId)
+if type(jobId)~="string"or jobId==""then return end
+if self.FailedCount>=40 then
+table.clear(self.FailedJobIds)
+self.FailedCount=0
+end
+if not self.FailedJobIds[jobId]then
+self.FailedJobIds[jobId]=true
+self.FailedCount+=1
+end
+end
+local function fetchUrl(url)
+if type(game.HttpGet)=="function"then
+local ok,body=pcall(function()return game:HttpGet(url)end)
+if ok and type(body)=="string"and body~=""then return body end
+end
+local req=(type(request)=="function"and request)
+or(type(http_request)=="function"and http_request)
+or(syn and type(syn.request)=="function"and syn.request)
+or(http and type(http.request)=="function"and http.request)
+if req then
+local ok,resp=pcall(req,{Url=url,Method="GET"})
+if ok and type(resp)=="table"and type(resp.Body)=="string"and resp.Body~=""then
+return resp.Body
+end
+end
+return nil
+end
+local function pickPublicServer(nowEpoch)
+ensureVisitedLoaded()
+pruneVisited(nowEpoch)
+local placeId=tonumber(game.PlaceId)
+if not placeId or placeId<=0 then return nil end
+local url="https://games.roblox.com/v1/games/"..tostring(placeId).."/servers/Public?sortOrder=Asc&limit=50&excludeFullGames=true"
+local body=fetchUrl(url)
+if type(body)~="string"or body==""then return nil end
+local okDec,decoded=pcall(http.JSONDecode,http,body)
+if not okDec or type(decoded)~="table"or type(decoded.data)~="table"then return nil end
+local currentJob=tostring(game.JobId or"")
+local roomy,fallback={},{}
+for _,item in ipairs(decoded.data)do
+if type(item)=="table"and type(item.id)=="string"and item.id~=""
+and item.id~=currentJob
+and not self.FailedJobIds[item.id]
+and not visitedMap[item.id]then
+local playing=tonumber(item.playing)or 0
+local maxPlr=tonumber(item.maxPlayers)or 0
+if playing>=1 and maxPlr>playing then
+local rec={id=item.id,playing=playing,ping=tonumber(item.ping)or 999}
+if maxPlr-playing>=2 then
+roomy[#roomy+1]=rec
+else
+fallback[#fallback+1]=rec
+end
+end
+end
+end
+local list=#roomy>0 and roomy or fallback
+if#list==0 then return nil end
+table.sort(list,function(a,b)
+if a.ping~=b.ping then return a.ping<b.ping end
+return a.playing<b.playing
+end)
+local pick=list[math.random(1,math.min(#list,3))]
+return pick and pick.id or nil
+end
+local function cancelCountdown()
+self.CountdownUntil=nil
+end
+local function failHop(reason,now,minWait)
+markFailedJob(self.LastTargetJobId)
+self.LastTargetJobId=nil
+self.InFlight=false
+self.Teleporting=false
+self.PendingTeleportAt=nil
+local waitSec=math.max(tonumber(minWait)or 0,10)
+self.NextRetryAt=now+waitSec
+setStatus(tostring(reason).." · Thử lại sau "..math.ceil(waitSec).."s")
+end
+local function executeHop(reason)
+if not current()or self.InFlight or self.Teleporting or self.PendingTeleportAt then return false end
+if inVipServer()then
+cancelCountdown()
+setStatus("Đang ở Server VIP (svv) · Tự khóa Boss Hop")
+return false
+end
+self.InFlight=true
+self.Attempts+=1
+lastHopClock=os.clock()
+cancelCountdown()
+generation+=1
+local myGen=generation
+task.spawn(function()
+local ok,why=pcall(function()
+local persistence=env.EDUHubPersistenceV1
+if persistence and type(persistence.PrepareTeleport)=="function"then
+local prepOk=persistence:PrepareTeleport()
+if options.EDUSettingsAutoResume and options.EDUSettingsAutoResume.Value then
+assert(prepOk,"Chưa chuẩn bị được Auto Resume trước khi hop")
+end
+elseif options.EDUSettingsAutoResume and options.EDUSettingsAutoResume.Value then
+error("Chờ Settings_Persistence sẵn sàng")
+end
+if not current()or generation~=myGen then return end
+local targetJob=nil
+if type(teleport.TeleportToPlaceInstance)=="function"and(self.Attempts%3~=0)then
+targetJob=pickPublicServer(epochNow())
+end
+if not current()or generation~=myGen then return end
+saveVisitedOnHop()
+local dash=env.EDUHubDashboardV1
+if dash and type(dash.RecordServerHop)=="function"then
+pcall(dash.RecordServerHop,dash,reason or"Đổi server Boss",targetJob)
+end
+self.HopsExecuted+=1
+self.PendingTeleportAt=os.clock()
+if targetJob then
+self.LastTargetJobId=targetJob
+setStatus("Đang nhảy sang server Public mới…")
+local okInst,instErr=pcall(function()
+teleport:TeleportToPlaceInstance(game.PlaceId,targetJob,player)
+end)
+if okInst then return end
+markFailedJob(targetJob)
+self.LastTargetJobId=nil
+self.PendingTeleportAt=nil
+error(instErr)
+end
+self.LastTargetJobId=nil
+setStatus("Đang chuyển sang server Public ngẫu nhiên…")
+teleport:Teleport(game.PlaceId,player)
+end)
+if not current()or generation~=myGen then return end
+self.InFlight=false
+if not ok then
+failHop("Boss Hop lỗi: "..tostring(why),os.clock(),10)
+end
+end)
+return true
+end
+function self:RequestManualHop()
+if not current()then return false end
+if inVipServer()then
+fluent:Notify({
+Title="Boss Hop",
+Content="Đang ở Server VIP (svv) · Không tự nhảy sang Public",
+Duration=4,
+})
+setStatus("Đang ở Server VIP (svv) · Tự khóa Boss Hop")
+return false
+end
+if session.IsDungeonActive and session:IsDungeonActive()then
+fluent:Notify({
+Title="Boss Hop",
+Content="Đang ở trong Dungeon / Lair · Không thể hop lúc này",
+Duration=4,
+})
+return false
+end
+return executeHop("Đổi server Boss thủ công")
+end
+function self:Step(now)
+if not current()then return end
+now=now or os.clock()
+if self.PendingTeleportAt and not self.Teleporting then
+if now-self.PendingTeleportAt<20 then
+return
+end
+failHop("Quá hạn chờ chuyển server",now,10)
+return
+end
+if self.InFlight or self.Teleporting then
+return
+end
+if not hopToggle.Value then
+cancelCountdown()
+wasBossOn=false
+bossEnabledAt=nil
+setStatus("Đã tắt")
+return
+end
+if inVipServer()then
+cancelCountdown()
+setStatus("Đang ở Server VIP (svv) · Tự khóa Boss Hop")
+return
+end
+if session.RestoringSettings or not session.StartupReady or session.GameMenuBusy
+or(session.IsDungeonActive and session:IsDungeonActive())then
+cancelCountdown()
+return
+end
+local bossOn=options.AutoFarmBoss and options.AutoFarmBoss.Value==true
+if not bossOn then
+cancelCountdown()
+wasBossOn=false
+bossEnabledAt=nil
+setStatus("Chờ bật Auto Farm Boss")
+return
+end
+if not wasBossOn then
+wasBossOn=true
+bossEnabledAt=now
+end
+if(options.EDUHW_HalloweenAutoDoor and options.EDUHW_HalloweenAutoDoor.Value==true)
+or(options.EDUHW_HalloweenAutoMob and options.EDUHW_HalloweenAutoMob.Value==true)
+or(options.StartStandFarm and options.StartStandFarm.Value==true)then
+cancelCountdown()
+setStatus("Tạm dừng Boss Hop · Đang bật Halloween / Auto Stand")
+return
+end
+if(now-self.StartedAt)<15 or(bossEnabledAt and(now-bossEnabledAt)<15)then
+cancelCountdown()
+setStatus("Đang quét Boss ban đầu…")
+return
+end
+if now<self.NextRetryAt then
+cancelCountdown()
+setStatus("Chờ thử lại Boss Hop ("..math.ceil(self.NextRetryAt-now).."s)")
+return
+end
+ensureVisitedLoaded()
+local cooldown=math.max(45,tonumber(cooldownSlider.Value)or 60)
+if lastHopClock>-math.huge and(now-lastHopClock)<cooldown then
+cancelCountdown()
+setStatus("Nghỉ sau khi hop ("..math.ceil(cooldown-(now-lastHopClock)).."s)")
+return
+elseif lastHopClock==-math.huge and persistedHopEpoch>0 then
+local elapsedEpoch=epochNow()-persistedHopEpoch
+if elapsedEpoch>=0 and elapsedEpoch<cooldown then
+cancelCountdown()
+setStatus("Nghỉ sau khi hop ("..math.ceil(cooldown-elapsedEpoch).."s)")
+return
+end
+end
+local schedule=session.BossSchedule
+local snap=schedule and type(schedule.GetHopSnapshot)=="function"and schedule:GetHopSnapshot()or nil
+local bossCtrl=env.EDUHubBossCombatV1
+if not snap or not snap.HasSelected then
+cancelCountdown()
+setStatus("Chưa chọn Boss trong SelectBosses")
+return
+end
+if snap.HasLiveBoss or snap.HasPendingWork or(bossCtrl and bossCtrl.Running~=false and bossCtrl:IsEngaged())then
+cancelCountdown()
+setStatus("Đang có Boss sống / chờ xử lý · Giữ server hiện tại")
+return
+end
+local threshold=math.max(90,tonumber(minWaitSlider.Value)or 180)
+if snap.NextSelectedIn~=nil and snap.NextSelectedIn<=threshold then
+cancelCountdown()
+setStatus("Chờ "..tostring(snap.NextSelectedName or"Boss").." (còn "..math.ceil(snap.NextSelectedIn).."s)")
+return
+end
+if not self.CountdownUntil then
+self.CountdownUntil=now+5
+fluent:Notify({
+Title="Boss Hop",
+Content="Hết Boss sống · Sẽ đổi server Public sau 5 giây",
+Duration=4,
+})
+end
+local rem=self.CountdownUntil-now
+if rem>0 then
+setStatus("Hết Boss sống · Đổi server sau "..math.ceil(rem).."s")
+return
+end
+executeHop("Hết Boss sống · Đổi server săn Boss")
+end
+hopToggle:OnChanged(function(val)
+cancelCountdown()
+if not val then
+setStatus("Đã tắt")
+end
+end)
+self.Connections[#self.Connections+1]=runService.Heartbeat:Connect(function()
+if not current()then
+if self.Running then self:Destroy()end
+return
+end
+local now=os.clock()
+if now<nextStepAt then return end
+nextStepAt=now+1
+pcall(self.Step,self,now)
+end)
+self.Connections[#self.Connections+1]=teleport.TeleportInitFailed:Connect(function(who,result,message)
+if who~=player or not current()then return end
+if not self.InFlight and not self.Teleporting and not self.PendingTeleportAt then return end
+generation+=1
+local okEnum,floodedEnum=pcall(function()return Enum.TeleportResult and Enum.TeleportResult.Flooded end)
+local isFlooded=okEnum and floodedEnum~=nil and result==floodedEnum
+local tag=message
+pcall(function()
+if result and result.Name then tag=result.Name end
+end)
+failHop("Hop lỗi ("..tostring(tag or"TeleportInitFailed")..")",os.clock(),isFlooded and 12 or 10)
+end)
+self.Connections[#self.Connections+1]=player.OnTeleport:Connect(function(state)
+if not current()then return end
+if state==Enum.TeleportState.Started or state==Enum.TeleportState.InProgress then
+if self.InFlight or self.PendingTeleportAt then
+self.Teleporting=true
+end
+elseif state==Enum.TeleportState.Failed then
+if self.InFlight or self.Teleporting or self.PendingTeleportAt then
+generation+=1
+failHop("Chuyển server thất bại",os.clock(),10)
+end
+end
+end)
+function self:Destroy()
+if not self.Running then return end
+self.Running=false
+self.PendingTeleportAt=nil
+generation+=1
+cancelCountdown()
+for _,conn in ipairs(self.Connections)do
+pcall(function()conn:Disconnect()end)
+end
+table.clear(self.Connections)
+table.clear(self.FailedJobIds)
+self.FailedCount=0
+if env.EDUBossServerHopV1==self then
+env.EDUBossServerHopV1=nil
+end
+end
+return self
+end
+]]):sub(2),"@EDUHub_New/Boss_Server_Hop.lua"))()
 local installServerClock=assert(loadstring(([[!return function(player)
 local self={Candidates={},NextScan=0,AgeCandidates={},Connections={}}
 local replicated=game:GetService("ReplicatedStorage")
@@ -6066,6 +8097,40 @@ elapsed+=dt;if elapsed<.25 then return end;elapsed=0
 local ok=pcall(self.Step,self,os.clock())
 if not ok then releaseOwnership();status("Hàng đợi chờ thử lại")end
 end)
+function self:GetHopSnapshot()
+local hasSelected,hasLive,hasUntimed=false,false,false
+local nextIn,nextName=nil,nil
+local living=workspace:FindFirstChild("Living")
+if living then
+for _,model in ipairs(living:GetChildren())do
+if alive(model)then hasLive=true;break end
+end
+end
+for _,entry in ipairs(catalogue)do
+if selected(entry.Name)then
+hasSelected=true
+if alive(liveModel(entry.Name))then hasLive=true end
+if entry.Period then
+if lastSeconds~=nil then
+local at=(math.floor(lastSeconds/entry.Period)+1)*entry.Period
+local rem=at-lastSeconds
+if nextIn==nil or rem<nextIn then nextIn=rem;nextName=entry.Name end
+end
+else
+hasUntimed=true
+end
+end
+end
+return{
+HasSelected=hasSelected,
+HasLiveBoss=hasLive,
+HasPendingWork=self:HasPendingWork(),
+ServerSeconds=lastSeconds,
+NextSelectedIn=nextIn,
+NextSelectedName=nextName,
+HasUntimedSelected=hasUntimed,
+}
+end
 function self:Destroy()
 if not self.Running then return end
 self.Running=false;connection:Disconnect();reset()
@@ -13916,6 +15981,7 @@ local presentation={
 ["Auto Farm"]={"Farm","sword",8,"Tự động luyện cấp"},
 ["Items Farm"]={"Quest / Item","flag",7,"Nhiệm vụ và thu thập vật phẩm"},
 ["Settings"]={"Settings","settings",9,"Skill, giao diện và lưu cài đặt"},
+["Thống kê"]={"Thống kê","bar-chart-2",10,"Thống kê phiên AFK & Discord Webhook"},
 }
 local style=presentation[name]
 local merged=name=="Farming & Quests"or name=="Items Farm"
@@ -13981,11 +16047,15 @@ AutoBuy=window:AddTab({Title="Shop",Icon="shopping-cart"}),
 DungeonFarm=window:AddTab({Title="Dungeon Farm",Icon="swords"}),
 ItemFarm=window:AddTab({Title="Items Farm",Icon="box"}),
 Settings=window:AddTab({Title="Settings",Icon="server-cog"}),
+Dashboard=window:AddTab({Title="Thống kê",Icon="bar-chart-2"}),
 }
 local options=fluent.Options
 installAutoReset(tabs.Settings,options,fluent,eduSession)
 installPersistence(tabs.Settings,options,fluent,eduSession)
 installAutoRejoin(tabs.Settings,options,fluent,eduSession)
+installWebhookDashboard(tabs.Dashboard,options,fluent,eduSession)
+installAFKOptimizer(tabs.Settings,options,fluent,eduSession)
+installFarmPose(tabs.Settings,options,fluent,eduSession)
 do
 local startChar=waitForCharacter()
 local startRoot=startChar and startChar:FindFirstChild("HumanoidRootPart")
@@ -14016,8 +16086,8 @@ if not eduSession.Running then
 return
 end
 local eduBossMiasma,eduBossController,eduSharedCombat
-local function eduBossCombat(char,chosen,guard,source)
-return eduSharedCombat and eduSharedCombat:Fire(char,guard,source or"EDU")or false
+local function eduBossCombat(char,chosen,guard,source,targetModel)
+return eduSharedCombat and eduSharedCombat:Fire(char,guard,source or"EDU",targetModel)or false
 end
 local storageTab=window:AddTab({Title="Kho",Icon="box"})
 installLunaStand(tabs.StandFarm,options,fluent,eduSession,installLunaStandCore,installLunaStandExtras,storageTab)
@@ -14151,10 +16221,23 @@ local ownRoot=char:FindFirstChild("HumanoidRootPart")
 if not targetRoot or not ownRoot then
 return false
 end
-local cf=targetRoot.CFrame*CFrame.new(0,rangeOffset+yOffset,zOffset)*CFrame.Angles(math.rad(-90),0,0)
+local poseEngine=env.EDUFarmPoseV1
+local cf
+if poseEngine and type(poseEngine.ComputeQuestFrame)=="function"then
+cf=poseEngine:ComputeQuestFrame(targetModel,char,rangeOffset,yOffset,zOffset,os.clock())
+end
+if not cf then
+cf=targetRoot.CFrame*CFrame.new(0,rangeOffset+yOffset,zOffset)*CFrame.Angles(math.rad(-90),0,0)
+end
 pcall(function()
 ownRoot.CFrame=cf
 ownRoot.AssemblyLinearVelocity=Vector3.zero
+ownRoot.AssemblyAngularVelocity=Vector3.zero
+end)
+if poseEngine and type(poseEngine.SyncStand)=="function"then
+poseEngine:SyncStand(char,cf,targetRoot.Position)
+else
+pcall(function()
 local stand=char:FindFirstChild("Stand")
 local standRoot=stand and stand:FindFirstChild("HumanoidRootPart")
 if standRoot and standRoot:IsA("BasePart")then
@@ -14162,6 +16245,7 @@ standRoot.CFrame=cf
 standRoot.AssemblyLinearVelocity=Vector3.zero
 end
 end)
+end
 return true
 end
 local function runFarmStep(state,questKey,questInfo)
@@ -14208,7 +16292,7 @@ local target=enemies[state.TargetIdx]
 if target and attachAboveTarget(target,questInfo.range)then
 env.EDUHubQuestCombatAt=now
 env.EDUHubQuestTargetV1=target
-eduBossCombat(char,nil,nil,"EDU")
+eduBossCombat(char,nil,nil,"EDU",target)
 else
 env.EDUHubQuestCombatAt=nil
 env.EDUHubQuestTargetV1=nil
@@ -14345,6 +16429,7 @@ eduBossController=installBossCombat(tabs.BossFarm,options,eduSession,fluent,eduB
 installServerSchedule(tabs.BossFarm,options,fluent,eduSession,installServerClock,eduBossRoot)
 eduBossMiasma=installMiasma(tabs.BossFarm,options,eduBossRoot,fluent,eduBossController,installMiasma0552)
 eduSession:Own(eduBossMiasma)
+installBossServerHop(tabs.BossFarm,options,fluent,eduSession)
 local function hasAnySelectedBoss()
 local val=options.SelectBosses and options.SelectBosses.Value
 if type(val)~="table"then
@@ -14761,37 +16846,10 @@ Callback=function(val)
 zOffset=tonumber(val)or 0
 end,
 })
-local KEY_VALUES={"E","R","T","Y","J","H","F","Z","X","C","V","LeftClick","RightClick"}
+local KEY_VALUES={"E","R","T","Y","J","H","F","Z","X","C","V","LeftClick","RightClick","Q","G","B"}
+local TURBO_SKILL_ORDER={"R","T","Y","Z","X","C","V","F","H","J","G","B","Q","E"}
 local selectedKeys={}
-local keyWorkerActive=false
-local function runKeyWorker()
-if keyWorkerActive then
-return
-end
-keyWorkerActive=true
-eduSession:TrackResult(task.spawn(function()
-local legacyUpvalues={[0]=VirtualInputManager}
-while eduSession.Running and options.UseKeySkills.Value do
-if not eduSession:IsDungeonActive()and eduBossCharacter()then
-for key,enabled in pairs(selectedKeys)do
-if not eduSession.Running or not options.UseKeySkills.Value then
-break
-end
-if enabled then
-eduLegacyInput:Send80(key,legacyUpvalues,{game=game,task=task})
-if key=="E"then
-task.wait(0.5)
-elseif key~="LeftClick"and key~="RightClick"then
-task.wait(0.2)
-end
-end
-end
-end
-task.wait(0.5)
-end
-keyWorkerActive=false
-end))
-end
+local keyWorkerGen=0
 tabs.Settings:AddDropdown("SelectKeySkills",{
 Title="Key Skills",
 Icon="keyboard",
@@ -14813,6 +16871,119 @@ Title="Use Keys",
 Icon="play",
 Default=false,
 })
+local keySpeedMode=tabs.Settings:AddDropdown("EDUKeySpeedMode",{
+Title="Tốc độ Auto Key (Mobile Turbo)",
+Values={"EDU Gốc (100% cũ)","Nhanh (Mobile)","Siêu Spam (Turbo)"},
+Multi=false,
+Default="EDU Gốc (100% cũ)",
+})
+local keyEHold=tabs.Settings:AddSlider("EDUKeyEHold",{
+Title="Thời gian giữ phím E (Nhanh / Turbo)",
+Default=1.5,
+Min=0.1,
+Max=4.0,
+Rounding=1,
+})
+local keyAllowDungeon=tabs.Settings:AddToggle("EDUKeyAllowDungeon",{
+Title="Cho phép Auto Key chạy trong Lair / Dungeon",
+Default=false,
+})
+local function stopKeyWorkers()
+keyWorkerGen+=1
+eduLegacyInput:YieldForDungeon()
+end
+local function runKeyWorker()
+keyWorkerGen+=1
+local myGen=keyWorkerGen
+local mode=tostring(keySpeedMode.Value or"EDU Gốc (100% cũ)")
+local legacyUpvalues={[0]=VirtualInputManager}
+local envTbl={game=game,task=task}
+if mode=="EDU Gốc (100% cũ)"then
+eduSession:TrackResult(task.spawn(function()
+while eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen do
+local allowDung=keyAllowDungeon.Value==true
+local inDung=eduSession:IsDungeonActive()
+if(allowDung or not inDung)and eduBossCharacter()then
+for key,enabled in pairs(selectedKeys)do
+if not eduSession.Running or not options.UseKeySkills.Value or keyWorkerGen~=myGen then
+break
+end
+if enabled then
+if allowDung and inDung then
+local hold=(key=="E"and 4)or((key=="LeftClick"or key=="RightClick")and 0.05)or 0.1
+eduLegacyInput:SendFast(key,legacyUpvalues,envTbl,hold,true)
+else
+eduLegacyInput:Send80(key,legacyUpvalues,envTbl)
+end
+if key=="E"then
+task.wait(0.5)
+elseif key~="LeftClick"and key~="RightClick"then
+task.wait(0.2)
+end
+end
+end
+end
+task.wait(0.5)
+end
+end))
+return
+end
+local isTurbo=mode=="Siêu Spam (Turbo)"
+local m1Hold=isTurbo and 0.03 or 0.04
+local m1Gap=isTurbo and 0.05 or 0.08
+local keyHold=isTurbo and 0.04 or 0.06
+local keyGap=isTurbo and 0.03 or 0.06
+local eGap=isTurbo and 0.05 or 0.08
+local loopGap=isTurbo and 0.04 or 0.08
+eduSession:TrackResult(task.spawn(function()
+while eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen do
+local allowDung=keyAllowDungeon.Value==true
+local inDung=eduSession:IsDungeonActive()
+local fired=false
+if(allowDung or not inDung)and eduBossCharacter()then
+if selectedKeys["LeftClick"]then
+if eduLegacyInput:SendFast("LeftClick",legacyUpvalues,envTbl,m1Hold,allowDung)then
+fired=true
+end
+end
+if selectedKeys["RightClick"]and eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen then
+if eduLegacyInput:SendFast("RightClick",legacyUpvalues,envTbl,m1Hold,allowDung)then
+fired=true
+end
+end
+end
+task.wait(fired and m1Gap or 0.15)
+end
+end))
+eduSession:TrackResult(task.spawn(function()
+while eduSession.Running and options.UseKeySkills.Value and keyWorkerGen==myGen do
+local allowDung=keyAllowDungeon.Value==true
+local inDung=eduSession:IsDungeonActive()
+local fired=false
+if(allowDung or not inDung)and eduBossCharacter()then
+for _,key in ipairs(TURBO_SKILL_ORDER)do
+if not eduSession.Running or not options.UseKeySkills.Value or keyWorkerGen~=myGen then
+break
+end
+if selectedKeys[key]then
+local hold=(key=="E")and math.clamp(tonumber(keyEHold.Value)or 1.5,0.1,4.0)or keyHold
+if eduLegacyInput:SendFast(key,legacyUpvalues,envTbl,hold,allowDung)then
+fired=true
+end
+task.wait(key=="E"and eGap or keyGap)
+end
+end
+end
+task.wait(fired and loopGap or 0.15)
+end
+end))
+end
+keySpeedMode:OnChanged(function()
+if eduSession.Running and useKeyToggle.Value then
+stopKeyWorkers()
+runKeyWorker()
+end
+end)
 useKeyToggle:OnChanged(function(enabled)
 if enabled then
 if next(selectedKeys)==nil then
@@ -14824,8 +16995,11 @@ if not eduSession.RestoringSettings then
 fluent:Notify({Title="Info",Content="Key Skills activated via GUI!",Duration=3})
 end
 runKeyWorker()
-elseif not eduSession.RestoringSettings and eduSession.StartupReady then
+else
+stopKeyWorkers()
+if not eduSession.RestoringSettings and eduSession.StartupReady then
 fluent:Notify({Title="Info",Content="Key Skills stopped via GUI!",Duration=3})
+end
 end
 end)
 eduSession:TrackResult(UserInputService.InputBegan:Connect(function(input,gameProcessed)
