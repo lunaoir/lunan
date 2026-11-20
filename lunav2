@@ -7129,11 +7129,11 @@ local hopToggle=section:AddToggle("EDUBossServerHop",{
 Title="Tự đổi server Public khi hết Boss",
 Default=false,
 })
-local minWaitSlider=section:AddSlider("EDUBossHopMinWait",{
-Title="Hop nếu Boss gần nhất còn lâu hơn (giây)",
-Default=180,
-Min=60,
-Max=1800,
+local minWaitSlider=section:AddSlider("EDUBossHopWaitMinutes",{
+Title="Đợi nếu Boss gần nhất sắp ra trong (phút)",
+Default=3,
+Min=1,
+Max=30,
 Rounding=0,
 })
 local cooldownSlider=section:AddSlider("EDUBossHopCooldown",{
@@ -7484,10 +7484,14 @@ cancelCountdown()
 setStatus("Đang có Boss sống / chờ xử lý · Giữ server hiện tại")
 return
 end
-local threshold=math.max(90,tonumber(minWaitSlider.Value)or 180)
+local waitMins=math.clamp(tonumber(minWaitSlider.Value)or 3,1,30)
+local threshold=waitMins*60
 if snap.NextSelectedIn~=nil and snap.NextSelectedIn<=threshold then
 cancelCountdown()
-setStatus("Chờ "..tostring(snap.NextSelectedName or"Boss").." (còn "..math.ceil(snap.NextSelectedIn).."s)")
+local remSec=math.max(0,math.ceil(snap.NextSelectedIn))
+local remMin=math.floor(remSec/60)
+local remS=remSec%60
+setStatus(string.format("Đợi %s (còn %dp %02ds <= %dp)",tostring(snap.NextSelectedName or"Boss"),remMin,remS,waitMins))
 return
 end
 if not self.CountdownUntil then
