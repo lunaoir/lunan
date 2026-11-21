@@ -29,17 +29,6 @@ local dungeon=env.EDULunaLairV1
 return self.Running and dungeon and dungeon.Running and dungeon:IsRequested()or false
 end
 function self:IsMiasmaHolding()
-local bossCtrl=env.EDUHubBossCombatV1
-if bossCtrl and bossCtrl.Running~=false then
-local lease=bossCtrl.CurrentSession
-if lease and lease.Model then
-if lease.MiasmaPhase=="MIASMA"or lease.MiasmaPhase=="RETRACT"then return true end
-if type(bossCtrl.WaitingForMiasma)=="function"then
-local okWait,waiting=pcall(bossCtrl.WaitingForMiasma,bossCtrl,lease.Model)
-if okWait and waiting then return true end
-end
-end
-end
 return false
 end
 function self:GetCombatState(allowDungeon)
@@ -77,7 +66,7 @@ if lease and lease.Model and lease.Model.Parent then
 if type(bossCtrl.Ready)=="function"then
 local okReady,isReady=pcall(bossCtrl.Ready,bossCtrl,lease.Model,char)
 if okReady and isReady then
-if type(bossCtrl.CanUseSkills)~="function"or bossCtrl:CanUseSkills(lease.Model)then
+if type(bossCtrl.CanUseSkills)~="function"or bossCtrl:CanUseSkills(lease.Model,char)then
 return true,"Boss",lease.Model,"BossReady"
 end
 return false,"Boss",lease.Model,"BossCombatHold"
@@ -3904,6 +3893,37 @@ local v=cf.LookVector
 local flat=Vector3.new(v.X,0,v.Z)
 return flat.Magnitude>.01 and flat.Unit or Vector3.new(0,0,-1)
 end
+local bodyNames={HumanoidRootPart=true,Head=true,Torso=true,UpperTorso=true,LowerTorso=true,
+["Left Arm"]=true,["Right Arm"]=true,["Left Leg"]=true,["Right Leg"]=true,
+LeftUpperArm=true,LeftLowerArm=true,LeftHand=true,RightUpperArm=true,RightLowerArm=true,RightHand=true,
+LeftUpperLeg=true,LeftLowerLeg=true,LeftFoot=true,RightUpperLeg=true,RightLowerLeg=true,RightFoot=true}
+local function projected(model,root,axis,rotation)
+local low,high=math.huge,-math.huge
+for _,part in ipairs(model:GetChildren())do
+if bodyNames[part.Name]and part:IsA("BasePart")then
+local frame=part.CFrame
+if rotation then frame=CFrame.new(root.Position)*rotation*root.CFrame:ToObjectSpace(frame)end
+local extent=(math.abs(frame.RightVector:Dot(axis))*part.Size.X+math.abs(frame.UpVector:Dot(axis))*part.Size.Y+math.abs(frame.LookVector:Dot(axis))*part.Size.Z)*.5
+local center=(frame.Position-root.Position):Dot(axis)
+low=math.min(low,center-extent);high=math.max(high,center+extent)
+end
+end
+if low==math.huge then return-root.Size.Z*.5,root.Size.Z*.5 end
+return low,high
+end
+function self:Measured(model,char,mode,desired)
+local root=resolveRoot(model)
+local own=char and char:FindFirstChild("HumanoidRootPart")
+if not root or not own or not desired or(own.Position-desired.Position).Magnitude>3 then return false end
+if mode=="Behind"then
+local direction=heading(root.CFrame)
+local bossBack=projected(model,root,direction)
+local _,ownFront=projected(char,own,direction)
+local front=(own.Position-root.Position):Dot(direction)+ownFront
+return front<=bossBack-.2 and own.CFrame.LookVector:Dot(direction)>.7
+end
+return true
+end
 local function safeLookAt(eye,target,preferredUp)
 local diff=target-eye
 local dist=diff and diff.Magnitude or 0
@@ -4007,8 +4027,12 @@ end
 else
 local bossHum=model:FindFirstChildOfClass("Humanoid")
 local floor=root.Position.Y-(bossHum and bossHum.HipHeight or 0)-root.Size.Y*.5
-local anchor=free and root.Position or leadPos
-local behind=anchor-direction*config.Behind
+local anchor=root.Position
+local rearRotation=CFrame.lookAt(Vector3.zero,direction,Vector3.yAxis).Rotation
+local bossBack=projected(model,root,direction)
+local _,ownFront=projected(char,own,direction,rearRotation)
+local distance=math.max(config.Behind,-bossBack+ownFront+.6)
+local behind=anchor-direction*distance
 position=Vector3.new(behind.X,floor+(hum.HipHeight or 0)+own.Size.Y*.5,behind.Z)
 if not self.Sample or(behind-self.Sample).Magnitude>2 or(now or 0)>=(self.RayAt or 0)then
 local okUis,uis=pcall(game.GetService,game,"UserInputService")
@@ -4018,9 +4042,6 @@ local hit=workspace:Raycast(position+Vector3.new(0,8,0),Vector3.new(0,-24,0),env
 if hit and hit.Normal.Y>.35 then self.Floor=hit.Position.Y end
 end
 if self.Floor then position=Vector3.new(position.X,math.max(position.Y,self.Floor+(hum.HipHeight or 0)+own.Size.Y*.5+.05),position.Z)end
-if not free then
-position=clampWall(Vector3.new(leadPos.X,position.Y,leadPos.Z),position,model,char)
-end
 end
 if type(fallen)=="number"and position.Y<=fallen+5 then return nil,"Chờ boss rời vùng hủy nhân vật"end
 if free then return CFrame.lookAt(position,position+direction,Vector3.yAxis)end
@@ -4069,16 +4090,21 @@ local installBossCombat=assert(loadstring(([[!return function(tab,options,sessio
 local player=game:GetService("Players").LocalPlayer
 local env=getgenv and getgenv()or _G
 env.EDUBossCleanupQueueV1=env.EDUBossCleanupQueueV1 or{}
+env.EDUMiasmaLegacyCleanupV2=env.EDUMiasmaLegacyCleanupV2 or{}
 local cleanupQueue=env.EDUBossCleanupQueueV1
 local function drainCleanup()
 local all=true
 for manager in pairs(cleanupQueue)do
+if type(manager.Saved)=="table"then
+env.EDUMiasmaLegacyCleanupV2[manager]=true;cleanupQueue[manager]=nil
+else
 local ok,done=pcall(manager.RetryCleanup,manager)
 if ok and done then cleanupQueue[manager]=nil else all=false end
 end
+end
 return all
 end
-local behind=tab:AddSlider("EDUBossFollowDistance",{Title="Khoảng cách đứng sau boss Miasma",Default=5,Min=2,Max=15,Rounding=1})
+local behind=tab:AddSlider("EDUBossFollowDistance",{Title="Khoảng cách tối thiểu sau ba boss Coffin",Default=5,Min=2,Max=15,Rounding=1})
 local above=tab:AddSlider("EDUBossAboveHeadOffset",{Title="Khoảng cách trên đầu khi đánh thường",Default=6,Min=1,Max=12,Rounding=1})
 local movement=assert(installMovement,"Missing Boss_Movement")(resolveRoot,function()
 return{Behind=math.clamp(tonumber(behind.Value)or 5,2,15),Above=math.clamp(tonumber(above.Value)or 6,1,12)}
@@ -4130,20 +4156,11 @@ end
 function self:UsesMiasma(model)
 return self:IsMiasmaBoss(model)and options.EDUBossMiasma~=nil and options.EDUBossMiasma.Value==true
 end
-function self:WaitingForMiasma(model)
-local lease=self.CurrentSession
-return lease~=nil and lease.Model==model and self:UsesMiasma(model)and lease.MiasmaDone~=true
-end
+function self:WaitingForMiasma(model)return false end
 self.Movement=movement
 function self:SetSkills(service)self.Skills=service end
-function self:HasCompletedMiasma(model)
-return self.CurrentSession and self.CurrentSession.Model==model and self.CurrentSession.MiasmaDone==true or false
-end
-function self:CompleteMiasma(model)
-if not self.CurrentSession or self.CurrentSession.Model~=model or not self:IsMiasmaBoss(model)then return false end
-self.CurrentSession.MiasmaDone=true
-return true
-end
+function self:HasCompletedMiasma(model)return false end
+function self:CompleteMiasma(model)return false end
 function self:ReleasePose()
 local ok=movement:Cleanup()
 self.CleanupPending=not ok
@@ -4233,16 +4250,13 @@ if not lease or lease.Model~=model then return false end
 local char=player.Character
 local hum=char and char:FindFirstChildOfClass("Humanoid")
 if phase~=nil then
-if not({MIASMA=true,RETRACT=true,SKILL_FINISH=true})[phase]then return false end
+if phase~="ORBIT"then return false end
 if not running()or not options.EDUBossMiasma or not options.EDUBossMiasma.Value
 or not self:IsMiasmaBoss(model)or not hum or hum.Health<=0
 or not char:FindFirstChild("HumanoidRootPart")then return false end
 end
 local phaseChar=phase and char or nil
 local phaseToken=phase and self.RunToken or nil
-if lease.MiasmaPhase~=phase or lease.MiasmaCharacter~=phaseChar or lease.MiasmaToken~=phaseToken then
-lease.Follow=nil
-end
 lease.MiasmaPhase=phase;lease.MiasmaCharacter=phaseChar;lease.MiasmaToken=phaseToken
 return true
 end
@@ -4254,33 +4268,19 @@ if not running()or not lease or targetRoot~=currentRoot(lease.Model)
 or not hum or hum.Health<=0 or characterRoot~=char:FindFirstChild("HumanoidRootPart")then
 self:ReleasePose();return nil
 end
-if self:WaitingForMiasma(lease.Model)then
-lease.Follow=nil
-if not self:ReleasePose()then return nil end
-local arrival=lease.MiasmaArrival
-if arrival and arrival.Character==char and arrival.Root==characterRoot and arrival.Hum==hum
-and arrival.TargetRoot==targetRoot and arrival.Token==self.RunToken then
-self.PositionStatus="Đã TP · Để boss tự di chuyển, đặt dao dưới chân"
-return nil
-end
-local desired,why=movement:Frame(lease.Model,char,"Behind",os.clock(),true)
-self.PositionStatus=why or"TP một lần tới boss · Không bám khi đặt Miasma"
-return desired
-end
 local poseEngine=env.EDUFarmPoseV1
 local mode="Above"
-if self:IsMiasmaBoss(lease.Model)then
-if options.EDUFarmPoseApplyPostMiasma and options.EDUFarmPoseApplyPostMiasma.Value==true
-and poseEngine and type(poseEngine.GetModeKey)=="function"then
-mode=poseEngine:GetModeKey()
-else
-mode="Above"
-end
-elseif poseEngine and type(poseEngine.GetModeKey)=="function"then
-mode=poseEngine:GetModeKey()
-end
+local rear={Dio_Coffin=true,STUTowh=true,Towh_Coffin=true}
+if rear[lease.Model.Name]then mode="Behind"
+elseif lease.Model.Name=="Alternate Jotaro Part 4"then mode="Above"
+elseif poseEngine and type(poseEngine.GetModeKey)=="function"then mode=poseEngine:GetModeKey()end
 local desired,why=movement:Frame(lease.Model,char,mode,os.clock())
 self.PositionStatus=why
+local previous=lease.Follow
+local observed=desired and previous and previous.Character==char and previous.Root==characterRoot
+and previous.TargetRoot==targetRoot and previous.Token==self.RunToken
+and os.clock()>previous.At and os.clock()-previous.At<1 and movement:Measured(lease.Model,char,mode,desired)
+lease.PendingObservation={Ready=observed==true,At=os.clock(),Character=char,Root=characterRoot,TargetRoot=targetRoot,Mode=mode}
 if not desired then lease.Follow=nil end
 return desired
 end
@@ -4289,27 +4289,13 @@ local lease=self:Refresh()
 local char=player.Character
 if not running()or not lease or lease.Model~=model or targetRoot~=currentRoot(model)
 or not char or characterRoot~=char:FindFirstChild("HumanoidRootPart")then return end
-if self:WaitingForMiasma(model)then
-lease.MiasmaArrival={Character=char,Root=characterRoot,TargetRoot=targetRoot,
-Hum=char:FindFirstChildOfClass("Humanoid"),Token=self.RunToken}
-lease.Follow=nil
-return
-end
+local observation=lease.PendingObservation;lease.PendingObservation=nil
 lease.Follow={Character=char,Root=characterRoot,TargetRoot=targetRoot,
-Hum=char:FindFirstChildOfClass("Humanoid"),Frame=frame,At=os.clock(),Token=self.RunToken}
+Hum=char:FindFirstChildOfClass("Humanoid"),Frame=frame,At=os.clock(),Token=self.RunToken,Observation=observation}
 characterRoot.AssemblyLinearVelocity=Vector3.zero;characterRoot.AssemblyAngularVelocity=Vector3.zero
 local poseEngine=env.EDUFarmPoseV1
 if poseEngine and type(poseEngine.SyncStand)=="function"then
-poseEngine:SyncStand(char,frame,targetRoot.Position)
-else
-local stand=char:FindFirstChild("Stand")
-if stand and stand:IsA("Model")then
-local part=stand:FindFirstChild("HumanoidRootPart")or stand.PrimaryPart
-or stand:FindFirstChild("Torso")or stand:FindFirstChild("UpperTorso")
-if part and part:IsA("BasePart")and part:IsDescendantOf(stand)then
-part.CFrame=frame;part.AssemblyLinearVelocity=Vector3.zero;part.AssemblyAngularVelocity=Vector3.zero
-end
-end
+poseEngine:SyncStand(char,frame,targetRoot.Position,model)
 end
 end
 local okUis,uisService=pcall(game.GetService,game,"UserInputService")
@@ -4326,31 +4312,18 @@ local follow=self.CurrentSession.Follow
 if follow then
 local touchOnly=isTouchOnly()
 local maxAge=touchOnly and 2.0 or 1.0
-local maxDist=touchOnly and 8.0 or 3.5
 if follow.Character~=char or follow.Root~=root or follow.Hum~=hum or follow.TargetRoot~=target
 or follow.Token~=self.RunToken or os.clock()-follow.At>maxAge then return false end
+local observation=follow.Observation
+if not observation or not observation.Ready or observation.Character~=char or observation.Root~=root
+or observation.TargetRoot~=target or os.clock()-observation.At>maxAge then return false end
 local desired=follow.Frame
-return(root.Position-desired.Position).Magnitude<=maxDist
+return movement:Measured(model,char,observation.Mode,desired)
 end
 return false
 end
-function self:MiasmaReady(model,char)
-if not running()or not self:Owns(model)or char~=player.Character then return false end
-local hum=char and char:FindFirstChildOfClass("Humanoid")
-local root=char and char:FindFirstChild("HumanoidRootPart")
-local target=currentRoot(model)
-local arrival=self.CurrentSession.MiasmaArrival
-return hum~=nil and hum.Health>0 and root~=nil and target~=nil and arrival~=nil
-and arrival.Character==char and arrival.Root==root and arrival.Hum==hum
-and arrival.TargetRoot==target and arrival.Token==self.RunToken
-end
-function self:CanUseSkills(model,char)
-if not self:Ready(model,char)then return false end
-if not self:UsesMiasma(model)then return true end
-local lease=self.CurrentSession
-return lease.MiasmaDone==true and lease.MiasmaPhase=="SKILL_FINISH"
-and lease.MiasmaCharacter==char and lease.MiasmaToken==self.RunToken
-end
+function self:MiasmaReady(model,char)return self:Ready(model,char)end
+function self:CanUseSkills(model,char)return self:Ready(model,char or player.Character)end
 local function step(model)
 if not self:Accept(model)then return end
 local char=player.Character
@@ -5834,7 +5807,7 @@ end
 local function snapshot()
 local result={}
 for key,control in pairs(options)do
-if type(key)=="string"and type(control)=="table"then result[key]=safe(control.Value,0)end
+if type(key)=="string"and key~="EDUBossMiasmaHP"and key~="EDUFarmPoseApplyPostMiasma"and type(control)=="table"then result[key]=safe(control.Value,0)end
 end
 return result
 end
@@ -6194,7 +6167,7 @@ local player=game:GetService("Players").LocalPlayer
 local teleport=game:GetService("TeleportService")
 local toggle=tab:AddToggle("EDUAutoRejoin",{Title="Tự rejoin khi mất kết nối / bị kick",Default=false})
 local label=tab:AddParagraph({Title="Auto Rejoin",Content="Đã tắt"})
-local self={Running=true,Connections={},Generation=0,Attempts=0,FailedJobIds={},FailedCount=0,LastTargetJobId=nil}
+local self={Running=true,Connections={},Generation=0,Attempts=0,FailedJobIds={},FailedCount=0}
 env.EDUAutoRejoinV1=self;session:Own(self)
 local lastText,elapsed=nil,0
 local function current()
@@ -6203,6 +6176,28 @@ end
 local function status(text)
 if current()and text~=lastText then lastText=text;label:SetDesc(text)end
 end
+local function captureIdentity()
+local okId,id=pcall(function()return game.PrivateServerId end)
+local okOwner,owner=pcall(function()return game.PrivateServerOwnerId end)
+local kind="Unknown"
+if okId and type(id)=="string"and id~=""or okOwner and type(owner)=="number"and owner>0 then
+kind="Private"
+elseif okId and id==""and okOwner and owner==0 then kind="Public"end
+local place=tonumber(game.PlaceId)
+local job=type(game.JobId)=="string"and game.JobId or""
+if kind=="Public"and job==""then kind="Unknown"end
+return{Kind=kind,PlaceId=place,JobId=job}
+end
+self.Identity=captureIdentity()
+local cached=env.EDURejoinOriginV2
+if type(cached)=="table"and cached.PlaceId==self.Identity.PlaceId
+and(cached.JobId==self.Identity.JobId or cached.Kind=="Private"and self.Identity.JobId=="")
+and(cached.Kind=="Private"or cached.Kind=="Public")then
+self.Identity={Kind=cached.Kind,PlaceId=cached.PlaceId,JobId=cached.JobId}
+end
+env.EDURejoinOriginV2=self.Identity
+env.EDURejoinSequenceV2=(tonumber(env.EDURejoinSequenceV2)or 0)+1
+self.RequestPrefix=tostring(env.EDURejoinSequenceV2)..":"
 local function markFailedJob(jobId)
 if type(jobId)~="string"or jobId==""then return end
 if self.FailedCount>=40 then table.clear(self.FailedJobIds);self.FailedCount=0 end
@@ -6253,22 +6248,31 @@ end)
 local pick=list[math.random(1,math.min(#list,3))]
 return pick and pick.id or nil
 end
-local function cancel()
+local function revoke()
 self.Generation+=1
-local thread=self.Thread;self.Thread=nil
+local attempt=self.Active;self.Active=nil
+if attempt then
+attempt.Settled=true
+local thread=attempt.Thread
 if thread and thread~=coroutine.running()and task.cancel then pcall(task.cancel,thread)end
-self.InFlightAt=nil
+end
 end
 local function clear()
-cancel();self.DetectedAt=nil;self.NextAt=nil;self.Attempts=0;self.LastTargetJobId=nil
+revoke();self.DetectedAt=nil;self.NextAt=nil;self.Attempts=0;self.Blocked=false;self.ExternalUntil=nil
 end
-local function failed(text,now,minWait)
-markFailedJob(self.LastTargetJobId);self.LastTargetJobId=nil
-self.InFlightAt=nil;self.Thread=nil
-local waitSec=math.min(5*2^math.min(math.max(self.Attempts-1,0),3),30)
-if type(minWait)=="number"and minWait>waitSec then waitSec=minWait end
-self.NextAt=now+waitSec
-status(text.." · Tự thử lại sau "..math.ceil(waitSec).."s")
+local function fail(attempt,text,now,minWait)
+if self.Active~=attempt or attempt.Settled then return end
+if attempt.Identity.Kind=="Public"then markFailedJob(attempt.TargetJobId)end
+revoke()
+if self.Attempts>=8 then
+self.Blocked=true
+status(text.." · Đã dừng sau 8 lượt; tắt/bật Auto Rejoin để thử lại")
+return
+end
+local delay=math.max(minWait or 0,math.min(5*2^math.min(self.Attempts-1,4),60))
+self.NextAt=now+delay
+local note=attempt.Identity.Kind=="Public"and""or" · Không chuyển public; JobId chỉ thử lại phiên cũ"
+status(text..note.." · Thử lại sau "..math.ceil(delay).."s")
 end
 local function visible(object)
 local node=object
@@ -6294,77 +6298,76 @@ if ok then return found,true end
 return self.SignalMessage~=nil,false
 end
 local function attempt(now)
-self.Attempts+=1;self.InFlightAt=now
-local generation=self.Generation
-local thread=coroutine.create(function()
-local function allowed()return current()and toggle.Value and self.Generation==generation end
+local identity=self.Identity
+if not identity.PlaceId or identity.PlaceId<=0 then self.Blocked=true;status("Chưa xác định PlaceId; chưa rejoin");return end
+if identity.Kind~="Public"and identity.JobId==""then
+self.Blocked=true;status("VIP / chưa rõ loại server: thiếu JobId phiên cũ; không chuyển public");return
+end
+self.Attempts+=1;self.Generation+=1
+local active={Token=self.Generation,RequestId=self.RequestPrefix..self.Generation,Identity=identity,At=now,Phase="Preparing",Settled=false}
+self.Active=active
+local function allowed()
+return current()and toggle.Value and self.Active==active and self.Generation==active.Token and not active.Settled
+end
+active.Thread=coroutine.create(function()
 local ok,why=pcall(function()
 local persistence=env.EDUHubPersistenceV1
 if persistence and type(persistence.PrepareTeleport)=="function"then
-assert(persistence:PrepareTeleport(),"Chưa chuẩn bị được lưu / chạy lại script")
+assert(persistence:PrepareTeleport(),"Chưa lưu / chuẩn bị chạy lại được")
 elseif options.EDUSettingsAutoResume and options.EDUSettingsAutoResume.Value then
 error("Chờ hệ thống lưu / chạy lại sẵn sàng")
 end
 if not allowed()then return end
-local okPs,psId=pcall(function()return game.PrivateServerId end)
-local okOwn,ownerId=pcall(function()return game.PrivateServerOwnerId end)
-local inVip=(okPs and type(psId)=="string"and psId~="")or(okOwn and tonumber(ownerId)and tonumber(ownerId)>0)
-if env.EDUHubDashboardV1 and type(env.EDUHubDashboardV1.RecordRejoin)=="function"then pcall(env.EDUHubDashboardV1.RecordRejoin,env.EDUHubDashboardV1,inVip and"Rejoin Server VIP"or"Rejoin Server Public")end
-if inVip then
-local ownJob=tostring(game.JobId or"")
-self.LastTargetJobId=nil
-if ownJob~=""and type(teleport.TeleportToPlaceInstance)=="function"then
-status("Đang rejoin lại Server VIP · Lần "..self.Attempts)
-local okVip=pcall(function()teleport:TeleportToPlaceInstance(game.PlaceId,ownJob,player)end)
-if okVip then return end
+local target=identity.JobId
+if identity.Kind=="Public"then
+target=pickHealthyServer(self.FailedJobIds)or identity.JobId
 end
 if not allowed()then return end
-status("Đang yêu cầu rejoin · Lần "..self.Attempts)
-teleport:Teleport(game.PlaceId,player)
-return
+active.TargetJobId=target;active.Phase="Requested";active.RequestedAt=os.clock()
+local dashboard=env.EDUHubDashboardV1
+if dashboard and type(dashboard.RecordRejoin)=="function"then
+pcall(dashboard.RecordRejoin,dashboard,identity.Kind=="Public"and"Rejoin Server Public"or"Rejoin phiên VIP / chưa rõ")
 end
-if type(teleport.TeleportToPlaceInstance)=="function"and(self.Attempts%3~=0)then
-local targetJob=pickHealthyServer(self.FailedJobIds)
-if not allowed()then return end
-if targetJob then
-self.LastTargetJobId=targetJob
-status("Đang chuyển sang server khỏe · Lần "..self.Attempts)
-local okInst=pcall(function()teleport:TeleportToPlaceInstance(game.PlaceId,targetJob,player)end)
-if okInst then return end
-markFailedJob(targetJob);self.LastTargetJobId=nil
+if identity.Kind~="Public"then
+status("Đang yêu cầu về phiên VIP / chưa rõ loại server · Không fallback public. Phiên đóng cần quyền vào VIP hợp lệ")
+assert(type(teleport.TeleportToPlaceInstance)=="function","Executor chưa hỗ trợ vào lại phiên")
+teleport:TeleportToPlaceInstance(identity.PlaceId,target,player,"",{EDURejoinAttempt=active.RequestId})
+elseif target~=""and type(teleport.TeleportToPlaceInstance)=="function"then
+status("Đang yêu cầu chuyển server public · Lần "..self.Attempts)
+teleport:TeleportToPlaceInstance(identity.PlaceId,target,player,"",{EDURejoinAttempt=active.RequestId})
+else
+status("Đang yêu cầu rejoin public · Lần "..self.Attempts)
+teleport:Teleport(identity.PlaceId,player,{EDURejoinAttempt=active.RequestId})
 end
-end
-if not allowed()then return end
-self.LastTargetJobId=nil
-status("Đang yêu cầu rejoin · Lần "..self.Attempts)
-teleport:Teleport(game.PlaceId,player)
 end)
-if not allowed()then return end
-self.Thread=nil
-if not ok then failed(tostring(why),os.clock())end
+if allowed()and not ok then fail(active,tostring(why),os.clock())end
+active.Thread=nil
 end)
-self.Thread=thread;task.spawn(thread)
+task.spawn(active.Thread)
 end
 function self:Step(now)
 if not current()then self:Destroy();return end
 if not toggle.Value then return end
-if session.RestoringSettings then status("Chờ khôi phục cài đặt");return end
-if self.Teleporting then return end
-local lost,readable=disconnected()
-if not lost then
-if self.DetectedAt or self.InFlightAt then clear()end
-if self.FailedCount>0 then table.clear(self.FailedJobIds);self.FailedCount=0 end
-self.LastTargetJobId=nil
-status(readable and"Đang theo dõi mất kết nối / kick"or"Executor chưa đọc được thông báo mất kết nối")
+local active=self.Active
+if active then
+if now-active.At>=30 then fail(active,"Hết thời gian chờ chuyển server",now)end
 return
 end
-if not self.DetectedAt then self.DetectedAt=now;self.NextAt=now+3 end
-if self.InFlightAt then
-if now-self.InFlightAt<20 then return end
-cancel();failed("Chưa chuyển được server",now);return
+if session.RestoringSettings then status("Chờ khôi phục cài đặt");return end
+if self.ExternalUntil and now<self.ExternalUntil then return end
+local lost,readable=disconnected()
+if not lost then
+if self.DetectedAt then clear()end
+if self.Identity.Kind=="Unknown"then
+local identity=captureIdentity()
+if identity.Kind~="Unknown"then self.Identity=identity;env.EDURejoinOriginV2=identity end
 end
-if now<(self.NextAt or 0)then return end
-attempt(now)
+status(readable and"Đang theo dõi mất kết nối / kick · "..self.Identity.Kind or"Executor chưa đọc được thông báo mất kết nối")
+return
+end
+if self.Blocked then return end
+if not self.DetectedAt then self.DetectedAt=now;self.NextAt=now+3 end
+if now>=(self.NextAt or 0)then attempt(now)end
 end
 toggle:OnChanged(function(value)
 clear();status(value and"Đang theo dõi mất kết nối / kick"or"Đã tắt")
@@ -6374,43 +6377,40 @@ elapsed+=dt;if elapsed<1 then return end;elapsed=0
 local ok=pcall(self.Step,self,os.clock())
 if not ok and current()then status("Chờ dữ liệu kết nối · Sẽ kiểm tra lại")end
 end)
-self.Connections[#self.Connections+1]=teleport.TeleportInitFailed:Connect(function(who,result,message)
-if who~=player or not current()then return end
-local reconnecting=self.DetectedAt~=nil
-cancel();self.Teleporting=false
-if reconnecting and toggle.Value then
-local okEnum,floodedEnum=pcall(function()return Enum.TeleportResult and Enum.TeleportResult.Flooded end)
-local isFlooded=okEnum and floodedEnum~=nil and result==floodedEnum
-local reason="Rejoin chưa thành công"
-if result~=nil or(type(message)=="string"and message~="")then
-local okName,rName=pcall(function()return result.Name end)
-local tag=(okName and type(rName)=="string"and rName)or tostring(result or message)
-reason="Rejoin lỗi ("..tag..") · Đổi server khác"
-end
-failed(reason,os.clock(),isFlooded and 12 or nil)
-end
+self.Connections[#self.Connections+1]=teleport.TeleportInitFailed:Connect(function(who,result,message,placeId,teleportOptions)
+if who~=player or not current()or not toggle.Value then return end
+local active=self.Active
+if not active or active.Settled or active.Phase=="Preparing"then return end
+if tonumber(placeId)and tonumber(placeId)~=active.Identity.PlaceId then return end
+local okJob,job=pcall(function()return teleportOptions and teleportOptions.ServerInstanceId end)
+if okJob and type(job)=="string"and job~=""and job~=active.TargetJobId then return end
+local okData,data=pcall(function()return teleportOptions:GetTeleportData()end)
+if okData and type(data)=="table"and data.EDURejoinAttempt~=nil and data.EDURejoinAttempt~=active.RequestId then return end
+local okName,name=pcall(function()return result.Name end)
+local flooded=okName and name=="Flooded"
+fail(active,"Rejoin lỗi ("..(okName and tostring(name)or"không rõ")..")",os.clock(),flooded and 30 or nil)
 end)
-self.Connections[#self.Connections+1]=player.OnTeleport:Connect(function(state)
-if not current()then return end
+self.Connections[#self.Connections+1]=player.OnTeleport:Connect(function(state,placeId)
+if not current()or not toggle.Value then return end
+local active=self.Active
+if active and tonumber(placeId)and tonumber(placeId)~=active.Identity.PlaceId then return end
 if state==Enum.TeleportState.Started or state==Enum.TeleportState.InProgress then
-self.Teleporting=true;cancel()
-elseif state==Enum.TeleportState.Failed then
-self.Teleporting=false
-if self.DetectedAt then cancel();failed("Chuyển server thất bại · Thử server khác",os.clock())end
+if active and active.Phase~="Preparing"then active.Phase="Teleporting"
+elseif not active then self.ExternalUntil=os.clock()+30 end
+elseif state==Enum.TeleportState.Failed and active and active.Phase~="Preparing"then
+fail(active,"Chuyển server thất bại",os.clock())
 end
 end)
 pcall(function()
-local connection=game:GetService("GuiService").ErrorMessageChanged:Connect(function(message)
+self.Connections[#self.Connections+1]=game:GetService("GuiService").ErrorMessageChanged:Connect(function(message)
 self.SignalMessage=type(message)=="string"and message:find("%S")and message or nil
 end)
-self.Connections[#self.Connections+1]=connection
 end)
 function self:Destroy()
 if not self.Running then return end
 self.Running=false;clear()
 for _,connection in ipairs(self.Connections)do connection:Disconnect()end
-table.clear(self.Connections)
-table.clear(self.FailedJobIds);self.FailedCount=0
+table.clear(self.Connections);table.clear(self.FailedJobIds)
 if env.EDUAutoRejoinV1==self then env.EDUAutoRejoinV1=nil end
 end
 return self
@@ -6796,8 +6796,8 @@ end
 end
 local bossCtrl=env.EDUHubBossCombatV1
 if bossCtrl and bossCtrl.Running~=false and bossCtrl.CurrentSession
-and type(bossCtrl.WaitingForMiasma)=="function"then
-local okWait,waiting=pcall(bossCtrl.WaitingForMiasma,bossCtrl,bossCtrl.CurrentSession.Model)
+and type(bossCtrl.Ready)=="function"then
+local okWait,waiting=pcall(bossCtrl.Ready,bossCtrl,bossCtrl.CurrentSession.Model,char)
 if okWait and waiting then
 deadSince,stillSince,lastPos=nil,nil,nil
 return
@@ -6981,10 +6981,6 @@ local autoFaceToggle=section:AddToggle("EDUFarmPoseAutoFace",{
 Title="Tự xoay mặt nhân vật & Stand vào mục tiêu",
 Default=true,
 })
-local applyPostMiasmaToggle=section:AddToggle("EDUFarmPoseApplyPostMiasma",{
-Title="Áp dụng dáng này cho pha đánh xong Miasma",
-Default=false,
-})
 local MODE_MAP={
 ["Trên đầu (Above)"]="Above",
 ["Sau lưng (Behind)"]="Behind",
@@ -7023,7 +7019,6 @@ OrbitRadius=math.clamp(tonumber(orbitRadius.Value)or 7,3,16),
 OrbitSpeed=math.clamp(tonumber(orbitSpeed.Value)or 2.5,0.5,6.0),
 VelocityLead=velocityLeadToggle.Value==true,
 AutoFace=autoFaceToggle.Value==true,
-ApplyPostMiasma=applyPostMiasmaToggle.Value==true,
 }
 end
 function self:LeadPosition(root)
@@ -7140,13 +7135,33 @@ return safeLookAt(pos,leadPos)
 end
 return makeAboveFrame()
 end
-function self:SyncStand(char,ownFrame,targetPos)
+function self:StandIndependent(char,stand,part)
+local own=char and char:FindFirstChild("HumanoidRootPart")
+if not own or not stand or not part then return false end
+if part.AssemblyRootPart==own.AssemblyRootPart then return false end
+local assembly=part.AssemblyRootPart
+if assembly and not assembly:IsDescendantOf(stand)then return false end
+local ok,parts=pcall(function()return part:GetConnectedParts(true)end)
+local safe=ok and type(parts)=="table"
+if safe then
+for _,connected in ipairs(parts)do
+if connected==own or not connected:IsDescendantOf(stand)then safe=false;break end
+end
+end
+return safe
+end
+function self:SyncStand(char,ownFrame,targetPos,targetModel)
 if not char or not ownFrame then return end
 local stand=char:FindFirstChild("Stand")
 if not stand or not stand:IsA("Model")then return end
 local part=stand:FindFirstChild("HumanoidRootPart")or stand.PrimaryPart
 or stand:FindFirstChild("Torso")or stand:FindFirstChild("UpperTorso")
 if not part or not part:IsA("BasePart")or not part:IsDescendantOf(stand)then return end
+if targetModel then
+local controller=env.EDUHubBossCombatV1
+if not controller or not controller:Owns(targetModel)then return end
+end
+if not self:StandIndependent(char,stand,part)then return end
 local standFrame=ownFrame
 if targetPos and ownFrame.Position then
 local diff=targetPos-ownFrame.Position
@@ -8829,414 +8844,291 @@ end
 ]]):sub(2),"@EDUHub_New/Server_Schedule.lua"))()
 local installMiasma=assert(loadstring(([[!return function(tab,options,resolveRoot,fluent,owner,install0552)
 local env=getgenv and getgenv()or _G
-env.EDUBossCleanupQueueV1=env.EDUBossCleanupQueueV1 or{}
-local cleanupQueue=env.EDUBossCleanupQueueV1
-local resetBosses={Dio_Coffin=true,Towh_Coffin=true,STUTowh=true}
-local old=env.EDUBossMiasmaV1
-if old then old:Destroy()end
+local old=env.EDUBossMiasmaV1;if old then old:Destroy()end
 local player=game:GetService("Players").LocalPlayer
-local runService=game:GetService("RunService")
-local toggle=tab:AddToggle("EDUBossMiasma",{Title="Miasma: STU / Dio / TWOH Coffin / Alternate Jotaro P4",Default=false})
-local threshold=tab:AddSlider("EDUBossMiasmaHP",{Title="Máu còn lại để chuyển sang skill (%)",Default=25,Min=5,Max=50,Rounding=0})
-local function percent(value)
-local number=tonumber(value)or 25
-if number~=number then number=25 end
-return math.floor(math.clamp(number,5,50)+.5)
-end
-threshold:OnChanged(function(value)
-local normalized=percent(value)
-if value~=normalized then threshold:SetValue(normalized)end
-end)
-local label=tab:AddParagraph({Title="Miasma",Content="Đã tắt"})
-local self={Running=true,Connections={},LastStep=0}
+local toggle=tab:AddToggle("EDUBossMiasma",{Title="Miasma + M1/skill: STU / Dio / TWOH Coffin / Alternate P4",Default=false})
+local radius=tab:AddSlider("EDUBossMiasmaRadius",{Title="Khoảng hở quỹ đạo Miasma",Default=.6,Min=0,Max=4,Rounding=1})
+local speed=tab:AddSlider("EDUBossMiasmaSpeed",{Title="Tốc độ quay Miasma (rad/s)",Default=2.5,Min=.5,Max=6,Rounding=1})
+local tip=tab:AddDropdown("EDUBossMiasmaTipAxis",{Title="Trục mũi dao (hiệu chỉnh nếu dao quay ngược)",Values={"Auto","+X","-X","+Y","-Y","+Z","-Z"},Default="Auto",Multi=false})
+local label=tab:AddParagraph({Title="Miasma",Content="Đã tắt · M1 và skill dùng chung Settings"})
+local self={Running=true,Connections={},LastStep=0,Generation=0}
 env.EDUBossMiasmaV1=self
 local lastStatus
-local lastHP
 local function status(text)
 if self.Running and text~=lastStatus then lastStatus=text;label:SetDesc(text)end
 end
 local function enabled()
 local session=env.EDUHubSessionV1
-return self.Running and env.EDUBossMiasmaV1==self and not fluent.Unloaded and toggle.Value and options.AutoFarmBoss.Value
-and not(session and session.IsDungeonActive and session:IsDungeonActive())
+return self.Running and env.EDUBossMiasmaV1==self and not fluent.Unloaded and toggle.Value
+and options.AutoFarmBoss and options.AutoFarmBoss.Value
+and session and session.Running
+and not(session and(session.GameMenuBusy or session.RestoringSettings
+or session.IsDungeonActive and session:IsDungeonActive()))
 end
-local placement=install0552(function(model)
-return enabled()and owner:UsesMiasma(model)and self.Target==model and self.Char==player.Character and owner:Owns(model)
-and self.Phase=="MIASMA"
+local function valid(model)
+local lease=owner.CurrentSession
+local hum=model and model:FindFirstChildOfClass("Humanoid")
+return enabled()and lease==self.Lease and lease and lease.Model==model and lease.Generation==self.LeaseGeneration
+and owner.RunToken==self.RunToken and owner:Owns(model)and self.Target==model
+and model.Parent==workspace:FindFirstChild("Living")and hum==self.TargetHum and hum.Health>0
+and resolveRoot(model)==self.TargetRoot and self.Char==player.Character
+and self.OwnHum==self.Char:FindFirstChildOfClass("Humanoid")and self.OwnHum.Health>0
+and self.OwnRoot==self.Char:FindFirstChild("HumanoidRootPart")
+end
+local placement=install0552(valid,function()
+return{Gap=math.clamp(tonumber(radius.Value)or.6,0,4),Speed=math.clamp(tonumber(speed.Value)or 2.5,.5,6),TipAxis=tip.Value}
 end)
 self.Saved=placement.Saved
-local function restore()return placement:Restore()end
-local function canonical(name)
-if name=="TWOH"then return"Towh_Coffin"end
-return name=="Johnny Joestar"and"JohnnyJoestar"or name
-end
-local family={
-["Jotaro Over Heaven"]="JotaroOH",
-["QTaro Jotaro OH"]="JotaroOH",
-["STUTowh"]="Point5Coffin",
-["Towh_Coffin"]="Point5Coffin",
-["Dio_Coffin"]="Point5Coffin"
-}
-local function sameBoss(a,b)
-a,b=canonical(a),canonical(b)
-if a==b then return true end
-return family[a]~=nil and family[a]==family[b]
-end
-local function selected(model)
-if not model then return false end
-local choice=options.SelectBosses and options.SelectBosses.Value
-if type(choice)~="table"then return false end
-for key,value in pairs(choice)do
-local name=type(key)=="number"and value or value==true and key
-if type(name)=="string"and sameBoss(name,model.Name)then return true end
-end
-return false
-end
-local function targetHum(model)
-local living=workspace:FindFirstChild("Living")
-local hum=model and model:FindFirstChildOfClass("Humanoid")
-return living and model and model.Parent==living and hum and hum.Health>0 and hum or nil
-end
-local function phase(value)
-if not self.Target or not owner:SetMiasmaPhase(self.Target,value)then return false end
-self.Phase=value
-return true
-end
-local function hpStatus(model,hum,note)
-local value=percent(threshold.Value)
-if not lastHP or lastHP.Model~=model or lastHP.Name~=model.Name or lastHP.Note~=note
-or lastHP.HP~=hum.Health or lastHP.Max~=hum.MaxHealth or lastHP.Threshold~=value then
-lastHP={Model=model,Name=model.Name,Note=note,HP=hum.Health,Max=hum.MaxHealth,Threshold=value,
-Text=string.format("%s · %s\nHP %.0f / %.0f (%.1f%%) · Chuyển skill: ≤ %.0f HP (%d%%)",
-model.Name,note,hum.Health,hum.MaxHealth,hum.Health/hum.MaxHealth*100,hum.MaxHealth*value/100,value)}
-end
-status(lastHP.Text)
-end
 local function reset()
-local model=self.Target
-local knife=restore()
-local released=true
-if model then
-released=owner:ReleaseMiasma(model)
-owner:SetMiasmaPhase(model,nil)
-elseif owner.CleanupPending then released=owner:RetryCleanup()
-end
-self.Target=nil;self.Char=nil;self.TargetHum=nil;self.TargetRoot=nil;self.OwnHum=nil;self.OwnRoot=nil;self.Phase=nil
-self.CleanupPending=not(knife and released)
-if self.CleanupPending then cleanupQueue[self]=true else cleanupQueue[self]=nil end
+self.Generation+=1
+local previous=self.Target
+self.Target=nil;self.Char=nil;self.TargetHum=nil;self.TargetRoot=nil;self.OwnHum=nil;self.OwnRoot=nil;self.Lease=nil
+if previous then owner:SetMiasmaPhase(previous,nil)end
+self.CleanupPending=not placement:Restore()
 return not self.CleanupPending
 end
 function self:RetryCleanup()
-if not self.CleanupPending then cleanupQueue[self]=nil;return true end
-local knife=restore()
-local released=owner:RetryCleanup()
-self.CleanupPending=not(knife and released)
-if not self.CleanupPending then cleanupQueue[self]=nil end
-return not self.CleanupPending
+self.CleanupPending=not placement:Restore();return not self.CleanupPending
 end
 function self:CancelTarget()return reset()end
 function self:YieldForDungeon()return reset()end
 function self:Accept(model)
-if self.CleanupPending and not self:RetryCleanup()then return false end
-if not enabled()then return reset()end
-if self.Target and(not targetHum(self.Target)or not selected(self.Target)or not owner:Owns(self.Target))then
-if not reset()then return false end
-end
-if next(self.Saved)and not self.Target and not restore()then return false end
-return targetHum(model)~=nil and resolveRoot(model)~=nil and(not self.Target or self.Target==model)
+if self.Target and not valid(self.Target)then reset()end
+return true
 end
 function self:AutoResetTarget()
-local model=self.Target
-local name=model and model.Name
-if name=="TWOH"then name="Towh_Coffin"end
-if not resetBosses[name]or not enabled()
-or self.Phase~="MIASMA"or self.CleanupPending or os.clock()-self.LastStep>1
-or self.Char~=player.Character or not selected(model)or not owner:Owns(model)
-or owner:HasCompletedMiasma(model)or not owner:MiasmaReady(model,self.Char)then return nil end
-local hum=targetHum(model)
-if not hum or hum~=self.TargetHum or resolveRoot(model)~=self.TargetRoot or hum.MaxHealth<=0
-or hum.Health<=hum.MaxHealth*percent(threshold.Value)/100 then return nil end
-return model
-end
-local function orbit(model,root,hum,now)
-local ok,why=placement:Orbit(model,root,now,false)
-if not ok then hpStatus(model,hum,why);return end
-hpStatus(model,hum,why or"Giữ dao tại chỗ · Để boss tự chuyển động tiếp xúc")
+local names={Dio_Coffin=true,Towh_Coffin=true,STUTowh=true}
+if self.Target and names[self.Target.Name]and valid(self.Target)and os.clock()-self.LastStep<=1
+and owner:Ready(self.Target,self.Char)then return self.Target end
+return nil
 end
 function self:BeforeCombat(model)
 self.LastStep=os.clock()
 if not enabled()or not owner:UsesMiasma(model)then
-if not reset()then status("Chờ thu dao / phục hồi tư thế");return false end
-status(model and not owner:IsMiasmaBoss(model)and"Boss ngoài Miasma · Trên đầu, chỉ dùng skill Settings"or"Đã tắt Miasma · Đứng sau, dùng skill Settings")
+if self.Target or next(self.Saved)then reset()end
+status(toggle.Value and"Chờ boss Miasma · M1/skill dùng Settings"or"Đã tắt · Đánh thường theo Settings")
 return true
 end
-local hum=targetHum(model)
-local root=resolveRoot(model)
 local char=player.Character
+local hum=model and model:FindFirstChildOfClass("Humanoid")
+local root=resolveRoot(model)
 local ownHum=char and char:FindFirstChildOfClass("Humanoid")
 local ownRoot=char and char:FindFirstChild("HumanoidRootPart")
-if not hum or not selected(model)or not owner:Owns(model)then reset();return false end
-if not root or not ownRoot or not ownHum or ownHum.Health<=0 or hum.MaxHealth<=0 then reset();return false end
-if self.Target and(self.Target~=model or self.TargetHum~=hum or self.TargetRoot~=root or self.Char~=char or self.OwnHum~=ownHum or self.OwnRoot~=ownRoot)then
-reset();return false
-end
-local completed=owner:HasCompletedMiasma(model)
-local ready
-if completed then ready=owner:Ready(model,char)else ready=owner:MiasmaReady(model,char)end
-if not ready then hpStatus(model,hum,owner.PositionStatus or"Chờ TP tới boss");return false end
+if not owner:Owns(model)or not hum or hum.Health<=0 or not root or not ownHum or ownHum.Health<=0 or not ownRoot then reset();return true end
+if self.Target and not valid(model)then reset()end
 if not self.Target then
-if not restore()then return false end
+if not placement:Restore()then self.CleanupPending=true;status("Chờ thu dao cũ · Vẫn dùng M1/skill");return true end
+self.CleanupPending=false
 self.Target=model;self.TargetHum=hum;self.TargetRoot=root;self.Char=char;self.OwnHum=ownHum;self.OwnRoot=ownRoot
-if not phase(completed and"SKILL_FINISH"or"MIASMA")then reset();return false end
-if self.Phase=="SKILL_FINISH"then return false end
+self.Lease=owner.CurrentSession;self.LeaseGeneration=self.Lease.Generation;self.RunToken=owner.RunToken
+owner:SetMiasmaPhase(model,"ORBIT")
 end
-if self.Phase=="MIASMA"and hum.Health<=hum.MaxHealth*percent(threshold.Value)/100 then
-if not phase("RETRACT")then reset();return false end
-end
-if self.Phase=="RETRACT"then
-if not restore()then hpStatus(model,hum,"Đủ ngưỡng · Chờ thu hồi Miasma");return false end
-if not phase("SKILL_FINISH")then reset();return false end
-owner:CompleteMiasma(model)
-hpStatus(model,hum,"Đã thu dao · Giữ sau boss, chuyển skill")
-return false
-end
-if self.Phase=="SKILL_FINISH"then
-if not restore()then hpStatus(model,hum,"Chờ thu hồi Miasma");return false end
-hpStatus(model,hum,"Pha kết liễu · Skill Settings đến khi chết")
+if not valid(model)then reset();return true end
+if not owner:Ready(model,char)then status(owner.PositionStatus or"Đang bám đúng vị trí · Chờ đo lại");return true end
+local ok,why=placement:Orbit(model,root,os.clock())
+status(string.format("%s · HP %.0f / %.0f\n%s · M1/skill chạy đồng thời",model.Name,hum.Health,hum.MaxHealth,why or(ok and"Dao đang xoay"or"Chưa điều khiển được dao")))
 return true
-end
-orbit(model,root,hum,os.clock())
-return false
 end
 function self:SafeAccept(model)
 local ok,result=pcall(self.Accept,self,model)
-if not ok then reset();status("Chờ phục hồi trạng thái Miasma");return false end
+if not ok then reset();status("Đang phục hồi dao · Vẫn dùng M1/skill");return true end
 return result
 end
 function self:SafeBeforeCombat(model)
 local ok,result=pcall(self.BeforeCombat,self,model)
-if not ok then reset();status("Chờ phục hồi trạng thái Miasma");return false end
+if not ok then reset();status("Đang phục hồi dao · Vẫn dùng M1/skill");return true end
 return result
 end
 function self:Disconnect()
-for _,c in ipairs(self.Connections)do c:Disconnect()end
+for _,connection in ipairs(self.Connections)do connection:Disconnect()end
 table.clear(self.Connections)
 if env.EDUBossMiasmaV1==self then env.EDUBossMiasmaV1=nil end
 end
 function self:Destroy()
-if self.Running then self.Running=false;reset()else self:RetryCleanup()end
+if self.Running then self.Running=false;reset()end
 if not self.CleanupPending then self:Disconnect()end
 end
 toggle:OnChanged(function(value)
-if not value then reset();status("Đã tắt · Thu dao")else status("Chờ Auto Boss")end
+reset();status(value and"Chờ Auto Boss · Dao + M1/skill cùng lúc"or"Đã tắt · Thu dao")
 end)
 self.Connections[#self.Connections+1]=player.CharacterRemoving:Connect(function()reset()end)
-self.Connections[#self.Connections+1]=runService.Heartbeat:Connect(function()
-if not self.Running then
-if self.CleanupPending then
+self.Connections[#self.Connections+1]=game:GetService("RunService").Heartbeat:Connect(function()
 local now=os.clock()
-if now>=(self.NextCleanup or 0)then
-self.NextCleanup=now+.5
-if self:RetryCleanup()then self:Disconnect()end
+local legacy=env.EDUMiasmaLegacyCleanupV2
+if legacy and next(legacy)and now>=(self.NextLegacyCleanup or 0)then
+self.NextLegacyCleanup=now+.5
+for manager in pairs(legacy)do
+local ok,done=pcall(manager.RetryCleanup,manager)
+if env.EDUBossCleanupQueueV1 then env.EDUBossCleanupQueueV1[manager]=nil end
+if ok and done then
+legacy[manager]=nil
+if type(manager.Disconnect)=="function"then pcall(manager.Disconnect,manager)end
 end
-else self:Disconnect()end
-return
 end
-if self.CleanupPending and not self:RetryCleanup()then return end
-if owner.CleanupPending and not owner:RetryCleanup()then return end
+end
+if self.CleanupPending and now>=(self.NextCleanup or 0)then self.NextCleanup=now+.5;self:RetryCleanup()end
+if not self.Running then if not self.CleanupPending then self:Disconnect()end;return end
 if fluent.Unloaded then self:Destroy();return end
-if not enabled()then reset()
-elseif self.Target and(not targetHum(self.Target)or not selected(self.Target)or not owner:Owns(self.Target)
-or self.Char~=player.Character or not resolveRoot(self.Target)or os.clock()-self.LastStep>1)then reset()end
-if not self.Target and next(self.Saved)then restore()end
+if self.Target and(not valid(self.Target)or now-self.LastStep>1)then reset()end
 end)
 return self
 end
 ]]):sub(2),"@EDUHub_New/Boss_Miasma.lua"))()
-local installMiasma0552=assert(loadstring(([[!return function(guard)
-local miasma={Saved={},Object=nil,Parts={},NextFind=0,NextRestore=0}
-local function restoreRecord(record)
-local object=record.Object
-if not object.Parent then return true end
-local all=true
-if record.Props.CFrame then
-local moved=pcall(function()object.CFrame=record.Props.CFrame end)
-if not moved then return false end
+local installMiasma0552=assert(loadstring(([[!return function(guard,settings)
+local env=getgenv and getgenv()or _G
+local self={Saved={},Object=nil,Parts={},NextFind=0,Generation=0}
+local function halfExtent(frame,size,axis)
+return(math.abs(frame.RightVector:Dot(axis))*size.X+math.abs(frame.UpVector:Dot(axis))*size.Y+math.abs(frame.LookVector:Dot(axis))*size.Z)*.5
 end
-for key,value in pairs(record.Props)do
-local ok=key=="CFrame"or pcall(function()object[key]=value end)
-if not ok then all=false end
-end
-return all
-end
-local function restoreMiasma(now)
-if now<miasma.NextRestore and miasma.RestoreError then return false end
+function self:Restore()
+if self.RestoreFailed and os.clock()<(self.NextRestore or 0)then return false end
+self.Generation+=1
 local good=true
-for part,saved in pairs(miasma.Saved)do
-if restoreRecord(saved)then miasma.Saved[part]=nil else good=false end
+for part,saved in pairs(self.Saved)do
+if not part.Parent then self.Saved[part]=nil
+else
+local restored=pcall(function()part.CFrame=saved.Props.CFrame end)
+if restored then
+for _,key in ipairs({"CanCollide","CanTouch","AssemblyLinearVelocity","AssemblyAngularVelocity"})do
+if not pcall(function()part[key]=saved.Props[key]end)then restored=false end
 end
-miasma.RestoreError=not good and"Chờ thu hồi Miasma — chưa cho đánh"or nil
-miasma.NextRestore=now+.25
-if good and next(miasma.Saved)==nil then
-miasma.HeldPosition=nil;miasma.HeldBoss=nil;miasma.HeldRoot=nil;miasma.HeldTarget=nil
 end
-return good and next(miasma.Saved)==nil
+if restored then self.Saved[part]=nil else good=false end
 end
-local function findMiasma(now)
-if miasma.Object and miasma.Object:IsDescendantOf(workspace)then
-local valid=#miasma.Parts>0
-for _,part in ipairs(miasma.Parts)do
-if not part.Parent or part~=miasma.Object and not part:IsDescendantOf(miasma.Object)then valid=false;break end
+end
+self.RestoreFailed=not good;self.NextRestore=os.clock()+.25
+if good then
+self.Model=nil;self.Root=nil;self.LastTime=nil;self.LastDesired=nil;self.Angle=0
+if env.EDUMiasmaKnifeOwnerV2==self then env.EDUMiasmaKnifeOwnerV2=nil end
+end
+return good
+end
+local function find(now)
+if self.Object and self.Object:IsDescendantOf(workspace)and#self.Parts>0 then
+local valid=true
+for _,part in ipairs(self.Parts)do
+if not part.Parent or not part:IsDescendantOf(workspace)
+or part~=self.Object and not part:IsDescendantOf(self.Object)then valid=false;break end
 end
 if valid then return true end
 end
-if next(miasma.Saved)and not restoreMiasma(now)then return false end
-miasma.Object=nil;miasma.Parts={}
-if now<miasma.NextFind then return false end
-miasma.NextFind=now+1
-local quest
+if next(self.Saved)and not self:Restore()then return false end
+self.Object=nil;self.Parts={}
+if now<self.NextFind then return false end
+self.NextFind=now+1
 local map=workspace:FindFirstChild("Map")
-quest=map and map:FindFirstChild("MiasmaQuest")or workspace:FindFirstChild("MiasmaQuest",true)
+local quest=map and map:FindFirstChild("MiasmaQuest")or workspace:FindFirstChild("MiasmaQuest")
 local object=quest and quest:FindFirstChild("Miasma",true)
 if not object then return false end
 local parts={}
-local primary=(object:IsA("Model")and object.PrimaryPart)
+local primary=object:IsA("Model")and object.PrimaryPart or object:IsA("BasePart")and object or nil
 if primary then parts[#parts+1]=primary end
-if object:IsA("BasePart")and object~=primary then parts[#parts+1]=object end
 for _,part in ipairs(object:GetDescendants())do
-if part:IsA("BasePart")and part~=primary and part~=object then parts[#parts+1]=part end
+if part:IsA("BasePart")and part~=primary then parts[#parts+1]=part end
 end
 if#parts==0 then return false end
-miasma.Object=object;miasma.Parts=parts;return true
+self.Object=object;self.Parts=parts;return true
 end
-local function halfHeight(frame,size)
-return(math.abs(frame.RightVector.Y)*size.X+math.abs(frame.UpVector.Y)*size.Y+math.abs(frame.LookVector.Y)*size.Z)*.5
+local axes={["+X"]=Vector3.xAxis,["-X"]=-Vector3.xAxis,["+Y"]=Vector3.yAxis,["-Y"]=-Vector3.yAxis,["+Z"]=Vector3.zAxis,["-Z"]=-Vector3.zAxis}
+local function bladeAxis(part,key)
+if axes[key]then return axes[key]end
+local size=part.Size
+if size.X>=size.Y and size.X>=size.Z then return Vector3.xAxis end
+return size.Y>=size.Z and Vector3.yAxis or Vector3.zAxis
 end
-local function miasmaContact(entry)
-local contact,contactRank=miasma.Parts[1],0
-for _,part in ipairs(miasma.Parts)do
-local rank=0
-if part:FindFirstChildWhichIsA("TouchTransmitter",true)then rank=3
-elseif string.lower(part.Name)=="blade"or string.lower(part.Name)=="hitbox"then rank=2
-elseif part:IsA("MeshPart")then rank=1 end
-if rank>contactRank then contact,contactRank=part,rank end
-end
-local targets={}
-local center=Vector3.zero
-local floor=math.huge
-local touchable=false
-for _,name in ipairs({"LeftFoot","RightFoot","Left Leg","Right Leg"})do
-local part=entry.Model:FindFirstChild(name)
-if part and part.Parent==entry.Model and part:IsA("BasePart")then
-targets[#targets+1]=part
-if part.CanTouch==true then touchable=true end
-center=center+part.Position
-floor=math.min(floor,part.Position.Y-halfHeight(part.CFrame,part.Size))
+local function bladeBasis(part,tipAxis)
+local size=part.Size
+local choices={{Axis=Vector3.xAxis,Size=size.X},{Axis=Vector3.yAxis,Size=size.Y},{Axis=Vector3.zAxis,Size=size.Z}}
+table.sort(choices,function(a,b)return a.Size<b.Size end)
+for _,choice in ipairs(choices)do
+if math.abs(choice.Axis:Dot(tipAxis))<.1 then
+return CFrame.lookAt(Vector3.zero,tipAxis,choice.Axis)
 end
 end
-if#targets>0 then
-return contact,targets[1],Vector3.new(center.X/#targets,floor,center.Z/#targets),targets,touchable
 end
-local root=entry.Root
-local hum=entry.Hum or entry.Model:FindFirstChildOfClass("Humanoid")
-if root and root.Parent==entry.Model and root:IsA("BasePart")and hum then
-center=root.Position-Vector3.new(0,(hum.HipHeight or 0)+root.Size.Y*.5,0)
-return contact,root,center,{root},root.CanTouch==true
+function self:Orbit(model,root,now)
+if guard and not guard(model)then return false,"Dao đã nhường quyền"end
+local previous=env.EDUMiasmaKnifeOwnerV2
+if previous and previous~=self and next(previous.Saved)then
+return false,"Chờ bản cũ thu dao · Vẫn đánh thường"
 end
-return contact,nil,nil,targets,false
+if env.EDUMiasmaLegacyCleanupV2 and next(env.EDUMiasmaLegacyCleanupV2)then
+return false,"Chờ bản cũ thu dao · Vẫn đánh thường"
 end
-local function orbit(entry,now)
-if not findMiasma(now)then return false,miasma.RestoreError or"Đang tìm MiasmaQuest.Miasma"end
-local primary=miasma.Parts[1]
-if not primary or not primary.Parent then return false,"Chưa tìm thấy part Miasma"end
-local contact,targetPart,center,targets,touchable=miasmaContact(entry)
-if not targetPart then
-restoreMiasma(now)
-return false,"Chờ chân / Root boss",false
+local hum=model and model:FindFirstChildOfClass("Humanoid")
+if not hum or hum.Health<=0 or not root or not root.Parent then return false,"Chờ boss sống"end
+if self.Model and(self.Model~=model or self.Root~=root)and not self:Restore()then return false,"Chờ thu dao cũ"end
+if not find(now)then return false,"Chưa thấy Miasma · Vẫn đánh thường"end
+local primary=self.Parts[1]
+local contact,rank=primary,-1
+for _,part in ipairs(self.Parts)do
+local name=part.Name:lower()
+local score=part:FindFirstChildWhichIsA("TouchTransmitter")and 4
+or part:FindFirstChildWhichIsA("TouchTransmitter",true)and 3
+or(name=="blade"or name=="hitbox")and 2 or part:IsA("MeshPart")and 1 or 0
+if score>rank then contact,rank=part,score end
 end
 local primaryFrame=primary.CFrame
-for _,part in ipairs(miasma.Parts)do
-if not miasma.Saved[part]then
-miasma.Saved[part]={Object=part,Offset=primaryFrame:ToObjectSpace(part.CFrame),Props={
-CFrame=part.CFrame,CanCollide=part.CanCollide,CanTouch=part.CanTouch,
-AssemblyLinearVelocity=part.AssemblyLinearVelocity,AssemblyAngularVelocity=part.AssemblyAngularVelocity,
-}}
+env.EDUMiasmaKnifeOwnerV2=self
+for _,part in ipairs(self.Parts)do
+if not self.Saved[part]then
+self.Saved[part]={Offset=primaryFrame:ToObjectSpace(part.CFrame),Props={CFrame=part.CFrame,CanCollide=part.CanCollide,CanTouch=part.CanTouch,AssemblyLinearVelocity=part.AssemblyLinearVelocity,AssemblyAngularVelocity=part.AssemblyAngularVelocity}}
 end
 end
-local savedContact=miasma.Saved[contact]
-local contactOffset=savedContact and savedContact.Offset or CFrame.identity
-local originalContact=savedContact and savedContact.Props.CFrame or contact.CFrame
-local contactPosition=center-Vector3.new(0,halfHeight(originalContact,contact.Size)-.05,0)
-if not miasma.HeldPosition or miasma.HeldBoss~=entry.Model or miasma.HeldRoot~=entry.Root
-or miasma.HeldTarget~=targetPart or(contactPosition-miasma.HeldPosition).Magnitude>.75 then
-miasma.HeldPosition=contactPosition;miasma.HeldBoss=entry.Model;miasma.HeldRoot=entry.Root;miasma.HeldTarget=targetPart
+local record=self.Saved[contact]
+local cfg=settings and settings()or{Gap=.6,Speed=2.5,TipAxis="Auto"}
+local tipAxis=bladeAxis(contact,cfg.TipAxis)
+if record.TipAxis~=tipAxis or record.Size~=contact.Size then
+record.Basis=bladeBasis(contact,tipAxis);record.TipAxis=tipAxis;record.Size=contact.Size
 end
-contactPosition=miasma.HeldPosition
-local currentDist=(contact.Position-contactPosition).Magnitude
-local arrived=currentDist<=8.0
-if miasma.LastBoss~=entry.Model then
-miasma.LastBoss=entry.Model
-miasma.LastBossHP=entry.Hum.Health
-miasma.LastDamageAt=now
-elseif entry.Hum.Health<miasma.LastBossHP-0.1 then
-miasma.LastBossHP=entry.Hum.Health
-miasma.LastDamageAt=now
+self.Model=model;self.Root=root
+local dt=self.LastTime and math.clamp(now-self.LastTime,0,.25)or 0
+self.LastTime=now;self.Angle=((self.Angle or 0)+dt*cfg.Speed)%(math.pi*2)
+local radial=Vector3.new(math.cos(self.Angle),0,math.sin(self.Angle))
+local center=root.Position
+local bottom=math.huge
+local footCenter=Vector3.zero;local count=0
+local feet={}
+for _,name in ipairs({"LeftFoot","RightFoot","Left Leg","Right Leg"})do
+local part=model:FindFirstChild(name)
+if part and part:IsA("BasePart")and part.Parent==model then
+count+=1;footCenter+=part.Position
+feet[#feet+1]=part
+bottom=math.min(bottom,part.Position.Y-halfExtent(part.CFrame,part.Size,Vector3.yAxis))
 end
-local desiredContact=CFrame.new(contactPosition)*originalContact.Rotation
-local desired=desiredContact*contactOffset:Inverse()
-local tangent=Vector3.zero
-local fti=firetouchinterest or(syn and syn.fire_touch_interest)
-if type(fti)~="function"then fti=nil end
-local function touch(part,target,state)
-pcall(fti,part,target,state)
 end
-local corrected=false
-for _,part in ipairs(miasma.Parts)do
-if guard and not guard(entry.Model)then return false,"Miasma đã nhường quyền",false end
-local saved=miasma.Saved[part]
-local rel=(saved and saved.Offset)or CFrame.identity
-if saved and saved.Last and(part.Position-saved.Last).Magnitude>6 then corrected=true end
-local ok,why=pcall(function()
-if part.CanCollide then part.CanCollide=false end
-if not part.CanTouch then part.CanTouch=true end
-local frame=desired*rel
-if(part.Position-frame.Position).Magnitude>.01 or part.CFrame.LookVector:Dot(frame.LookVector)<.9999
-or part.CFrame.UpVector:Dot(frame.UpVector)<.9999 then part.CFrame=frame end
-part.AssemblyLinearVelocity=tangent
-part.AssemblyAngularVelocity=Vector3.zero
+if count>0 then center=Vector3.new(footCenter.X/count,bottom,footCenter.Z/count)
+else center=root.Position-Vector3.new(0,(hum.HipHeight or 0)+root.Size.Y*.5,0);feet[1]=root end
+local bodyRadius=0
+for _,part in ipairs(feet)do
+bodyRadius=math.max(bodyRadius,(part.Position-center):Dot(radial)+halfExtent(part.CFrame,part.Size,radial))
+end
+local inward=-radial
+local rotation=CFrame.lookAt(Vector3.zero,inward,Vector3.yAxis)*record.Basis:Inverse()
+local bladeHalf=math.abs(tipAxis.X)*contact.Size.X*.5+math.abs(tipAxis.Y)*contact.Size.Y*.5+math.abs(tipAxis.Z)*contact.Size.Z*.5
+local pulse=math.sin(self.Angle*3)*.65
+local radius=math.max(.35,bodyRadius+bladeHalf-.35+(cfg.Gap or.6)+pulse)
+local position=center+radial*radius+Vector3.new(0,.15,0)
+local desiredContact=CFrame.new(position)*rotation
+local desired=desiredContact*record.Offset:Inverse()
+local corrected=self.LastDesired and(contact.Position-self.LastDesired).Magnitude>6
+local generation=self.Generation
+for _,part in ipairs(self.Parts)do
+if generation~=self.Generation or guard and not guard(model)then return false,"Dao đã nhường quyền"end
+local saved=self.Saved[part]
+local ok=pcall(function()
+part.CanCollide=false;part.CanTouch=true
+part.CFrame=desired*saved.Offset
+part.AssemblyLinearVelocity=Vector3.zero;part.AssemblyAngularVelocity=Vector3.zero
 end)
-if not ok then return false,"Chờ điều khiển Miasma: "..tostring(why),false end
-if fti and(contact.Position-contactPosition).Magnitude<=8 then
-for _,target in ipairs(targets)do
-touch(part,target,0)
-touch(part,target,1)
+if not ok then return false,"Chưa điều khiển được dao · Vẫn đánh thường"end
 end
-end
-if saved then saved.Last=part.Position end
-end
-arrived=(contact.Position-contactPosition).Magnitude<=8
-local note
-if not arrived then note=string.format("Đang đưa Miasma tới chân boss (còn %.0f studs)...",currentDist)
-elseif not touchable then note="Giữ dao tại chỗ · Chân/Root boss đang CanTouch=false"
-elseif corrected then note="Miasma bị chỉnh vị trí · Đặt lại dưới chân boss"
-else note="Giữ dao tại chỗ · Để boss tự chuyển động tiếp xúc"end
-return true,note,arrived
-end
-local self={Saved=miasma.Saved}
-function self:Restore()return restoreMiasma(os.clock())end
-function self:Orbit(model,root,now,preferTorso)
-if guard and not guard(model)then return false,"Miasma đã nhường quyền",false end
-local hum=model:FindFirstChildOfClass("Humanoid")
-if not hum or hum.Health<=0 then return false,"Chờ boss sống",false end
-return orbit({Model=model,Root=root,Hum=hum,PreferTorso=preferTorso},now)
+self.LastDesired=desiredContact.Position
+return true,corrected and"Dao bị chỉnh vị trí · Đang thử quay lại"or"Dao xoay quanh chân boss · Mũi hướng vào trong"
 end
 function self:Arrived(model,root)
-local contact,target,center=miasmaContact({Model=model,Root=root})
-if not contact or not target or not contact:IsDescendantOf(workspace)then return false end
-local saved=miasma.Saved[contact]
-local frame=saved and saved.Props.CFrame or contact.CFrame
-local position=center-Vector3.new(0,halfHeight(frame,contact.Size)-.05,0)
-return(contact.Position-position).Magnitude<=8
+return self.Model==model and self.Root==root and self.LastDesired~=nil and#self.Parts>0
+and(self.Parts[1].Position-self.LastDesired).Magnitude<8
 end
 return self
 end
@@ -17232,11 +17124,13 @@ local desiredFrame=eduBossController:AdjustFollowFrame(bossRoot,ownRoot,rawFrame
 if not desiredFrame then
 return
 end
-pcall(function()
+local moved=pcall(function()
 ownRoot.CFrame=desiredFrame
 ownRoot.AssemblyLinearVelocity=Vector3.zero
 end)
+if moved then
 eduBossController:RecordFollow(model,bossRoot,ownRoot,desiredFrame)
+end
 end
 local function stepBossController()
 if bossTickBusy or os.clock()<bossTickNext then
