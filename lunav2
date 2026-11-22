@@ -1,4 +1,4 @@
-local source=([==[!local eduSession=assert(loadstring(([[!return function()
+local source=([===[!local eduSession=assert(loadstring(([[!return function()
 local env=getgenv and getgenv()or _G
 local previous=env.EDUHubSessionV1
 if previous then previous:Destroy()end
@@ -11922,7 +11922,7 @@ end
 end
 local function runMain()
 local fluent
-local slime=assert(loadstring(([=[!local SlimeUI={
+local slime=assert(loadstring(([==[!local SlimeUI={
 Version="1.3.0",
 Author="SlimexDev",
 Repository="https://github.com/SlimexDev/SlimeUI",
@@ -12092,6 +12092,7 @@ local IconIds={
 }
 SlimeUI.Icons=IconIds
 local IconAliases={
+["sparkles"]="wand-2",
 ["circle-check"]="check-circle",
 ["circle-x"]="x-circle",
 ["triangle-alert"]="alert-triangle",
@@ -12143,21 +12144,21 @@ Effect=o.Effect,
 end
 local Themes={
 Luna={
-Window=Color3.fromRGB(17,18,27),WindowT=.04,
-Sidebar=Color3.fromRGB(20,21,32),SidebarT=.08,
-Card=Color3.fromRGB(31,32,45),CardT=.06,
+Window=Color3.fromRGB(19,23,26),WindowT=.06,
+Sidebar=Color3.fromRGB(22,27,30),SidebarT=.02,
+Card=Color3.fromRGB(19,23,26),CardT=1,
 Hover=Color3.fromRGB(169,145,245),HoverT=.91,
 Line=Color3.fromRGB(104,104,135),LineT=.83,
-Edge=Color3.fromRGB(176,160,239),EdgeA=.45,EdgeB=.9,
-Sheen=.97,Band=.98,Rim=.9,
-Text=Color3.fromRGB(242,241,250),SubText=Color3.fromRGB(153,154,176),
+Edge=Color3.fromRGB(176,160,239),EdgeA=1,EdgeB=1,
+Sheen=1,Band=1,Rim=1,
+Text=Color3.fromRGB(226,229,232),SubText=Color3.fromRGB(137,143,148),
 Control=Color3.fromRGB(62,62,83),ControlT=0,
-Field=Color3.fromRGB(22,23,34),FieldT=.04,
+Field=Color3.fromRGB(26,31,34),FieldT=.02,
 Select=Color3.fromRGB(158,131,235),SelectT=.08,
 SegPill=Color3.fromRGB(158,131,235),SegPillT=.1,
 Menu=Color3.fromRGB(26,27,40),MenuT=.02,
 Knob=Color3.fromRGB(250,248,255),Accent=Color3.fromRGB(169,145,245),
-Accent2=Color3.fromRGB(146,117,226),Effect="Slime",
+Accent2=Color3.fromRGB(146,117,226),Effect="Flat",
 },
 Glass={
 Window=Color3.fromRGB(14,16,24),WindowT=0.6,
@@ -12348,15 +12349,289 @@ VerticalAlignment=valign or Enum.VerticalAlignment.Top,
 SortOrder=Enum.SortOrder.LayoutOrder,
 })
 end
-local function Tween(obj,time,props,style,direction)
-local t=TweenService:Create(
-obj,
-TweenInfo.new(time,style or Enum.EasingStyle.Quint,direction or Enum.EasingDirection.Out),
-props
-)
-t:Play()
-return t
+local Motion=assert(loadstring(([=[!return function(TweenService,Input,RunService)
+local self={Active={},Buttons={},Scenes={},Bases={},Holds={},StyleCount=6,DefaultStyle=6,StyleIndex=6,Cache={},Pending={}}
+local families={
+{'WindowOpen',.24,.03},{'WindowClose',.18,.02},{'Page',.2,8},{'Nav',.16,4},
+{'Dock',.18,2},{'Popover',.18,6},{'CompactNav',.18,6},{'Reopen',.2,6},
+{'Hover',.14,.06},{'Press',.08,.03},{'Toggle',.16,2},{'Slider',.06,6},
+{'Focus',.14,.6},{'Dropdown',.18,6},{'Notify',.22,8},{'Icon',.16,.08},
+}
+local familyIndex={};for i,family in ipairs(families)do familyIndex[family[1]]=i end
+local styles={
+{Name='Glide',X=1,Y=0,Travel=24,Zoom=.012,Tempo=1,Easing=Enum.EasingStyle.Cubic},
+{Name='Rise',X=0,Y=1,Travel=22,Zoom=.018,Tempo=1.08,Easing=Enum.EasingStyle.Quart},
+{Name='Bloom',X=0,Y=.2,Travel=14,Zoom=.065,Tempo=1.12,Easing=Enum.EasingStyle.Quint},
+{Name='Cascade',X=0,Y=1,Travel=24,Zoom=.022,Tempo=1.16,Stagger=.055,Easing=Enum.EasingStyle.Quart},
+{Name='Arc',X=1,Y=.65,Travel=22,Zoom=.018,Tempo=1.24,Rotation=.8,Path='Arc',Easing=Enum.EasingStyle.Sine},
+{Name='Spring',X=0,Y=1,Travel=20,Zoom=.045,Tempo=1.2,Path='Spring',Easing=Enum.EasingStyle.Cubic},
+}
+self.PresetCount=#families*self.StyleCount
+local function index(value,fallback,maximum)
+local n=tonumber(value);if not n or n~=n then n=fallback end
+return math.clamp(math.floor(n+.5),1,maximum)
 end
+function self:Preset(id)
+id=index(id,1,self.PresetCount)
+local family=math.floor((id-1)/self.StyleCount)+1;local style=styles[(id-1)%self.StyleCount+1]
+local base=families[family]
+return{Id=id,Family=base[1],Name=style.Name,Duration=base[2]*style.Tempo,Distance=base[3],Easing=style.Easing,
+X=style.X,Y=style.Y,Travel=style.Travel,Zoom=style.Zoom,Rotation=style.Rotation or 0,Path=style.Path,Stagger=style.Stagger}
+end
+function self:Spec(family)
+if not self.Cache[family]then self.Cache[family]=self:Preset((assert(familyIndex[family])-1)*self.StyleCount+self.StyleIndex)end
+return self.Cache[family]
+end
+function self:SetStyle(value)
+self.StyleIndex=index(value,self.StyleIndex,self.StyleCount);table.clear(self.Cache)
+end
+function self:StyleName()return styles[self.StyleIndex].Name end
+local function idle()
+if not next(self.Pending)and not next(self.Holds)and not self.Meter and self.Frame then self.Frame:Disconnect();self.Frame=nil end
+end
+local function ensureFrame()
+if self.Frame then return end
+self.Frame=(RunService.PreRender or RunService.RenderStepped):Connect(function(dt)
+local pending=self.Pending;self.Pending={}
+for owner,entries in pairs(pending)do
+if owner.Parent then for _,callback in pairs(entries)do callback()end end
+end
+local meter=self.Meter
+if meter and not meter.Owner.Parent then self.Meter=nil
+elseif meter and dt and dt>0 and dt<math.huge then
+meter.Seconds+=dt;meter.Frames+=1;meter.Peak=math.max(meter.Peak,dt)
+if meter.Seconds>=.5 then
+meter.Callback(meter.Frames/meter.Seconds,meter.Seconds/meter.Frames*1000,meter.Peak*1000)
+meter.Seconds=0;meter.Frames=0;meter.Peak=0
+end
+end
+idle()
+end)
+end
+function self:Queue(owner,key,callback)
+local entries=self.Pending[owner]
+if not entries then entries={};self.Pending[owner]=entries end
+entries[key]=callback;ensureFrame()
+end
+function self:Hold(owner,key)
+local entries=self.Holds[owner]
+if not entries then entries={};self.Holds[owner]=entries end
+entries[key]=true;ensureFrame()
+end
+function self:Release(owner,key)
+local entries=self.Holds[owner]
+if entries then entries[key]=nil;if not next(entries)then self.Holds[owner]=nil end end
+idle()
+end
+function self:Drop(owner,key)
+local entries=self.Pending[owner]
+if entries then entries[key]=nil;if not next(entries)then self.Pending[owner]=nil end end
+idle()
+end
+function self:Flush(owner,key)
+local entries=self.Pending[owner];local callback=entries and entries[key]
+self:Drop(owner,key)
+if callback and owner.Parent then callback()end
+end
+function self:SetMeter(owner,callback)
+self.Meter=owner and callback and{Owner=owner,Callback=callback,Frames=0,Seconds=0,Peak=0}or nil
+if self.Meter then ensureFrame()else idle()end
+end
+local function detach(obj,track,cancel)
+local bucket=self.Active[obj]
+if not bucket or not bucket.Tracks[track]then return end
+bucket.Tracks[track]=nil
+if track.Link then track.Link:Disconnect();track.Link=nil end
+for key in pairs(track.Goals)do if bucket.Keys[key]==track then bucket.Keys[key]=nil end end
+if not next(bucket.Tracks)then
+bucket.Destroy:Disconnect();self.Active[obj]=nil
+end
+if cancel then track.Tween:Cancel()end
+end
+local function cancelTracks(obj,keys)
+local bucket=self.Active[obj];if not bucket then return end
+local tracks={}
+if keys then
+for key in pairs(keys)do local track=bucket.Keys[key];if track then tracks[track]=true end end
+else for track in pairs(bucket.Tracks)do tracks[track]=true end end
+for track in pairs(tracks)do detach(obj,track,true)end
+end
+local function endScene(obj)
+local state=self.Scenes[obj];if not state then return end
+self.Scenes[obj]=nil
+if state.Link then state.Link:Disconnect();state.Link=nil end
+if state.Destroy then state.Destroy:Disconnect();state.Destroy=nil end
+end
+function self:Cancel(obj,keys)
+local state=self.Scenes[obj]
+if state then
+local overlap=not keys
+for key in pairs(keys or{})do if state.Keys[key]then overlap=true;break end end
+if overlap then endScene(obj)end
+end
+cancelTracks(obj,keys)
+if not keys then
+local scale=obj:FindFirstChild('LunaMotionScale')
+if scale then self:Cancel(scale)end
+end
+end
+function self:Tween(obj,duration,goals,style,direction,sequence,delay)
+style=style or Enum.EasingStyle.Quint;direction=direction or Enum.EasingDirection.Out
+local state=self.Scenes[obj]
+if state and state~=sequence then
+for key in pairs(goals)do if state.Keys[key]then endScene(obj);break end end
+end
+local bucket=self.Active[obj]
+if bucket then
+local key=next(goals);local old=key and bucket.Keys[key]
+if old and old.Duration==duration and old.Style==style and old.Direction==direction and old.Delay==(delay or 0)then
+local same=true
+for k,v in pairs(goals)do if old.Goals[k]~=v then same=false;break end end
+if same then for k in pairs(old.Goals)do if goals[k]==nil then same=false;break end end end
+if same then return old.Tween end
+end
+cancelTracks(obj,goals)
+end
+bucket=self.Active[obj]
+if not bucket then
+bucket={Tracks={},Keys={}}
+self.Active[obj]=bucket
+bucket.Destroy=obj.Destroying:Connect(function()self:Cancel(obj)end)
+end
+local tween=TweenService:Create(obj,TweenInfo.new(duration,style,direction,0,false,delay or 0),goals)
+local track={Tween=tween,Goals=table.clone(goals),Duration=duration,Style=style,Direction=direction,Delay=delay or 0}
+bucket.Tracks[track]=true
+for key in pairs(goals)do bucket.Keys[key]=track end
+track.Link=tween.Completed:Connect(function()detach(obj,track,false)end)
+tween:Play();return tween
+end
+function self:Sequence(obj,p,from,goals,middle,delay)
+self:Cancel(obj)
+if from then for key,value in pairs(from)do obj[key]=value end end
+local state={Keys=goals};self.Scenes[obj]=state
+state.Destroy=obj.Destroying:Connect(function()self:Cancel(obj)end)
+local function step(final)
+if self.Scenes[obj]~=state or not obj.Parent then return end
+local duration=p.Duration*(middle and(final and.38 or.62)or 1)
+local tween=self:Tween(obj,duration,final and goals or middle,p.Easing,Enum.EasingDirection.Out,state,final and 0 or delay)
+state.Link=tween.Completed:Connect(function(status)
+if self.Scenes[obj]~=state then return end
+state.Link:Disconnect();state.Link=nil
+if status~=Enum.PlaybackState.Completed then endScene(obj)
+elseif not final then step(true)else endScene(obj)end
+end)
+end
+if not middle and delay then
+local tween=self:Tween(obj,p.Duration,goals,p.Easing,Enum.EasingDirection.Out,state,delay)
+state.Link=tween.Completed:Connect(function()if self.Scenes[obj]==state then endScene(obj)end end)
+else step(not middle)end
+end
+function self:ScaleIn(scale,family,target,reset,delay)
+local p=self:Spec(family);local from=reset and{Scale=target*(1-p.Zoom)}or nil
+local middle=p.Path=='Spring'and{Scale=target*1.008}or nil
+self:Sequence(scale,p,from,{Scale=target},middle,delay)
+end
+function self:Offset(family,direction,factor)
+local p=self:Spec(family);local distance=p.Travel*(factor or.4)*(direction or 1)
+return UDim2.fromOffset(p.X*distance,p.Y*distance)
+end
+function self:Enter(obj,family,base,direction,fade,delay,factor,reset)
+local p=self:Spec(family);direction=direction or 1
+local offset=self:Offset(family,direction,factor)
+local from=reset~=false and{Position=base+offset,Rotation=p.Rotation*direction}or nil
+local goals={Position=base,Rotation=0}
+if fade then goals.GroupTransparency=0;if from then from.GroupTransparency=fade end end
+local middle
+if p.Path=='Arc'then middle={Position=base+UDim2.fromOffset(-p.Travel*.12*direction,-p.Travel*.18),Rotation=-p.Rotation*.2*direction}
+elseif p.Path=='Spring'then middle={Position=base+UDim2.fromOffset(-offset.X.Offset*.12,-offset.Y.Offset*.12),Rotation=0}end
+if middle and fade then middle.GroupTransparency=0 end
+self:Sequence(obj,p,from,goals,middle,delay)
+local scale=obj:FindFirstChild('LunaMotionScale')
+if not scale then scale=Instance.new('UIScale');scale.Name='LunaMotionScale';scale.Parent=obj end
+self:ScaleIn(scale,family,1,reset~=false,delay)
+end
+local function resetSurface(obj)
+self:Cancel(obj);obj.Rotation=0
+local scale=obj:FindFirstChild('LunaMotionScale');if scale then scale.Scale=1 end
+end
+function self:ResetPage(page,columns)
+resetSurface(page);page.Position=UDim2.fromOffset(0,0)
+for _,column in ipairs(columns or{})do
+resetSurface(column)
+if self.Bases[column]then column.Position=self.Bases[column];self.Bases[column]=nil end
+end
+end
+function self:EnterPage(page,columns,direction)
+self:ResetPage(page,columns)
+local p=self:Spec('Page')
+if p.Stagger then
+local rank=0
+for _,column in ipairs(columns or{})do if column.Visible then
+self.Bases[column]=column.Position
+self:Enter(column,'Page',column.Position,direction,nil,rank*p.Stagger,1+rank*.35)
+rank+=1
+end end
+else self:Enter(page,'Page',UDim2.fromOffset(0,0),direction,nil,nil,1)end
+end
+local function unbind(button)
+local state=self.Buttons[button];if not state then return end
+self.Buttons[button]=nil
+for _,link in ipairs(state.Links)do link:Disconnect()end
+self:Cancel(state.Scale)
+if not next(self.Buttons)and self.Focus then self.Focus:Disconnect();self.Focus=nil end
+end
+function self:Pressable(button)
+local previous=self.Buttons[button];if previous then return previous.Scale end
+local scale=Instance.new('UIScale');scale.Scale=1;scale.Parent=button
+local state={Scale=scale,Links={},Down=false};self.Buttons[button]=state
+local function link(signal,fn)state.Links[#state.Links+1]=signal:Connect(fn)end
+local function release()
+if not state.Down and scale.Scale==1 then return end
+state.Down=false
+if button.Parent then local p=self:Spec('Press');self:Tween(scale,p.Duration*2,{Scale=1},p.Easing)end
+end
+link(button.MouseButton1Down,function()
+state.Down=true;local p=self:Spec('Press');self:Tween(scale,p.Duration,{Scale=1-p.Distance},p.Easing)
+end)
+link(button.MouseButton1Up,release);link(button.MouseLeave,release)
+link(button.InputEnded,function(input)
+if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then release()end
+end)
+link(button.Destroying,function()unbind(button)end)
+if not self.Focus then self.Focus=Input.WindowFocusReleased:Connect(function()
+for b,s in pairs(self.Buttons)do
+if s.Down and b.Parent then s.Down=false;local p=self:Spec('Press');self:Tween(s.Scale,p.Duration*2,{Scale=1},p.Easing)end
+end
+end)end
+return scale
+end
+function self:CancelTree(root)
+local targets={};local buttons={}
+for obj in pairs(self.Active)do if obj==root or obj:IsDescendantOf(root)then targets[#targets+1]=obj end end
+for obj in pairs(self.Buttons)do if obj==root or obj:IsDescendantOf(root)then buttons[#buttons+1]=obj end end
+for _,obj in ipairs(targets)do self:Cancel(obj)end
+for _,obj in ipairs(buttons)do unbind(obj)end
+for obj in pairs(self.Pending)do if obj==root or obj:IsDescendantOf(root)then self.Pending[obj]=nil end end
+for obj in pairs(self.Holds)do if obj==root or obj:IsDescendantOf(root)then self.Holds[obj]=nil end end
+for obj in pairs(self.Bases)do if obj==root or obj:IsDescendantOf(root)then self.Bases[obj]=nil end end
+local scenes={};for obj in pairs(self.Scenes)do if obj==root or obj:IsDescendantOf(root)then scenes[#scenes+1]=obj end end
+for _,obj in ipairs(scenes)do self:Cancel(obj)end
+if self.Meter and(self.Meter.Owner==root or self.Meter.Owner:IsDescendantOf(root))then self.Meter=nil end
+idle()
+end
+function self:Snapshot()
+local out={Targets=0,Tweens=0,Buttons=0,Queued=0,Scenes=0,Holds=0,FrameConnected=self.Frame~=nil}
+for _,bucket in pairs(self.Active)do out.Targets+=1;for _ in pairs(bucket.Tracks)do out.Tweens+=1 end end
+for _ in pairs(self.Buttons)do out.Buttons+=1 end
+for _,entries in pairs(self.Pending)do for _ in pairs(entries)do out.Queued+=1 end end
+for _ in pairs(self.Scenes)do out.Scenes+=1 end
+for _,entries in pairs(self.Holds)do for _ in pairs(entries)do out.Holds+=1 end end
+return out
+end
+return self
+end
+]=]):sub(2),"@EDUHub_New/Luna_UI_Motion.lua"))()(TweenService,UserInputService,RunService)
+local function Tween(obj,time,props,style,direction)return Motion:Tween(obj,time,props,style,direction)end
 local function Loop(obj,time,props,style)
 local t=TweenService:Create(
 obj,
@@ -13354,9 +13629,9 @@ SideW=0,TabH=30,RowH=44,RowDescH=58,Track=0,Field=120,Drop=120,Notify=320,
 }
 else
 L=compact and{
-SideW=104,TabH=38,RowH=44,RowDescH=60,Track=120,Field=140,Drop=140,Notify=290,
+SideW=130,TabH=40,RowH=34,RowDescH=52,Track=120,Field=140,Drop=140,Notify=290,
 }or{
-SideW=148,TabH=36,RowH=42,RowDescH=58,Track=168,Field=180,Drop=170,Notify=330,
+SideW=130,TabH=40,RowH=34,RowDescH=52,Track=168,Field=180,Drop=170,Notify=330,
 }
 end
 local BaseSize=opts.Size or(column and Vector2.new(300,470)or Vector2.new(780,500))
@@ -13374,15 +13649,19 @@ return Vector2.new(math.max(240,v.X-margin),math.max(150,v.Y-math.max(12,inset.Y
 end
 local function TargetSize()
 local v=ViewportSize()
-local s=Window.Zoomed and BaseSize*1.15 or BaseSize
-local bounds=LunaViewportBounds()
-s=Vector2.new(math.min(s.X,bounds.X),math.min(s.Y,bounds.Y))
-return s
+if v.X<v.Y then return Vector2.new(math.min(BaseSize.X,v.X-24),math.min(BaseSize.Y,v.Y-124))end
+return BaseSize
 end
 local function FitScale()
-local v=ViewportSize()
-local s=TargetSize()
-return math.max(0.4,math.min(Window.UserScale,(v.X-20)/s.X,(v.Y-20)/s.Y))
+local v=ViewportSize();local size=TargetSize()
+local extra=v.X<v.Y and 0 or 140
+local top,bottom,left,right=12,12,12,12
+pcall(function()
+local a,b=game:GetService("GuiService"):GetGuiInset()
+if a then top=math.max(top,a.Y+8);left=math.max(left,a.X+8)end
+if b then bottom=math.max(bottom,b.Y+8);right=math.max(right,b.X+8)end
+end)
+return math.max(.1,math.min(Window.UserScale,v.Y/600,(v.X-left-right)/(size.X+extra),(v.Y-top-bottom)/(size.Y+32)))
 end
 local Gui=NewScreenGui("SlimeUI",9999)
 Window.Gui=Gui
@@ -13403,14 +13682,14 @@ Size=UDim2.fromScale(1,1),
 GroupTransparency=1,
 ZIndex=1,
 Parent=Holder,
-},{Corner(20)})
+},{Corner(8)})
 Bind(Main,{BackgroundColor3="Window",BackgroundTransparency="WindowT"})
 local EdgeFrame=New("Frame",{
 Size=UDim2.fromScale(1,1),
 BackgroundTransparency=1,
 ZIndex=2,
 Parent=Holder,
-},{Corner(20)})
+},{Corner(8)})
 local Edge,EdgeGrad=GlassEdge(EdgeFrame,1.2)
 Edge.Transparency=1
 local Sheen=New("Frame",{
@@ -13418,7 +13697,7 @@ Size=UDim2.new(1,0,0,170),
 BackgroundColor3=WHITE,
 BorderSizePixel=0,
 Parent=Main,
-},{Corner(20)})
+},{Corner(8)})
 local SheenGrad=New("UIGradient",{Rotation=90,Parent=Sheen})
 local Band=New("Frame",{
 AnchorPoint=Vector2.new(0.5,0.5),
@@ -13440,15 +13719,16 @@ Size=UDim2.new(1,-2,1,-2),
 BackgroundTransparency=1,
 ZIndex=9,
 Parent=Main,
-},{Corner(19)})
+},{Corner(7)})
 local InnerRim=New("UIStroke",{Color=WHITE,Thickness=1.5,Parent=InnerRimFrame})
 local InnerGrad=New("UIGradient",{Rotation=255,Color=DispersionColors(),Parent=InnerRim})
 Hook(function(T)
 InnerGrad.Transparency=RimSequence(T)
 end)
+Sheen.Visible=false;Band.Visible=false;InnerRimFrame.Visible=false
 local rimAngle=75
 Connect(RunService.RenderStepped,function(dt)
-if not Window.Visible or not Holder.Visible then
+if Theme.Current.Effect=="Flat"or not Window.Visible or not Holder.Visible then
 return
 end
 local mouse=UserInputService:GetMouseLocation()+Gui.AbsolutePosition
@@ -13586,10 +13866,10 @@ Hook(function(T)
 SearchStroke.Color=T.Accent
 end)
 Connect(SearchInput.Focused,function()
-Tween(SearchStroke,0.15,{Transparency=0.45})
+local p=Motion:Spec("Focus");Tween(SearchStroke,p.Duration,{Transparency=1-p.Distance},p.Easing)
 end)
 Connect(SearchInput.FocusLost,function()
-Tween(SearchStroke,0.25,{Transparency=1})
+local p=Motion:Spec("Focus");Tween(SearchStroke,p.Duration,{Transparency=1},p.Easing)
 end)
 local listTop=76
 local footerH=26
@@ -13717,7 +13997,7 @@ TextSize=13,
 TextTruncate=Enum.TextTruncate.AtEnd,
 Parent=Main,
 }),{TextColor3="SubText"})
-local Pages=New("Frame",{
+local Pages=New("CanvasGroup",{
 Position=UDim2.fromOffset(ContentX-6,76),
 Size=UDim2.new(1,-ContentX-2,1,-82),
 BackgroundTransparency=1,
@@ -13769,15 +14049,19 @@ if m.Filter and m.Filter.ReleaseFocus then pcall(m.Filter.ReleaseFocus,m.Filter)
 if m.OnClose then
 m.OnClose()
 end
-Tween(m.Menu,0.12,{GroupTransparency=1})
-Tween(m.Edge,0.12,{Transparency=1})
+local p=Motion:Spec("Dropdown");local duration=p.Duration*.7
+Tween(m.Menu,duration,{GroupTransparency=1,Position=m.Origin+m.Offset},p.Easing)
+Tween(m.Edge,duration,{Transparency=1},p.Easing)
+Tween(m.EdgeFrame,duration,{Position=m.Origin+m.Offset},p.Easing)
 m.Overlay.Active=false
-task.delay(0.13,function()
+task.delay(duration,function()
+Motion:CancelTree(m.Overlay)
 m.Overlay:Destroy()
 end)
 end
 end
 function Window:_openMenu(anchor,options,isSelected,onPick,onClose)
+if self.Destroyed or not self.Visible then return end
 self:_closeMenu()
 local T=Theme.Current
 local Overlay=New("TextButton",{
@@ -13790,7 +14074,7 @@ ZIndex=50,
 Parent=Gui,
 })
 Overlay.MouseButton1Click:Connect(function()
-self:_closeMenu()
+if OpenMenu and OpenMenu.Overlay==Overlay then self:_closeMenu()end
 end)
 local itemH,pad=38,8
 local searchH=42
@@ -13811,7 +14095,7 @@ local anchorPoint=up and Vector2.new(0,1)or Vector2.new(0,0)
 local Menu=New("CanvasGroup",{
 AnchorPoint=anchorPoint,
 Position=UDim2.fromOffset(x,y),
-Size=UDim2.fromOffset(width,math.floor(height*0.6)),
+Size=UDim2.fromOffset(width,height),
 BackgroundColor3=T.Menu,
 BackgroundTransparency=T.MenuT,
 GroupTransparency=1,
@@ -13821,16 +14105,20 @@ Parent=Overlay,
 local MenuEdgeFrame=New("Frame",{
 AnchorPoint=anchorPoint,
 Position=UDim2.fromOffset(x,y),
-Size=UDim2.fromOffset(width,math.floor(height*0.6)),
+Size=UDim2.fromOffset(width,height),
 BackgroundTransparency=1,
 Parent=Overlay,
 },{Corner(13)})
 local MenuEdge=StaticEdge(MenuEdgeFrame,T,1)
 MenuEdge.Transparency=1
-Tween(Menu,0.3,{Size=UDim2.fromOffset(width,height),GroupTransparency=0})
-Tween(MenuEdgeFrame,0.3,{Size=UDim2.fromOffset(width,height)})
-Tween(MenuEdge,0.3,{Transparency=0})
-OpenMenu={Overlay=Overlay,Menu=Menu,Edge=MenuEdge,OnClose=onClose}
+local p=Motion:Spec("Dropdown");local origin=UDim2.fromOffset(x,y)
+local offset=Motion:Offset("Dropdown",up and 1 or-1,.3)
+Menu.Position=origin+offset;MenuEdgeFrame.Position=origin+offset
+Motion:Enter(Menu,"Dropdown",origin,up and 1 or-1,1,nil,.3)
+Tween(MenuEdgeFrame,p.Duration,{Position=origin},p.Easing)
+Tween(MenuEdge,p.Duration,{Transparency=0},p.Easing)
+local menuState={Overlay=Overlay,Menu=Menu,Edge=MenuEdge,EdgeFrame=MenuEdgeFrame,Origin=origin,Offset=offset,OnClose=onClose}
+OpenMenu=menuState
 local Filter=New("TextBox",{Name="FilterOptions",Position=UDim2.fromOffset(8,6),Size=UDim2.new(1,-16,0,32),
 BackgroundColor3=T.Field,BackgroundTransparency=T.FieldT,Text="",PlaceholderText="Tìm lựa chọn…",
 TextColor3=T.Text,PlaceholderColor3=T.SubText,TextSize=13,FontFace=F(W_REG),ClearTextOnFocus=false,Parent=Menu},
@@ -13892,16 +14180,13 @@ TextTruncate=Enum.TextTruncate.AtEnd,
 Parent=Item,
 })
 Item.MouseEnter:Connect(function()
-Item.BackgroundTransparency=0
-Txt.TextColor3=WHITE
-Check.ImageColor3=WHITE
+local p=Motion:Spec("Hover");Tween(Item,p.Duration,{BackgroundTransparency=1-p.Distance*8});Tween(Txt,p.Duration,{TextColor3=T.Text});Tween(Check,p.Duration,{ImageColor3=T.Text})
 end)
 Item.MouseLeave:Connect(function()
-Item.BackgroundTransparency=1
-Txt.TextColor3=T.Text
-Check.ImageColor3=T.Text
+local p=Motion:Spec("Hover");Tween(Item,p.Duration,{BackgroundTransparency=1});Tween(Txt,p.Duration,{TextColor3=T.Text});Tween(Check,p.Duration,{ImageColor3=T.Text})
 end)
 Item.MouseButton1Click:Connect(function()
+if self.Destroyed or OpenMenu~=menuState then return end
 local close=onPick(opt)
 if close then
 self:_closeMenu()
@@ -13980,176 +14265,349 @@ end
 local LunaTopbar=assert(loadstring(([[!return function(c)
 local W,G,H=c.Window,c.Gui,c.Holder
 local New,Bind,Label,Tween=c.New,c.Bind,c.Label,c.Tween
-local self={Width=220,Height=36,Dragging=false}
-local root=New("Frame",{Name="LunaTopbar",AnchorPoint=Vector2.new(.5,.5),BackgroundTransparency=1,
-Size=UDim2.fromOffset(220,36),ZIndex=45,Parent=G})
-local scale=New("UIScale",{Scale=.92,Parent=root})
-local group=New("CanvasGroup",{Name="Surface",Size=UDim2.fromScale(1,1),GroupTransparency=1,Parent=root},{c.Corner(11)})
-Bind(group,{BackgroundColor3="Window",BackgroundTransparency="WindowT"})
-local edgeFrame=New("Frame",{Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Parent=root},{c.Corner(11)})
-local edge=c.GlassEdge(edgeFrame,1.2)
-local logo=c.MakeLogo(c.LogoImage,{Position=UDim2.fromOffset(10,7),Size=UDim2.fromOffset(22,22),Parent=group})
-Bind(logo,logo:IsA("ImageLabel")and{ImageColor3="Accent"}or{TextColor3="Accent"})
-local brand=Bind(Label({Name="Brand",Position=UDim2.fromOffset(42,0),Size=UDim2.new(1,-94,1,0),
-Text="LUNA HUB",TextSize=14,FontFace=c.Bold,TextTruncate=Enum.TextTruncate.AtEnd,Parent=group}),{TextColor3="Text"})
-local chip=New("Frame",{Name="Status",AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-34,.5,0),
-Size=UDim2.fromOffset(16,16),Parent=group},{c.Corner("full")})
-Bind(chip,{BackgroundColor3="Field",BackgroundTransparency="FieldT"})
-local dot=New("Frame",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
-Size=UDim2.fromOffset(6,6),BackgroundColor3=Color3.fromRGB(137,141,163),Parent=chip},{c.Corner("full")})
-local status=Bind(Label({Position=UDim2.fromOffset(10,0),Size=UDim2.new(1,-30,1,0),Text="Sẵn sàng",
-TextSize=12,Visible=false,TextTruncate=Enum.TextTruncate.AtEnd,Parent=chip}),{TextColor3="SubText"})
-local chevron=Bind(c.IconLabel("chevron-down",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-12,.5,0),
-Size=UDim2.fromOffset(12,12),Parent=group}),{ImageColor3="SubText"})
-local hit=New("TextButton",{Name="OpenOrDrag",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,
-AutoButtonColor=false,Text="",ZIndex=6,Parent=root})
-local links={}
-local function connect(signal,fn)
-local link=signal:Connect(fn);links[#links+1]=link;return link
+local Motion=c.Motion
+local self={Width=132,Height=30,Groups={},TabGroups={},Dragging=false}
+local links,cleanups={},{}
+local sliderOwner
+local panels={}
+local function connect(signal,fn)local link=signal:Connect(fn);links[#links+1]=link;return link end
+local function alive()return not self.Destroyed and not W.Destroyed and H.Parent~=nil end
+local function field(class,props,role,children)
+return Bind(New(class,props,children),{BackgroundColor3=role or"Sidebar",BackgroundTransparency="SidebarT"})
 end
-local function alive()return not self.Destroyed and not W.Destroyed and root.Parent~=nil end
+local function text(props,role)return Bind(Label(props),{TextColor3=role or"SubText"})end
+local function icon(name,props)return Bind(c.IconLabel(name,props),{ImageColor3="SubText"})end
+local function button(name,parent,pos,size,callback)
+local b=New("TextButton",{Name=name,Position=pos,Size=size,BackgroundTransparency=1,AutoButtonColor=false,Text="",Parent=parent})
+Motion:Pressable(b)
+local hover=New("Frame",{Name="Hover",Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.fromRGB(169,145,245),
+BackgroundTransparency=1,ZIndex=0,Parent=b},{c.Corner(5)})
+connect(b.MouseEnter,function()local p=Motion:Spec('Hover');Tween(hover,p.Duration,{BackgroundTransparency=1-p.Distance},p.Easing)end)
+connect(b.MouseLeave,function()local p=Motion:Spec('Hover');Tween(hover,p.Duration,{BackgroundTransparency=1},p.Easing)end)
+if callback then connect(b.MouseButton1Click,function()
+if alive()and(not b:IsDescendantOf(H)or W.Visible)then callback()end
+end)end
+return b
+end
+local function shown(part,on,animated,family,offset)
+local state=panels[part]
+if not state then state={Base=part.Position};panels[part]=state end
+if animated and state.On==on then return end
+state.On=on;state.Epoch=(state.Epoch or 0)+1;local epoch=state.Epoch
+local p=Motion:Spec(family);local delta=offset or Motion:Offset(family,-1,.3)
+Motion:Cancel(part,{Position=true,GroupTransparency=true,Rotation=true})
+local scale=part:FindFirstChild('LunaMotionScale');if scale then Motion:Cancel(scale)end
+if not animated then
+part.Visible=on;part.Position=state.Base;part.Rotation=0;part.GroupTransparency=on and 0 or 1
+if scale then scale.Scale=1 end;return
+end
+if on then
+local hidden=not part.Visible
+if hidden then part.Position=state.Base+delta;part.GroupTransparency=1 end
+part.Visible=true;Motion:Enter(part,family,state.Base,-1,1,nil,.3,hidden)
+else
+Tween(part,p.Duration,{Position=state.Base+delta,GroupTransparency=1,Rotation=0},p.Easing)
+if scale then Tween(scale,p.Duration,{Scale=1-p.Zoom*.4},p.Easing)end
+task.delay(p.Duration,function()if alive()and state.Epoch==epoch and not state.On then part.Visible=false end end)
+end
+end
+c.Header.Visible=false;c.SubHeader.Visible=false;c.SideContent.Visible=false;c.Sidebar.Visible=false
+local header=field("CanvasGroup",{Name="VideoHeader",Size=UDim2.new(1,0,0,42),ZIndex=12,Parent=H},"Sidebar",{c.Corner(8)})
+local brand=text({Position=UDim2.fromOffset(14,0),Size=UDim2.new(.28,-18,1,0),Text="LUNA HUB",TextSize=12,
+TextTruncate=Enum.TextTruncate.AtEnd,Parent=header},"Text")
+local dragHit=button("HeaderDrag",header,UDim2.fromOffset(0,0),UDim2.new(.28,0,1,0))
+c.SearchFrame.Parent=header;c.SearchFrame.Position=UDim2.new(.34,0,0,7);c.SearchFrame.Size=UDim2.new(.28,0,0,28)
+c.SearchFrame.BackgroundTransparency=1;c.SearchInput.PlaceholderText="Search";c.SearchInput.TextSize=11
+local profileButton=button("ProfileButton",header,UDim2.new(1,-112,0,0),UDim2.fromOffset(112,42))
+local player=game:GetService("Players").LocalPlayer
+local display=player.DisplayName or player.Name
+text({Name="PlayerName",Position=UDim2.fromOffset(2,3),Size=UDim2.fromOffset(76,18),Text=display,TextSize=11,
+TextXAlignment=Enum.TextXAlignment.Right,TextTruncate=Enum.TextTruncate.AtEnd,Parent=profileButton},"Text")
+text({Position=UDim2.fromOffset(2,20),Size=UDim2.fromOffset(76,13),Text="LUNA",TextSize=9,
+TextXAlignment=Enum.TextXAlignment.Right,Parent=profileButton})
+local avatar=New("ImageLabel",{Name="Avatar",Position=UDim2.fromOffset(84,9),Size=UDim2.fromOffset(24,24),
+Image="rbxthumb://type=AvatarHeadShot&id="..tostring(player.UserId).."&w=100&h=100",BackgroundTransparency=1,Parent=profileButton},{c.Corner(5)})
+local collapse=button("Collapse",header,UDim2.new(1,-144,0,7),UDim2.fromOffset(30,28),function()W:Toggle()end)
+icon("minimize-2",{Position=UDim2.fromOffset(8,6),Size=UDim2.fromOffset(14,14),Parent=collapse})
+local menu=button("CompactNavigation",header,UDim2.fromOffset(4,7),UDim2.fromOffset(32,28),function()
+self.CompactNavigation=not self.CompactNavigation;self:Sync(true)
+end)
+icon("menu",{Position=UDim2.fromOffset(8,6),Size=UDim2.fromOffset(14,14),Parent=menu})
+local nav=field("CanvasGroup",{Name="DetachedNavigation",AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(0,-10,.5,0),
+Size=UDim2.fromOffset(130,100),ZIndex=15,Parent=H},"Sidebar",{c.Corner(7)})
+local navScroll=New("ScrollingFrame",{Name="Groups",Position=UDim2.fromOffset(0,8),Size=UDim2.new(1,0,1,-16),
+CanvasSize=UDim2.new(),ScrollBarThickness=2,BorderSizePixel=0,BackgroundTransparency=1,Parent=nav})
+local dockGroup=New('CanvasGroup',{Name='DockTransition',AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,1,5),
+Size=UDim2.fromOffset(260,27),BackgroundTransparency=1,ZIndex=15,Parent=H})
+local dock=field("Frame",{Name="SubpageDock",AnchorPoint=Vector2.new(.5,0),Position=UDim2.fromScale(.5,0),
+Size=UDim2.fromOffset(80,27),Parent=dockGroup},"Sidebar",{c.Corner(5)})
+local profile=field("CanvasGroup",{Name="ProfilePopover",AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-8,0,43),
+Size=UDim2.fromOffset(226,288),ZIndex=65,Visible=false,Parent=H},"Sidebar",{c.Corner(6)})
+function self:SetProfile(on,animated)
+self.ProfileOpen=on and W.Visible or false
+if not self.ProfileOpen then for _,release in ipairs(cleanups)do release()end end
+shown(profile,self.ProfileOpen,animated,'Popover')
+if self.ProfileOpen then
+Motion:SetMeter(profile,function(fps,ms)
+if alive()and self.ProfileOpen and self.FrameLabel then self.FrameLabel.Text=string.format('FPS %.0f  |  %.1f ms',fps,ms)end
+end)
+else Motion:SetMeter(nil)end
+end
+text({Position=UDim2.fromOffset(14,12),Size=UDim2.fromOffset(198,18),Text=display,TextSize=13,Parent=profile},"Text")
+text({Position=UDim2.fromOffset(14,32),Size=UDim2.fromOffset(198,15),Text="@"..player.Name,TextSize=10,Parent=profile})
+text({Position=UDim2.fromOffset(14,60),Size=UDim2.fromOffset(198,16),Text="User ID    "..tostring(player.UserId),TextSize=11,Parent=profile})
+text({Position=UDim2.fromOffset(14,80),Size=UDim2.fromOffset(198,16),Text="Account age    "..tostring(player.AccountAge or 0).." days",TextSize=11,Parent=profile})
+local function settingsTrack(name,y,min,max,get,set,format)
+local label=text({Position=UDim2.fromOffset(14,y),Size=UDim2.fromOffset(198,17),Text=name,TextSize=11,Parent=profile})
+local track=field("Frame",{Name=name.."Track",Position=UDim2.fromOffset(14,y+23),Size=UDim2.fromOffset(198,5),Parent=profile},"Control",{c.Corner("full")})
+local fill=field("Frame",{Size=UDim2.fromScale(0,1),Parent=track},"Accent",{c.Corner("full")})
+local knob=field("Frame",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(0,.5),Size=UDim2.fromOffset(10,10),Parent=track},"Knob",{c.Corner("full")})
+local hit=button(name.."Slider",profile,UDim2.fromOffset(8,y+14),UDim2.fromOffset(210,28))
+local function refresh()
+local value=math.clamp(get(),min,max);local t=(value-min)/(max-min)
+fill.Size=UDim2.fromScale(t,1);knob.Position=UDim2.fromScale(t,.5);label.Text=name.."    "..format(value)
+end
+local owner,endLink,release
+local function update(input)
+if track.AbsoluteSize.X<=0 then return end
+local t=math.clamp((input.Position.X-track.AbsolutePosition.X)/track.AbsoluteSize.X,0,1)
+set(min+t*(max-min));refresh()
+if self.StyleId then self.StyleId.Text=Motion:StyleName()..'  ›'end
+end
+connect(hit.InputBegan,function(input)
+if not alive()or owner or sliderOwner or Motion.Pointer or self.Dragging or self.Resizing or not c.IsClick(input)then return end
+owner=input;sliderOwner=input;Motion:Hold(profile,hit);update(input)
+endLink=input.Changed:Connect(function()
+if input.UserInputState==Enum.UserInputState.End or input.UserInputState==Enum.UserInputState.Cancel then
+release(input.UserInputState==Enum.UserInputState.End)
+end
+end)
+end)
+connect(c.UserInputService.InputChanged,function(input)
+if not alive()or not owner then return end
+if owner.UserInputType==Enum.UserInputType.Touch and input~=owner then return end
+if owner.UserInputType~=Enum.UserInputType.Touch and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+local expected=owner
+Motion:Queue(profile,hit,function()if alive()and owner==expected then update(input)end end)
+end)
+release=function(commit)
+if commit==true and alive()then Motion:Flush(profile,hit)else Motion:Drop(profile,hit)end
+Motion:Release(profile,hit)
+if sliderOwner==owner then sliderOwner=nil end;owner=nil
+if endLink then endLink:Disconnect();endLink=nil end
+end
+cleanups[#cleanups+1]=release
+connect(c.UserInputService.WindowFocusReleased,release)
+refresh();return refresh
+end
+local refreshScale=settingsTrack("Interface scale",110,.5,1.5,function()return W.UserScale end,function(v)W:SetScale(v)end,function(v)return math.floor(v*100+.5).."%"end)
+local function alpha(v)W:SetOpacity(1-v)end
+local refreshAlpha=settingsTrack("Transparency",155,0,1,function()return 1-(W.Opacity or 1)end,alpha,function(v)return math.floor(v*100+.5).."%"end)
+local refreshMotion=settingsTrack("Motion style",200,1,Motion.StyleCount,function()return Motion.StyleIndex end,function(v)
+local before=Motion.StyleIndex;Motion:SetStyle(v)
+if before~=Motion.StyleIndex then W:ReplayMotion()end
+end,function()return''end)
+local styleId=button('MotionStyle',profile,UDim2.fromOffset(104,196),UDim2.fromOffset(108,23))
+styleId.Text=Motion:StyleName()..'  ›';styleId.TextSize=11;styleId.FontFace=brand.FontFace
+Bind(styleId,{TextColor3='Text'})
+self.StyleId=styleId
+connect(styleId.MouseButton1Click,function()
+if alive()and W.Visible then
+Motion:SetStyle(Motion.StyleIndex%Motion.StyleCount+1);styleId.Text=Motion:StyleName()..'  ›';refreshMotion();W:ReplayMotion()
+end
+end)
+self.FrameLabel=text({Name='FrameTime',Position=UDim2.fromOffset(14,232),Size=UDim2.fromOffset(198,13),Text='FPS —  |  — ms',TextSize=10,Parent=profile})
+local reset=button("ResetInterface",profile,UDim2.fromOffset(14,249),UDim2.fromOffset(198,28),function()
+self.UserPlaced=false;Motion:SetStyle(Motion.DefaultStyle);styleId.Text=Motion:StyleName()..'  ›';alpha(0);W:SetScale(1);refreshScale();refreshAlpha();refreshMotion();self:Resize(true)
+end)
+text({Size=UDim2.fromScale(1,1),Text="Reset interface",TextSize=11,TextXAlignment=Enum.TextXAlignment.Center,Parent=reset},"Text")
+connect(profileButton.MouseButton1Click,function()
+if alive()and W.Visible then W:_closeMenu();self:SetProfile(not self.ProfileOpen,true);refreshScale();refreshAlpha();refreshMotion();styleId.Text=Motion:StyleName()..'  ›'end
+end)
+connect(c.UserInputService.InputBegan,function(input,processed)
+if not alive()or not self.ProfileOpen then return end
+if input.KeyCode==Enum.KeyCode.Escape then self:SetProfile(false,true);return end
+if not c.IsClick(input)then return end
+local function inside(item)
+local p,size=item.AbsolutePosition,item.AbsoluteSize
+return input.Position.X>=p.X and input.Position.X<=p.X+size.X and input.Position.Y>=p.Y and input.Position.Y<=p.Y+size.Y
+end
+if not inside(profile)and not inside(profileButton)then self:SetProfile(false,true)end
+end)
+local root=field("CanvasGroup",{Name="LunaReopen",AnchorPoint=Vector2.new(.5,0),Position=UDim2.new(.5,0,0,12),
+Size=UDim2.fromOffset(132,30),ZIndex=45,Parent=G},"Sidebar",{c.Corner(6)})
+local open=button("OpenOrDrag",root,UDim2.fromOffset(0,0),UDim2.fromScale(1,1))
+text({Position=UDim2.fromOffset(12,0),Size=UDim2.new(1,-30,1,0),Text="LUNA HUB",TextSize=12,Parent=open},"Text")
+icon("chevron-down",{Position=UDim2.new(1,-22,.5,-6),Size=UDim2.fromOffset(12,12),Parent=open})
 local function viewport()return G.AbsoluteSize end
+local function posXY(item)local v=viewport();local p=item.Position;return Vector2.new(p.X.Scale*v.X+p.X.Offset,p.Y.Scale*v.Y+p.Y.Offset)end
 local function safe()
-local y=12
-pcall(function()local inset=game:GetService("GuiService"):GetGuiInset();y=math.max(y,inset.Y+8)end)
-return y
-end
-local function posXY(item)
-local v=viewport();local p=item.Position
-return Vector2.new(p.X.Scale*v.X+p.X.Offset,p.Y.Scale*v.Y+p.Y.Offset)
+local top,bottom,left,right=12,12,12,12
+pcall(function()
+local a,b=game:GetService("GuiService"):GetGuiInset()
+if a then top=math.max(top,a.Y+8);left=math.max(left,a.X+8)end
+if b then bottom=math.max(bottom,b.Y+8);right=math.max(right,b.X+8)end
+end)
+return top,bottom,left,right
 end
 function self:Center()return root.Position end
 function self:StartSize(s)return UDim2.fromOffset(self.Width/s,self.Height/s)end
-function self:FitForOpen()
-if not alive()then return end
+function self:Clamp(point)
 local v=viewport();local size=c.FullSize();local s=c.FitScale()
+local extra=self.Portrait and 0 or 140*s
 local w,h=size.X.Offset*s,size.Y.Offset*s
-local bottom=c.BottomMargin and c.BottomMargin()or 12
-local p=posXY(root)
-p=Vector2.new(math.clamp(p.X,w/2+12,math.max(w/2+12,v.X-w/2-12)),
-math.clamp(p.Y,safe()+self.Height/2,math.max(safe()+self.Height/2,v.Y-h-self.Height/2-12-bottom)))
-root.Position=UDim2.fromOffset(p.X,p.Y)
-W._restorePos=UDim2.new(.5,p.X-v.X/2,.5,p.Y+self.Height/2+12+h/2-v.Y/2)
-if not W.Visible then H.Position=W._restorePos end
+local top,bottom,left,right=safe()
+local minX,maxX=left+extra+w/2,v.X-right-w/2
+local minY,maxY=top+h/2,v.Y-bottom-32*s-h/2
+return Vector2.new(math.clamp(point.X,minX,math.max(minX,maxX)),math.clamp(point.Y,minY,math.max(minY,maxY)))
 end
-function self:Sync()
-if alive()then Tween(chevron,.3,{Rotation=W.Visible and 180 or 0})end
-end
-function self:Show()
+function self:Resize(initial,preserveMotion)
 if not alive()then return end
-root.Visible=true
-if not self.Shown then
-self.Shown=true
-Tween(scale,.6,{Scale=1},Enum.EasingStyle.Back)
-Tween(group,.3,{GroupTransparency=0})
-Tween(edge,.35,{Transparency=0})
+for _,tab in ipairs(W.Tabs)do Motion:ResetPage(tab._page,tab._columns)end
+local v=viewport();self.Portrait=v.X<v.Y
+local size=c.FullSize();local s=c.FitScale();H.Size=size
+if not preserveMotion then Motion:Cancel(c.Scale);c.Scale.Scale=s end
+menu.Visible=self.Portrait;brand.Position=UDim2.fromOffset(self.Portrait and 40 or 14,0)
+brand.Size=UDim2.new(.28,self.Portrait and 8 or-18,1,0)
+c.SearchFrame.Visible=not self.Portrait or size.X.Offset>=390
+local p=(initial or not self.UserPlaced)and Vector2.new(v.X/2+(self.Portrait and 0 or 70*s),v.Y/2)or posXY(H)
+p=self:Clamp(p);H.Position=UDim2.fromOffset(p.X,p.Y);W._restorePos=H.Position
+nav.AnchorPoint=self.Portrait and Vector2.new(0,0)or Vector2.new(1,.5)
+nav.Position=self.Portrait and UDim2.fromOffset(6,43)or UDim2.new(0,-10,.5,0)
+if panels[nav]then panels[nav].Base=nav.Position end
+local top,bottom,left,right=safe()
+local rp=initial and Vector2.new(v.X/2,top)or posXY(root)
+root.Position=UDim2.fromOffset(math.clamp(rp.X,left+66,math.max(left+66,v.X-right-66)),math.clamp(rp.Y,top,math.max(top,v.Y-bottom-30)))
+if panels[root]then panels[root].Base=root.Position end
+self:LayoutGroups();if not preserveMotion then self:Sync()end
 end
-self:Sync()
-end
-function self:SetStatus(text,active)
+function self:FitForOpen()self:Resize(false,true)end
+function self:Sync(animated)
 if not alive()then return end
-text=tostring(text or"Sẵn sàng")
-if status.Text~=text then status.Text=text end
-local color=active and Color3.fromRGB(113,224,171)or Color3.fromRGB(137,141,163)
-if dot.BackgroundColor3~=color then Tween(dot,.2,{BackgroundColor3=color})end
+shown(root,not W.Visible,animated,'Reopen')
+shown(header,W.Visible,animated,'WindowOpen',UDim2.fromOffset(0,-3))
+shown(dockGroup,W.Visible,animated,'Dock',UDim2.fromOffset(0,Motion:Spec('Dock').Distance))
+shown(nav,W.Visible and(not self.Portrait or self.CompactNavigation==true),animated,'CompactNav')
+if not W.Visible then self:SetProfile(false,animated)end
 end
-function self:Resize(initial)
-if not alive()then return end
-local v=viewport();self.Width=math.max(160,math.min(220,v.X-24))
-self.Height=36
-root.Size=UDim2.fromOffset(self.Width,self.Height)
-brand.Size=UDim2.new(1,-94,1,0)
-logo.Position=UDim2.fromOffset(10,(self.Height-22)/2)
-local p=initial and Vector2.new(v.X/2,safe()+self.Height/2)or posXY(root)
-p=Vector2.new(math.clamp(p.X,self.Width/2+12,math.max(self.Width/2+12,v.X-self.Width/2-12)),
-math.clamp(p.Y,safe()+self.Height/2,math.max(safe()+self.Height/2,v.Y-self.Height/2-12)))
-root.Position=UDim2.fromOffset(p.X,p.Y)
-c.ApplySize(false)
-local size=c.FullSize();local s=c.FitScale()
-local w,h=size.X.Offset*s,size.Y.Offset*s
-local x=initial and p.X or posXY(H).X
-local y=initial and(p.Y+self.Height/2+12+h/2)or posXY(H).Y
-x=math.clamp(x,w/2+12,math.max(w/2+12,v.X-w/2-12))
-y=math.clamp(y,safe()+self.Height+12+h/2,math.max(safe()+self.Height+12+h/2,v.Y-h/2-12))
-H.Position=UDim2.new(.5,x-v.X/2,.5,y-v.Y/2)
-W._restorePos=H.Position
-if initial or W.Visible then self:FitForOpen();H.Position=W._restorePos end
+function self:Show()self:Sync()end
+function self:SetStatus(value,active)self.Status=value;self.Active=active end
+function self:LayoutGroups()
+local sorted={};for _,group in pairs(self.Groups)do sorted[#sorted+1]=group end
+table.sort(sorted,function(a,b)return a.Order<b.Order end)
+local full=#sorted*40+16;local available=math.max(88,c.FullSize().Y.Offset-40)
+nav.Size=UDim2.fromOffset(130,math.min(full,available));navScroll.CanvasSize=UDim2.fromOffset(0,#sorted*40)
+for i,group in ipairs(sorted)do group.Button.Position=UDim2.fromOffset(0,(i-1)*40)end
 end
-local inputOwner,start,barStart,bodyStart,moved,endLink,tapToggle
+function self:Select(tab)
+local group=self.TabGroups[tab];if not group then return end;group.Last=tab
+for _,entry in pairs(self.Groups)do
+local on=entry==group
+if entry.Selected~=on then
+entry.Selected=on;local p=Motion:Spec('Nav')
+Tween(entry.Marker,p.Duration,{BackgroundTransparency=on and 0 or 1,Size=UDim2.fromOffset(2,on and 16+p.Distance or 12)},p.Easing)
+Tween(entry.Label,p.Duration,{TextColor3=on and Color3.fromRGB(226,226,237)or Color3.fromRGB(144,150,157)},p.Easing)
+end
+end
+for _,entry in pairs(self.Groups)do for _,page in ipairs(entry.Pages)do
+if page.Button then page.Button.Visible=false end
+end end
+local width=0
+for _,page in ipairs(group.Pages)do
+local on=page.Tab==tab;local w=on and math.clamp(#page.Label*6+42,70,160)or 34
+if not page.Button then
+page.Button=button("Subpage_"..page.Tab.Name,dock,UDim2.fromOffset(width,0),UDim2.fromOffset(w,27),function()W:SelectTab(page.Tab)end)
+page.Button.ClipsDescendants=true
+local img=icon(page.Icon,{Position=UDim2.fromOffset(10,7),Size=UDim2.fromOffset(13,13),Parent=page.Button})
+page.IconScale=New('UIScale',{Scale=1,Parent=img})
+page.TitleLabel=text({Position=UDim2.fromOffset(29,0),Size=UDim2.new(1,-32,1,0),Text=page.Label,TextSize=10,Parent=page.Button},"Text")
+end
+page.Button.Visible=true
+local p=Motion:Spec('Dock')
+local target={Position=UDim2.fromOffset(width,on and 0 or p.Distance*.5),Size=UDim2.fromOffset(w,27)}
+if W.Visible then Tween(page.Button,p.Duration,target,p.Easing)else for k,v in pairs(target)do page.Button[k]=v end end
+page.TitleLabel.Visible=true;Tween(page.TitleLabel,p.Duration,{TextTransparency=on and 0 or 1},p.Easing)
+if on and self.SelectedTab~=tab then
+local pulse=Motion:Spec('Icon');Motion:Cancel(page.IconScale);page.IconScale.Scale=1-pulse.Distance
+Tween(page.IconScale,pulse.Duration,{Scale=1},pulse.Easing)
+end
+width+=w
+end
+local p=Motion:Spec('Dock');Tween(dock,p.Duration,{Size=UDim2.fromOffset(math.max(width,40),27)},p.Easing)
+self.SelectedTab=tab;self:SetProfile(false,true);self.CompactNavigation=false;self:Sync(true)
+end
+function self:Register(tab,name,label,image,order)
+if self.TabGroups[tab]then return end
+local group=self.Groups[name]
+if not group then
+group={Name=name,Order=order or#W.Tabs,Pages={}}
+group.Button=button("Group_"..name,navScroll,UDim2.fromOffset(0,0),UDim2.new(1,0,0,40),function()
+if group.Last or group.Pages[1]then W:SelectTab(group.Last or group.Pages[1].Tab);self.CompactNavigation=false;self:Sync(true)end
+end)
+group.Marker=field("Frame",{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,0,.5,0),Size=UDim2.fromOffset(2,16),BackgroundTransparency=1,Parent=group.Button},"Accent")
+icon(image,{Position=UDim2.fromOffset(15,13),Size=UDim2.fromOffset(14,14),Parent=group.Button})
+group.Label=text({Position=UDim2.fromOffset(38,0),Size=UDim2.new(1,-42,1,0),Text=name,TextSize=12,Parent=group.Button})
+self.Groups[name]=group
+end
+group.Pages[#group.Pages+1]={Tab=tab,Label=label or tab.Name,Icon=image};self.TabGroups[tab]=group;tab._button.Visible=false
+self:LayoutGroups();if W.Current==tab then self:Select(tab)elseif self.TabGroups[W.Current]then self:Select(W.Current)end
+end
+local inputOwner,start,bodyStart,openStart,moved,endLink,toggle
+function self:PointerBusy()return self.Dragging or self.Resizing or sliderOwner~=nil or Motion.Pointer~=nil end
 function self:BeginDrag(input,toggleOnTap)
-if not alive()or inputOwner or not c.IsClick(input)then return end
-W:_closeMenu()
-inputOwner=input;start=input.Position;barStart=posXY(root);bodyStart=posXY(H);moved=false
-tapToggle=toggleOnTap~=false
-self.Dragging=true
-local link
-link=input.Changed:Connect(function()
+if not alive()or inputOwner or sliderOwner or Motion.Pointer or self.Resizing or not c.IsClick(input)then return end
+W:_closeMenu();self:SetProfile(false,false);inputOwner=input;start=input.Position;bodyStart=posXY(H);openStart=posXY(root)
+moved=false;toggle=toggleOnTap==true;self.Dragging=true;Motion:Hold(H,'Drag')
+endLink=input.Changed:Connect(function()
 if input.UserInputState==Enum.UserInputState.End or input.UserInputState==Enum.UserInputState.Cancel then
-link:Disconnect()
-if inputOwner~=input then return end
+if input.UserInputState==Enum.UserInputState.End and alive()then Motion:Flush(H,'Drag');Motion:Flush(root,'Drag')
+else Motion:Drop(H,'Drag');Motion:Drop(root,'Drag')end
+Motion:Release(H,'Drag')
+if endLink then endLink:Disconnect();endLink=nil end;if inputOwner~=input then return end
 inputOwner=nil;self.Dragging=false
-endLink=nil
-if not alive()then return end
-Tween(scale,.3,{Scale=1},Enum.EasingStyle.Back)
-if not moved and tapToggle and input.UserInputState==Enum.UserInputState.End then W:Toggle()end
+if alive()and not moved and toggle and input.UserInputState==Enum.UserInputState.End then W:Toggle()end
 end
 end)
-endLink=link
 end
-connect(hit.InputBegan,function(input)self:BeginDrag(input)end)
+connect(dragHit.InputBegan,function(input)self:BeginDrag(input,false)end)
+connect(open.InputBegan,function(input)self:BeginDrag(input,true)end)
 connect(c.UserInputService.InputChanged,function(input)
 if not alive()or not inputOwner then return end
-local touch=inputOwner.UserInputType==Enum.UserInputType.Touch
-if touch and input~=inputOwner or not touch and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
-local d=input.Position-start
-if not moved and d.Magnitude<=6 then return end
-if not moved then
-moved=true;W._morphEnd=0
-Tween(H,0,{Position=H.Position})
-Tween(scale,0,{Scale=1})
-end
-local v=viewport();local size=c.FullSize();local s=c.FitScale()
-local minX,maxX=self.Width/2+12,v.X-self.Width/2-12
-local minY,maxY=safe()+self.Height/2,v.Y-self.Height/2-12
-if W.Visible then
-local w,h=size.X.Offset*s,size.Y.Offset*s
-minX=math.max(minX,barStart.X-bodyStart.X+w/2+12)
-maxX=math.min(maxX,barStart.X-bodyStart.X+v.X-w/2-12)
-minY=math.max(minY,barStart.Y-bodyStart.Y+h/2+safe())
-maxY=math.min(maxY,barStart.Y-bodyStart.Y+v.Y-h/2-12)
-end
-local x=math.clamp(barStart.X+d.X,minX,math.max(minX,maxX))
-local y=math.clamp(barStart.Y+d.Y,minY,math.max(minY,maxY))
-root.Position=UDim2.fromOffset(x,y)
-if W.Visible then
-local bx,by=bodyStart.X+x-barStart.X,bodyStart.Y+y-barStart.Y
-H.Position=UDim2.new(.5,bx-v.X/2,.5,by-v.Y/2);W._restorePos=H.Position
+if inputOwner.UserInputType==Enum.UserInputType.Touch and input~=inputOwner then return end
+if inputOwner.UserInputType~=Enum.UserInputType.Touch and input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+local d=input.Position-start;if not moved and d.Magnitude<=6 then return end;moved=true
+local expected=inputOwner;local visible=W.Visible;local target=visible and H or root
+Motion:Queue(target,'Drag',function()
+if not alive()or inputOwner~=expected or W.Visible~=visible then return end
+if visible then self.UserPlaced=true;local p=self:Clamp(bodyStart+d);H.Position=UDim2.fromOffset(p.X,p.Y);W._restorePos=H.Position
+else
+local v=viewport();local top,bottom,left,right=safe()
+root.Position=UDim2.fromOffset(math.clamp(openStart.X+d.X,left+66,math.max(left+66,v.X-right-66)),math.clamp(openStart.Y+d.Y,top,math.max(top,v.Y-bottom-30)))
+if panels[root]then panels[root].Base=root.Position end
 end
 end)
-connect(hit.MouseEnter,function()if alive()then Tween(scale,.35,{Scale=1.015},Enum.EasingStyle.Back)end end)
-connect(hit.MouseLeave,function()if alive()then Tween(scale,.35,{Scale=1},Enum.EasingStyle.Back)end end)
-connect(c.UserInputService.WindowFocusReleased,function()
-if endLink then endLink:Disconnect();endLink=nil end
-inputOwner=nil;self.Dragging=false
-if alive()then Tween(scale,.2,{Scale=1})end
 end)
-self.Parts={Root=root,Scale=scale,Group=group,Edge=edge}
+connect(c.UserInputService.WindowFocusReleased,function()Motion:Drop(H,'Drag');Motion:Drop(root,'Drag');Motion:Release(H,'Drag');inputOwner=nil;self.Dragging=false;if endLink then endLink:Disconnect();endLink=nil end end)
+self.Parts={Root=root,Header=header,Navigation=nav,NavScroll=navScroll,Dock=dock,Profile=profile,ProfileButton=profileButton,
+Menu=menu,DragHit=dragHit,Avatar=avatar,Search=c.SearchFrame,DockGroup=dockGroup,FrameLabel=self.FrameLabel,StyleId=styleId}
 function self:Destroy()
-if self.Destroyed then return end
-self.Destroyed=true;inputOwner=nil;self.Dragging=false
+if self.Destroyed then return end;self.Destroyed=true;inputOwner=nil;sliderOwner=nil
+Motion:SetMeter(nil);Motion:Drop(H,'Drag');Motion:Drop(root,'Drag');Motion:Release(H,'Drag')
+if self.ReleaseResize then self.ReleaseResize()end
 if endLink then endLink:Disconnect();endLink=nil end
-for _,link in ipairs(links)do link:Disconnect()end
-table.clear(links);root:Destroy()
+for _,release in ipairs(cleanups)do release()end;table.clear(cleanups)
+for _,link in ipairs(links)do link:Disconnect()end;table.clear(links)
+root:Destroy();header:Destroy();nav:Destroy();dockGroup:Destroy();profile:Destroy()
 end
-self:Resize(true)
-return self
+self:Resize(true);return self
 end
 ]]):sub(2),"@EDUHub_New/Luna_Topbar.lua"))()({
-Window=Window,Gui=Gui,Holder=Holder,New=New,Bind=Bind,Label=Label,Tween=Tween,Corner=Corner,
+Window=Window,Gui=Gui,Holder=Holder,Main=Main,Scale=Scale,Motion=Motion,Sidebar=Sidebar,SideContent=SideContent,SearchFrame=SearchFrame,SearchInput=SearchInput,Header=Header,SubHeader=SubHeader,Pages=Pages,New=New,Bind=Bind,Label=Label,Tween=Tween,Corner=Corner,
 GlassEdge=GlassEdge,MakeLogo=MakeLogo,LogoImage=LogoImage,IconLabel=IconLabel,Bold=F(W_BOLD),
 FullSize=FullSize,FitScale=FitScale,ApplySize=ApplySize,IsClick=IsClick,UserInputService=UserInputService,
 BottomMargin=function()local v=ViewportSize();return IsTouch()and v.Y>=v.X and 152 or 12 end})
 Window.LunaTopbar=LunaTopbar
+Window.Motion=Motion
 local IslandParts=LunaTopbar.Parts
 local function IslandCenter()return LunaTopbar:Center()end
 local function ShowIsland()LunaTopbar:Show()end
@@ -14160,90 +14618,29 @@ local function GripVisible()
 return Window.Visible and not Window.Minimized
 end
 function Window:SetVisible(v)
-if v==self.Visible or self.Destroyed then
-return
-end
-if v then LunaTopbar:FitForOpen()end
-self.Visible=v
-LunaTopbar:Sync()
-self:_closeMenu()
-local useIsland=opts.Island~=false
+if v==self.Visible or self.Destroyed then return end
+self._visibilityEpoch=(self._visibilityEpoch or 0)+1;local epoch=self._visibilityEpoch
+self:_closeMenu();self.Visible=v
+if self._releaseSlider then self._releaseSlider()end
+if LunaTopbar.ReleaseResize then LunaTopbar.ReleaseResize()end
+local p=Motion:Spec(v and"WindowOpen"or"WindowClose")
 if v then
-HideIsland()
-Holder.Visible=true
-local s=FitScale()
-if self._collapsed and useIsland then
-Scale.Scale=s
-Holder.Position=IslandCenter()
-Holder.Size=IslandStartSize(s)
-Main.GroupTransparency=1
-Edge.Transparency=0.2
-local back=ClampPos(self._restorePos)
-if column and self.Docked then
-back=DockPos(back.Y.Offset)
-end
-Tween(Holder,0.6,{Position=back,Size=FullSize()},Enum.EasingStyle.Quint)
-Tween(Edge,0.5,{Transparency=0})
-task.delay(0.1,function()
-if self.Visible then
-Tween(Main,0.45,{GroupTransparency=0})
-end
-end)
-self._morphEnd=os.clock()+0.65
-else
-Holder.Size=FullSize()
-Scale.Scale=s*0.9
-if Theme.Current.Effect=="Slime"then
-Tween(Scale,1,{Scale=s},Enum.EasingStyle.Elastic)
-else
-Tween(Scale,0.55,{Scale=s},Enum.EasingStyle.Back)
-end
-Tween(Main,0.3,{GroupTransparency=0})
-Tween(Edge,0.35,{Transparency=0})
-end
-self._collapsed=false
+local wasHidden=not Holder.Visible
+LunaTopbar:FitForOpen();Holder.Visible=true;Holder.Size=FullSize()
+Motion:Cancel(Scale)
+if wasHidden then Scale.Scale=FitScale()*(1-p.Distance);Main.GroupTransparency=1 end
+Motion:ScaleIn(Scale,"WindowOpen",FitScale(),wasHidden)
+Tween(Main,p.Duration,{GroupTransparency=0},p.Easing)
 BlurTo(self.BlurEnabled)
-Band.Position=UDim2.fromScale(-0.45,0.3)
-Tween(Band,1.3,{Position=UDim2.fromScale(0.28,0.3)},Enum.EasingStyle.Quint)
-task.delay(0.55,function()
-if Grip and self.Visible then
-Grip.Visible=GripVisible()
-end
-end)
 else
 BlurTo(false)
-if Grip then
-Grip.Visible=false
-end
-if useIsland then
-if os.clock()>=(self._morphEnd or 0)then
-self._restorePos=Holder.Position
-end
-self._collapsed=true
-local s=Scale.Scale
-Tween(Holder,0.5,{
-Position=IslandCenter(),
-Size=LunaTopbar:StartSize(s),
-},Enum.EasingStyle.Quint,Enum.EasingDirection.InOut)
-Tween(Main,0.3,{GroupTransparency=1})
-task.delay(0.3,ShowIsland)
-task.delay(0.5,function()
-if not self.Visible then
-Holder.Visible=false
-Edge.Transparency=1
-end
-end)
-else
-Tween(Scale,0.22,{Scale=Scale.Scale*0.93},Enum.EasingStyle.Quad,Enum.EasingDirection.In)
-Tween(Edge,0.18,{Transparency=1})
-local t=Tween(Main,0.22,{GroupTransparency=1},Enum.EasingStyle.Quad,Enum.EasingDirection.In)
-t.Completed:Connect(function()
-if not self.Visible then
-Holder.Visible=false
-end
+Tween(Main,p.Duration,{GroupTransparency=1},p.Easing)
+Tween(Scale,p.Duration,{Scale=FitScale()*(1-p.Distance)},p.Easing)
+task.delay(p.Duration,function()
+if not self.Destroyed and self._visibilityEpoch==epoch and not self.Visible then Holder.Visible=false end
 end)
 end
-end
+LunaTopbar:Sync(true)
 end
 function Window:Toggle()
 self:SetVisible(not self.Visible)
@@ -14267,8 +14664,13 @@ UpdateChrome()
 ApplySize(true)
 end
 function Window:SetScale(s)
-self.UserScale=math.clamp(s,0.5,1.5)
-Tween(Scale,0.35,{Scale=FitScale()})
+local n=tonumber(s);if not n or n~=n or self.Destroyed then return end
+local before=Scale.Scale;self.UserScale=math.clamp(n,.5,1.5)
+LunaTopbar:Resize(false)
+if self.Visible then
+Scale.Scale=before;local p=Motion:Spec("Slider")
+Tween(Scale,math.max(.08,p.Duration*2),{Scale=FitScale()},p.Easing)
+end
 end
 function Window:SetBlur(on)
 self.BlurEnabled=on and true or false
@@ -14332,138 +14734,46 @@ Window:Zoom()
 end)
 local function StartDrag(input)LunaTopbar:BeginDrag(input,false)end
 Connect(DragZone.InputBegan,StartDrag)
-local MinSize=column and Vector2.new(250,280)or(compact and Vector2.new(420,260)or Vector2.new(600,380))
-Grip=New("Frame",{
-Name="WindowHandles",
-Size=UDim2.fromScale(1,1),
-BackgroundTransparency=1,
-ZIndex=5,
-Visible=false,
-Parent=Holder,
-})
-local ArcR=27
-local ArcBox=New("Frame",{
-AnchorPoint=Vector2.new(1,1),
-Position=UDim2.new(1,11,1,11),
-Size=UDim2.fromOffset(ArcR+4,ArcR+4),
-BackgroundTransparency=1,
-ClipsDescendants=true,
-Visible=opts.Resizable~=false,
-Parent=Grip,
-})
-local ArcFrame=New("Frame",{
-Position=UDim2.fromOffset(-ArcR,-ArcR),
-Size=UDim2.fromOffset(ArcR*2,ArcR*2),
-BackgroundTransparency=1,
-Parent=ArcBox,
-},{Corner("full")})
-local ArcStroke=New("UIStroke",{
-Thickness=3.5,
-Transparency=0.5,
-ApplyStrokeMode=Enum.ApplyStrokeMode.Border,
-Parent=ArcFrame,
-})
-Bind(ArcStroke,{Color="Text"})
-local function GripGlow(on)
-Tween(ArcStroke,0.2,{Transparency=on and 0.1 or 0.5})
+local resizeState,resizeEnd
+local function ReleaseResize(commit)
+if commit==true and not Window.Destroyed then Motion:Flush(Holder,"Resize")else Motion:Drop(Holder,"Resize")end
+Motion:Release(Holder,"Resize")
+resizeState=nil;LunaTopbar.Resizing=false
+if resizeEnd then resizeEnd:Disconnect();resizeEnd=nil end
 end
-local MoveBar=New("Frame",{
-Name="MoveBar",
-AnchorPoint=Vector2.new(0.5,0),
-Position=UDim2.new(0.5,0,1,9),
-Size=UDim2.new(0.26,0,0,5),
-BackgroundTransparency=0.5,
-BorderSizePixel=0,
-Parent=Grip,
-},{Corner("full")})
-Bind(MoveBar,{BackgroundColor3="Text"})
-local MoveHit=New("TextButton",{
-AnchorPoint=Vector2.new(0.5,0.5),
-Position=UDim2.fromScale(0.5,0.5),
-Size=UDim2.new(1,30,0,24),
-BackgroundTransparency=1,
-Text="",
-Parent=MoveBar,
-})
-Connect(MoveHit.InputBegan,StartDrag)
-Connect(MoveHit.MouseEnter,function()
-Tween(MoveBar,0.25,{BackgroundTransparency=0.15,Size=UDim2.new(0.32,0,0,5)})
-end)
-Connect(MoveHit.MouseLeave,function()
-Tween(MoveBar,0.3,{BackgroundTransparency=0.5,Size=UDim2.new(0.26,0,0,5)})
-end)
-local resizing
+LunaTopbar.ReleaseResize=ReleaseResize
 if opts.Resizable~=false then
-for _,c in ipairs({{0,0},{1,0},{0,1},{1,1}})do
-local ax,ay=c[1],c[2]
-local arcCorner=ax==1 and ay==1
-local hs=arcCorner and(compact and 46 or 40)or(compact and 26 or 18)
-local Handle=New("TextButton",{
-Name="Resize",
-AnchorPoint=Vector2.new(ax,ay),
-Position=arcCorner and UDim2.new(1,13,1,13)or UDim2.fromScale(ax,ay),
-Size=UDim2.fromOffset(hs,hs),
-BackgroundTransparency=1,
-Text="",
-ZIndex=6,
-Parent=Holder,
-})
-Connect(Handle.MouseEnter,function()
-if not resizing then
-GripGlow(true)
-end
-end)
-Connect(Handle.MouseLeave,function()
-if not resizing then
-GripGlow(false)
-end
-end)
-Connect(Handle.InputBegan,function(input)
-if not IsClick(input)or Window.Minimized or not Window.Visible then
-return
-end
-resizing={
-sx=ax==1 and 1 or-1,
-sy=ay==1 and 1 or-1,
-start=input.Position,
-w=Holder.Size.X.Offset,
-h=Holder.Size.Y.Offset,
-pos=Holder.Position,
-}
-Window:_closeMenu()
-GripGlow(true)
-local cn
-cn=Connect(input.Changed,function()
-if input.UserInputState==Enum.UserInputState.End or input.UserInputState==Enum.UserInputState.Cancel then
-cn:Disconnect()
-resizing=nil
-GripGlow(false)
-SnapDock()
-end
+local resize=New("TextButton",{Name="Resize",AnchorPoint=Vector2.new(1,1),Position=UDim2.fromScale(1,1),
+Size=UDim2.fromOffset(22,22),BackgroundTransparency=1,Text="",ZIndex=20,Parent=Holder})
+Connect(resize.InputBegan,function(input)
+if Window.Destroyed or not Window.Visible or not IsClick(input)or LunaTopbar:PointerBusy()then return end
+Window:_closeMenu();LunaTopbar:SetProfile(false,false)
+local v=Gui.AbsoluteSize;local p=Holder.Position
+resizeState={Input=input,Start=input.Position,Scale=Scale.Scale,Size=Holder.Size,
+Center=Vector2.new(p.X.Scale*v.X+p.X.Offset,p.Y.Scale*v.Y+p.Y.Offset)}
+LunaTopbar.Resizing=true;Motion:Hold(Holder,"Resize")
+resizeEnd=input.Changed:Connect(function()
+if input.UserInputState==Enum.UserInputState.End or input.UserInputState==Enum.UserInputState.Cancel then ReleaseResize(input.UserInputState==Enum.UserInputState.End)end
 end)
 end)
-end
 Connect(UserInputService.InputChanged,function(input)
-if not resizing or not IsMove(input)then
-return
-end
-local r=resizing
-local s=Scale.Scale
-local d=input.Position-r.start
-local vp=Gui.AbsoluteSize
-local bounds=LunaViewportBounds()
-local maxW,maxH=bounds.X/s,bounds.Y/s
-local w=math.clamp(r.w+r.sx*d.X/s,math.min(MinSize.X,math.max(240,maxW*.65)),maxW)
-local h=math.clamp(r.h+r.sy*d.Y/s,math.min(MinSize.Y,math.max(150,maxH*.65)),maxH)
-Holder.Size=UDim2.fromOffset(w,h)
-Holder.Position=UDim2.new(
-0.5,r.pos.X.Offset+r.sx*(w-r.w)*s/2,
-0.5,r.pos.Y.Offset+r.sy*(h-r.h)*s/2
-)
-BaseSize=Vector2.new(w,h)
-Window.Zoomed=false
+local r=resizeState
+if not r or not Window.Visible or Window.Destroyed then return end
+if r.Input.UserInputType==Enum.UserInputType.Touch then if input~=r.Input then return end
+elseif input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+local point=input.Position
+Motion:Queue(Holder,"Resize",function()
+if resizeState~=r or Window.Destroyed or not Window.Visible then return end
+local d=point-r.Start;local s=math.max(r.Scale,.1)
+local v=Gui.AbsoluteSize
+local w=math.clamp(r.Size.X.Offset+d.X/s,math.min(300,math.max(180,v.X-24)),1200)
+local h=math.clamp(r.Size.Y.Offset+d.Y/s,240,900)
+BaseSize=Vector2.new(w,h);Window.Zoomed=false;LunaTopbar.UserPlaced=true
+Holder.Position=UDim2.fromOffset(r.Center.X+(w-r.Size.X.Offset)*s/2,r.Center.Y+(h-r.Size.Y.Offset)*s/2)
 LunaTopbar:Resize(false)
 end)
+end)
+Connect(UserInputService.WindowFocusReleased,ReleaseResize)
 end
 Connect(UserInputService.InputBegan,function(input,gpe)
 if gpe or Window._binding then
@@ -14474,18 +14784,11 @@ Window:Toggle()
 end
 end)
 local function LayoutLuna()
-local v=ViewportSize();local small=v.X<620
-L.SideW=small and(v.X<380 and 88 or 104)or 148
-ContentX=8+L.SideW+18
-Sidebar.Size=UDim2.new(0,L.SideW,1,-16)
-Header.Position=UDim2.fromOffset(ContentX,14)
-Header.Size=UDim2.new(1,-ContentX-20,0,32)
-SubHeader.Position=UDim2.fromOffset(ContentX,45)
-SubHeader.Size=UDim2.new(1,-ContentX-20,0,18)
-Pages.Position=UDim2.fromOffset(ContentX-6,76)
-Pages.Size=UDim2.new(1,-ContentX-2,1,-82)
-Navigation.Text=small and"MENU"or"WORKSPACE"
-for _,tab in ipairs(Window.Tabs)do if tab._name then tab._name.TextSize=small and 12 or 14 end end
+ContentX=14
+Header.Visible=false;SubHeader.Visible=false
+Pages.Position=UDim2.fromOffset(14,48)
+Pages.Size=UDim2.new(1,-28,1,-58)
+if Window.ReflowColumns then Window:ReflowColumns()end
 end
 LayoutLuna()
 local cameraLink
@@ -14511,6 +14814,7 @@ Warning={WARNING,"alert-triangle"},
 Info={nil,"info"},
 }
 function Window:Notify(a,b,c)
+if self.Destroyed then return end
 local o=type(a)=="table"and a or{Title=a,Content=b,Duration=c}
 local T=Theme.Current
 local duration=o.Duration or 4
@@ -14530,7 +14834,7 @@ Size=UDim2.new(1,0,0,H),
 BackgroundTransparency=1,
 Parent=Wrap,
 })
-local SScale=New("UIScale",{Scale=0.85,Parent=Slide})
+local SScale=New("UIScale",{Scale=1-Motion:Spec("Notify").Distance*.01,Parent=Slide})
 local Group=New("CanvasGroup",{
 Size=UDim2.fromScale(1,1),
 BackgroundColor3=T.Window,
@@ -14640,28 +14944,27 @@ ZIndex=5,
 Parent=Slide,
 })
 Tween(Wrap,0.4,{Size=UDim2.new(1,0,0,H)})
-Tween(Slide,0.65,{Position=UDim2.fromOffset(0,0)},Enum.EasingStyle.Quint)
-Tween(SScale,0.7,{Scale=1},Enum.EasingStyle.Back)
+Tween(Slide,Motion:Spec("Notify").Duration,{Position=UDim2.fromOffset(0,0)},Motion:Spec("Notify").Easing)
+Tween(SScale,Motion:Spec("Notify").Duration,{Scale=1},Motion:Spec("Notify").Easing)
 Tween(Group,0.35,{GroupTransparency=0})
 Tween(NEdge,0.45,{Transparency=0})
 task.delay(0.2,function()
+if self.Destroyed or not NBand.Parent or T.Effect=="Flat"then return end
 Tween(NBand,1.1,{Position=UDim2.fromScale(1.3,0.5)},Enum.EasingStyle.Sine)
 end)
 Tween(Progress,duration,{Size=UDim2.new(0,0,0,2)},Enum.EasingStyle.Linear)
 local closed=false
 local function close()
-if closed then
-return
-end
+if closed or self.Destroyed or not Wrap.Parent then return end
 closed=true
 Tween(SScale,0.3,{Scale=0.9})
 Tween(Group,0.3,{GroupTransparency=1})
 Tween(NEdge,0.25,{Transparency=1})
 Tween(Slide,0.4,{Position=UDim2.fromOffset(L.Notify+50,0)},Enum.EasingStyle.Quint,Enum.EasingDirection.In)
 task.delay(0.3,function()
-local t=Tween(Wrap,0.25,{Size=UDim2.new(1,0,0,0)})
-t.Completed:Wait()
-Wrap:Destroy()
+if self.Destroyed or not Wrap.Parent then return end
+Tween(Wrap,.2,{Size=UDim2.new(1,0,0,0)})
+task.delay(.2,function()Motion:CancelTree(Wrap);Wrap:Destroy()end)
 end)
 end
 Click.MouseEnter:Connect(function()
@@ -14799,53 +15102,29 @@ end
 end)
 end
 function Window:SelectTab(tab)
-if type(tab)=="string"then
+if self.Destroyed then return end
+if type(tab)=="string"then for _,t in ipairs(self.Tabs)do if t.Name==tab then tab=t;break end end end
+if type(tab)~="table"or not table.find(self.Tabs,tab)or self.Current==tab then return end
+local previous=self.Current;self.Current=tab;self:_closeMenu()
+if self._releaseSlider then self._releaseSlider()end
 for _,t in ipairs(self.Tabs)do
-if t.Name==tab then
-tab=t
-break
+if t~=tab then Motion:ResetPage(t._page,t._columns);t._page.Visible=false end
 end
+tab._page.Visible=true;Motion:ResetPage(tab._page,tab._columns);Motion:Cancel(Pages)
+Header.Text=tab.Name;SubHeader.Text=tab.Description
+if previous and self.Visible then
+local p=Motion:Spec("Page");local direction=previous._order>tab._order and-1 or 1
+Motion:EnterPage(tab._page,tab._columns,direction);Pages.GroupTransparency=.18
+Tween(Pages,p.Duration,{GroupTransparency=0},p.Easing)
+else tab._page.Position=UDim2.fromOffset(0,0);Pages.GroupTransparency=0 end
+if self.LunaTopbar then self.LunaTopbar:Select(tab)end
+if column then if not tab._settings then self._lastTab=tab end;UpdateGear()end
 end
-end
-if type(tab)~="table"or self.Current==tab then
-return
-end
-local prev=self.Current
-self.Current=tab
-self:_closeMenu()
-for _,t in ipairs(self.Tabs)do
-local on=t==tab
-t._page.Visible=on
-if t._name then
-t._name.FontFace=F(on and W_SEMI or W_MED)
-end
-if not on then
-Tween(t._button,0.2,{BackgroundTransparency=1})
-end
-end
-MoveIndicator(prev~=nil)
-local dir=(prev and prev._order>tab._order)and-1 or 1
-Header.Text=tab.Name
-SubHeader.Text=tab.Description
-Header.TextTransparency=1
-SubHeader.TextTransparency=1
-Header.Position=UDim2.fromOffset(ContentX,14+8*dir)
-Tween(Header,0.45,{TextTransparency=0,Position=UDim2.fromOffset(ContentX,14)})
-task.delay(0.06,function()
-if self.Current==tab then
-Tween(SubHeader,0.4,{TextTransparency=self.Minimized and 1 or 0})
-end
-end)
-tab._page.Position=UDim2.fromOffset(0,22*dir)
-Tween(tab._page,0.5,{Position=UDim2.fromOffset(0,0)})
-tab._iconScale.Scale=0.75
-Tween(tab._iconScale,0.5,{Scale=1},Enum.EasingStyle.Back)
-if column then
-if not tab._settings then
-self._lastTab=tab
-end
-UpdateGear()
-end
+function Window:ReplayMotion()
+if self.Destroyed or not self.Visible or not self.Current then return end
+local tab=self.Current;Motion:EnterPage(tab._page,tab._columns,1)
+local p=Motion:Spec("Page");Pages.GroupTransparency=.18
+Tween(Pages,p.Duration,{GroupTransparency=0},p.Easing)
 end
 local SectionMethods={}
 SectionMethods.__index=SectionMethods
@@ -14864,15 +15143,21 @@ end
 end
 local function LayoutCards(tab)
 if not tab._columns then return end
-local two=tab._page.AbsoluteSize.X>=560
+local two=TargetSize().X>=540
 local cols=tab._columns
-cols[1].Size=UDim2.new(two and.5 or 1,two and-7 or 0,0,0)
-cols[2].Size=UDim2.new(.5,-7,0,0)
+if tab._lunaLayoutTwo~=two then
+tab._lunaLayoutTwo=two
+cols[1].Size=UDim2.new(two and.5 or 1,two and-10 or 0,1,0)
+cols[2].Size=UDim2.new(.5,-10,1,0)
 cols[2].Visible=two
+if tab._divider then tab._divider.Visible=two end
+end
 for i,section in ipairs(tab.Sections)do
-section.Container.Parent=cols[two and(section._lunaColumn or((i-1)%2+1))or 1]
+local parent=cols[two and(section._lunaColumn or((i-1)%2+1))or 1]
+if section.Container.Parent~=parent then section.Container.Parent=parent end
 end
 end
+function Window:ReflowColumns()for _,tab in ipairs(self.Tabs)do LayoutCards(tab)end end
 function SectionMethods:SetColumn(column)
 self._lunaColumn=column==1 and 1 or column==2 and 2 or nil
 LayoutCards(self.Tab)
@@ -14902,13 +15187,13 @@ Size=UDim2.new(1,0,0,0),
 AutomaticSize=Enum.AutomaticSize.Y,
 LayoutOrder=1,
 Parent=Container,
-},{Corner(14),List(0)})
+},{Corner(4),List(0)})
 Bind(Card,{BackgroundColor3="Card",BackgroundTransparency="CardT"})
 local cardStroke=Stroke(Theme.Current.Line,0.9,1)
 cardStroke.Parent=Card
 Hook(function(T)
 cardStroke.Color=T.Line
-cardStroke.Transparency=math.min(1,T.LineT+0.02)
+cardStroke.Transparency=1
 end)
 section.Container=Container
 section.Card=Card
@@ -14975,18 +15260,18 @@ end
 if r.Name then
 local right=r.Right or 160
 Bind(Label({
-Position=UDim2.fromOffset(textX,top and 10 or 0),
-Size=UDim2.new(1,-right-textX-14,0,top and 20 or height),
+Position=UDim2.fromOffset(textX,r.Stacked and 4 or(top and 10 or 0)),
+Size=UDim2.new(1,-right-textX-14,0,r.Stacked and 18 or(top and 20 or height)),
 Text=r.Name,
-TextSize=14,
+TextSize=12,
 FontFace=F(W_MED),
 TextTruncate=Enum.TextTruncate.AtEnd,
 Parent=Row,
 }),{TextColor3="Text"})
 if r.Description then
 Bind(Label({
-Position=UDim2.fromOffset(textX,30),
-Size=UDim2.new(1,-right-textX-14,0,16),
+Position=UDim2.fromOffset(textX,r.Stacked and 24 or 30),
+Size=UDim2.new(1,-right-textX-14,0,r.Stacked and 14 or 16),
 Text=r.Description,
 TextSize=12,
 TextTruncate=Enum.TextTruncate.AtEnd,
@@ -14999,22 +15284,10 @@ table.insert(section.Rows,entry)
 table.insert(tab.Elements,entry)
 return Row
 end
-local function PressScale(button)
-local sc=New("UIScale",{Parent=button})
-Connect(button.MouseButton1Down,function()
-Tween(sc,0.1,{Scale=0.94})
-end)
-Connect(button.MouseButton1Up,function()
-Tween(sc,0.35,{Scale=1},Enum.EasingStyle.Back)
-end)
-Connect(button.MouseLeave,function()
-Tween(sc,0.2,{Scale=1})
-end)
-return sc
-end
+local function PressScale(button)return Motion:Pressable(button)end
 function SectionMethods:Toggle(a,b,c)
 local o=type(a)=="table"and a or{Name=a,Default=b,Callback=c}
-local Row=NewRow(self,{Name=o.Name,Description=o.Description,Icon=o.Icon,Right=64})
+local Row=NewRow(self,{Name=o.Name,Description=o.Description,Icon=o.Icon,Right=44})
 local state=o.Default==true
 local RowButton=New("TextButton",{
 Size=UDim2.fromScale(1,1),
@@ -15026,7 +15299,7 @@ Parent=Row,
 local Switch=New("TextButton",{
 AnchorPoint=Vector2.new(1,0.5),
 Position=UDim2.new(1,-14,0.5,0),
-Size=UDim2.fromOffset(46,26),
+Size=UDim2.fromOffset(24,24),
 AutoButtonColor=false,
 Text="",
 ZIndex=2,
@@ -15034,11 +15307,10 @@ Parent=Row,
 },{Corner("full")})
 local Knob=New("Frame",{
 AnchorPoint=Vector2.new(0,0.5),
-Position=UDim2.new(0,state and 22 or 2,0.5,0),
-Size=UDim2.fromOffset(22,22),
+Position=UDim2.new(0,4,0.5,0),
+Size=UDim2.fromOffset(16,16),
 Parent=Switch,
 },{Corner("full"),Stroke(BLACK,0.86,0.6)})
-Bind(Knob,{BackgroundColor3="Knob"})
 local SwitchGrad=New("UIGradient",{Enabled=false,Parent=Switch})
 local api={Value=state,Type="Toggle"}
 local function paint(animated)
@@ -15047,12 +15319,14 @@ local onColor=AccentColor(T,SwitchGrad)
 if not state then
 SwitchGrad.Enabled=false
 end
+local knobProps={BackgroundColor3=state and T.Knob or T.SubText,BackgroundTransparency=state and 0 or.45}
+if animated then Tween(Knob,Motion:Spec("Toggle").Duration,knobProps)else for k,v in pairs(knobProps)do Knob[k]=v end end
 local props={
 BackgroundColor3=state and onColor or T.Control,
 BackgroundTransparency=state and 0 or T.ControlT,
 }
 if animated then
-Tween(Switch,0.25,props)
+Tween(Switch,Motion:Spec("Toggle").Duration,props)
 else
 for k,v in pairs(props)do
 Switch[k]=v
@@ -15063,12 +15337,12 @@ Hook(function(_,animated)
 paint(animated)
 end)
 local function knob(pressed)
-local w=pressed and 28 or 22
+local p=Motion:Spec("Toggle");local w=pressed and 16+p.Distance or 16
 local slime=Theme.Current.Effect=="Slime"
-Tween(Knob,slime and 0.8 or 0.4,{
-Size=UDim2.fromOffset(w,22),
-Position=UDim2.new(0,state and(44-w)or 2,0.5,0),
-},slime and Enum.EasingStyle.Elastic or Enum.EasingStyle.Back)
+Tween(Knob,p.Duration,{
+Size=UDim2.fromOffset(w,16),
+Position=UDim2.new(0,(24-w)/2,0.5,0),
+},p.Easing)
 end
 function api:Set(v,silent)
 state=v and true or false
@@ -15080,6 +15354,9 @@ if not silent and o.Callback then
 task.spawn(o.Callback,state)
 end
 end
+Connect(Switch.InputEnded,function(input)
+if input.UserInputType==Enum.UserInputType.Touch then knob(false)end
+end)
 Connect(Switch.MouseButton1Down,function()
 knob(true)
 end)
@@ -15176,7 +15453,7 @@ return string.format("%."..decimals.."f",v)
 end
 local function render(slow)
 local alpha=(max>min)and(value-min)/(max-min)or 0
-local t=slow and 0.35 or 0.08
+local p=Motion:Spec("Slider");local t=slow and p.Duration*3 or p.Duration
 Tween(Fill,t,{Size=UDim2.fromScale(alpha,1)})
 Tween(Knob,t,{Position=UDim2.fromScale(alpha,0.5)})
 ValueBox.Text=fmt(value)..suffix
@@ -15194,34 +15471,43 @@ if changed and not silent and o.Callback then
 task.spawn(o.Callback,v)
 end
 end
-local sliding=false
+local owner,moveLink,endLink,focusLink,scrollState
+local function release(commit)
+if not owner then return end
+if commit==true and not Window.Destroyed then Motion:Flush(Row,"Slider")else Motion:Drop(Row,"Slider")end
+Motion:Release(Row,"Slider")
+if Motion.Pointer==owner then Motion.Pointer=nil end;owner=nil
+if moveLink then moveLink:Disconnect();moveLink=nil end
+if endLink then endLink:Disconnect();endLink=nil end
+if focusLink then focusLink:Disconnect();focusLink=nil end
+for col,enabled in pairs(scrollState or{})do if col.Parent then col.ScrollingEnabled=enabled end end
+scrollState=nil;if Window._releaseSlider==release then Window._releaseSlider=nil end
+if Knob.Parent then local p=Motion:Spec("Slider");Tween(Knob,p.Duration*2,{Size=UDim2.fromOffset(20,20)},p.Easing)end
+end
 local function fromX(x)
+if Track.AbsoluteSize.X<=0 then return end
 local alpha=math.clamp((x-Track.AbsolutePosition.X)/Track.AbsoluteSize.X,0,1)
 api:Set(min+(max-min)*alpha)
 end
 Connect(Hit.InputBegan,function(input)
-if not IsClick(input)then
-return
-end
-sliding=true
-self.Tab._page.ScrollingEnabled=false
-Tween(Knob,0.2,{Size=UDim2.fromOffset(26,26)},Enum.EasingStyle.Back)
+if Window.Destroyed or not Window.Visible or owner or Motion.Pointer or LunaTopbar:PointerBusy()or not IsClick(input)then return end
+owner=input;Motion.Pointer=input;Window._releaseSlider=release;scrollState={};Motion:Hold(Row,"Slider")
+for _,col in ipairs(self.Tab._columns or{})do scrollState[col]=col.ScrollingEnabled~=false;col.ScrollingEnabled=false end
+local p=Motion:Spec("Slider");Tween(Knob,p.Duration*2,{Size=UDim2.fromOffset(20+p.Distance,20+p.Distance)},p.Easing)
 fromX(input.Position.X)
-local cn
-cn=Connect(input.Changed,function()
-if input.UserInputState==Enum.UserInputState.End or input.UserInputState==Enum.UserInputState.Cancel then
-cn:Disconnect()
-sliding=false
-self.Tab._page.ScrollingEnabled=true
-Tween(Knob,0.3,{Size=UDim2.fromOffset(20,20)},Enum.EasingStyle.Back)
-end
+moveLink=UserInputService.InputChanged:Connect(function(nextInput)
+if owner~=input then return end
+if input.UserInputType==Enum.UserInputType.Touch then if nextInput~=input then return end
+elseif nextInput.UserInputType~=Enum.UserInputType.MouseMovement then return end
+local x=nextInput.Position.X
+Motion:Queue(Row,"Slider",function()if owner==input and not Window.Destroyed then fromX(x)end end)
 end)
+endLink=input.Changed:Connect(function()
+if input.UserInputState==Enum.UserInputState.End or input.UserInputState==Enum.UserInputState.Cancel then release(input.UserInputState==Enum.UserInputState.End)end
 end)
-Connect(UserInputService.InputChanged,function(input)
-if sliding and IsMove(input)then
-fromX(input.Position.X)
-end
+focusLink=UserInputService.WindowFocusReleased:Connect(release)
 end)
+Connect(Row.Destroying,release)
 Connect(ValueBox.FocusLost,function()
 local n=tonumber((string.gsub(ValueBox.Text,"[^%d%.%-]","")))
 if n then
@@ -15335,11 +15621,11 @@ end
 else
 value=o.Default
 end
-local Row=NewRow(self,{Name=o.Name,Description=o.Description,Icon=o.Icon,Right=0,Stacked=true,Height=o.Description and 94 or 70})
+local Row=NewRow(self,{Name=o.Name,Description=o.Description,Icon=o.Icon,Right=0,Stacked=true,Height=o.Description and 78 or 56})
 local Btn=New("TextButton",{
 AnchorPoint=Vector2.new(1,0.5),
-Position=UDim2.new(1,-14,1,-22),
-Size=UDim2.new(1,-28,0,32),
+Position=UDim2.new(1,-14,1,-18),
+Size=UDim2.new(1,-28,0,28),
 AutoButtonColor=false,
 Text="",
 ZIndex=2,
@@ -15598,11 +15884,11 @@ return api
 end
 function SectionMethods:Input(a,b,c)
 local o=type(a)=="table"and a or{Name=a,Placeholder=b,Callback=c}
-local Row=NewRow(self,{Name=o.Name,Description=o.Description,Icon=o.Icon,Right=0,Stacked=true,Height=o.Description and 94 or 70})
+local Row=NewRow(self,{Name=o.Name,Description=o.Description,Icon=o.Icon,Right=0,Stacked=true,Height=o.Description and 78 or 56})
 local Box=New("TextBox",{
 AnchorPoint=Vector2.new(1,0.5),
-Position=UDim2.new(1,-14,1,-22),
-Size=UDim2.new(1,-28,0,32),
+Position=UDim2.new(1,-14,1,-18),
+Size=UDim2.new(1,-28,0,28),
 Text=o.Default or"",
 PlaceholderText=o.Placeholder or"",
 TextSize=13,
@@ -15641,7 +15927,7 @@ end
 end)
 end
 Connect(Box.Focused,function()
-Tween(st,0.15,{Transparency=0.4})
+Tween(st,Motion:Spec("Focus").Duration,{Transparency=1-Motion:Spec("Focus").Distance})
 end)
 Connect(Box.FocusLost,function(enter)
 Tween(st,0.25,{Transparency=1})
@@ -15927,25 +16213,23 @@ TextTruncate=Enum.TextTruncate.AtEnd,
 Parent=Button,
 }),{TextColor3="Text"})
 end
-local Page=New("ScrollingFrame",{
+local Page=New("Frame",{
 Size=UDim2.fromScale(1,1),
 BackgroundTransparency=1,
 BorderSizePixel=0,
-ScrollBarThickness=3,
-ScrollBarImageTransparency=0.4,
-CanvasSize=UDim2.new(),
-AutomaticCanvasSize=Enum.AutomaticSize.Y,
-ScrollingDirection=Enum.ScrollingDirection.Y,
 Visible=false,
 Parent=Pages,
 },{Pad(4,12,18,6)})
-Bind(Page,{ScrollBarImageColor3="SubText"})
 Tab._page=Page
 Tab._columns={}
 for i=1,2 do
-Tab._columns[i]=New("Frame",{Name="Cards"..i,Position=UDim2.new(i==1 and 0 or.5,i==1 and 0 or 7,0,0),
-Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Parent=Page},{List(16)})
+Tab._columns[i]=New("ScrollingFrame",{Name="Cards"..i,Position=UDim2.new(i==1 and 0 or.5,i==1 and 0 or 10,0,0),
+Size=UDim2.new(1,0,1,0),CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,
+ScrollBarThickness=2,ScrollBarImageTransparency=.75,ScrollingDirection=Enum.ScrollingDirection.Y,
+BorderSizePixel=0,BackgroundTransparency=1,Parent=Page},{List(14),Pad(4,4,14,4)})
 end
+Tab._divider=Bind(New("Frame",{Name="ColumnDivider",Position=UDim2.new(.5,0,0,0),Size=UDim2.new(0,1,1,0),
+BorderSizePixel=0,Parent=Page}),{BackgroundColor3="Line",BackgroundTransparency="LineT"})
 Connect(Page:GetPropertyChangedSignal("AbsoluteSize"),function()LayoutCards(Tab)end)
 LayoutCards(Tab)
 Tab._button=Button
@@ -15976,6 +16260,7 @@ local o=type(a)=="table"and a or{Name=a,Icon=b,Description=c}
 return CreateTab(o)
 end
 Window.AddTab=Window.Tab
+function Window:RegisterGroup(tab,group,label,icon,order)self.LunaTopbar:Register(tab,group,label,icon,order)end
 local function ConfigPath(name)
 return SlimeUI.Folder.."/configs/"..tostring(name or"default")..".json"
 end
@@ -16236,7 +16521,7 @@ BorderSizePixel=0,
 Parent=Track,
 },{Corner("full")})
 BlurTo(Window.BlurEnabled)
-Tween(SScale,0.7,{Scale=1},Enum.EasingStyle.Back)
+Tween(SScale,Motion:Spec("Notify").Duration,{Scale=1},Motion:Spec("Notify").Easing)
 Tween(Box,0.45,{GroupTransparency=0})
 Tween(BoxEdge,0.45,{Transparency=0})
 Tween(SLogo,0.8,{Rotation=0},Enum.EasingStyle.Back)
@@ -16265,6 +16550,8 @@ if self.Destroyed then
 return
 end
 self.Destroyed=true
+if self._releaseSlider then self._releaseSlider()end
+Motion:CancelTree(Gui)
 LunaTopbar:Destroy()
 self:_closeMenu()
 for _,c in ipairs(self._conns)do
@@ -16284,6 +16571,7 @@ Tween(Scale,0.25,{Scale=FitScale()*0.9},Enum.EasingStyle.Quad,Enum.EasingDirecti
 Tween(Main,0.25,{GroupTransparency=1})
 Tween(Edge,0.2,{Transparency=1})
 task.delay(0.3,function()
+Motion:CancelTree(Gui)
 Gui:Destroy()
 end)
 Theme.Objects={}
@@ -16352,7 +16640,7 @@ function SlimeUI:GetThemes()
 return table.clone(ThemeNames)
 end
 return SlimeUI
-]=]):sub(2),"@EDUHub_New/SlimeUI.lua"))()
+]==]):sub(2),"@EDUHub_New/SlimeUI.lua"))()
 fluent=assert(loadstring(([=[!return function(SlimeUI,session)
 assert(type(SlimeUI)=="table"and type(SlimeUI.CreateWindow)=="function","SlimeUI.CreateWindow is unavailable")
 local library={Options={},Unloaded=false,GUI=nil,Window=nil}
@@ -16573,12 +16861,7 @@ end
 function library:CreateWindow(descriptor)
 assert(not nativeWindow and not self.Unloaded and session.Running,"EDU SlimeUI window already created or session stopped")
 descriptor=descriptor or{}
-local width,height=800,480
-if typeof(descriptor.Size)=="UDim2"then
-width=math.clamp(descriptor.Size.X.Offset,800,880);height=math.clamp(descriptor.Size.Y.Offset,480,540)
-elseif typeof(descriptor.Size)=="Vector2"then
-width=math.clamp(descriptor.Size.X,800,880);height=math.clamp(descriptor.Size.Y,480,540)
-end
+local width,height=670,500
 nativeWindow=SlimeUI:CreateWindow({Title="LUNA HUB",Subtitle="Stand Upright · SlimeUI",
 Theme="Luna",Size=Vector2.new(width,height),ToggleKey=Enum.KeyCode.RightAlt,
 Blur=false,Loader=false,SettingsTab=false,ToggleButton=false,Logo=SlimeUI:GetIcon("moon")})
@@ -16618,6 +16901,14 @@ end
 local nativeHost=nativeTab
 if merged then nativeHost=nativeTab:Section(name=="Items Farm"and"Farm Item"or"Quest Farm")end
 local tab=addMethods({Native=nativeTab},nativeHost)
+local groups={Stand={"Stand",1},Kho={"Stand",1},Boss={"Boss",2},Halloween={"Halloween",3},
+Lair={"Lair",4},Shop={"Shop",5},["Quest / Item"]={"Farm",6},Farm={"Farm",6},
+Settings={"Settings",7},["Thống kê"]={"Settings",7}}
+local group=groups[nativeTab.Name]
+if type(nativeWindow.RegisterGroup)=="function"then
+nativeWindow:RegisterGroup(nativeTab,group and group[1]or nativeTab.Name,nativeTab.Name,
+style and style[2]or tabDescriptor.Icon,group and group[2]or 8)
+end
 tabs[#tabs+1]=tab;window.Tabs[#window.Tabs+1]=tab
 if(tabDescriptor.Title or tabDescriptor.Name)=="Settings"then
 tab:AddSection("Giao diện")
@@ -17732,7 +18023,7 @@ eduSession:Destroy()
 error(result[2],0)
 end
 return table.unpack(result,2,result.n)
-]==]):sub(2)
+]===]):sub(2)
 local env=getgenv and getgenv()or _G
 env.EDUHalloweenResumeSourceV1=source
 return assert(loadstring(source,"@EDUHub_New/Main.lua"))()
