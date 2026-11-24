@@ -1,5 +1,19 @@
 local source=([===[!local eduSession=assert(loadstring(([[!return function()
 local env=getgenv and getgenv()or _G
+local oldOpt=env.EDUAFKOptimizerV1
+if oldOpt and type(oldOpt.PrepareUnload)=="function"then
+pcall(oldOpt.PrepareUnload,oldOpt)
+local gCore=oldOpt.GraphicsCore
+if gCore and gCore.Running then
+local deadline=os.clock()+12
+while gCore.Running and os.clock()<deadline do
+task.wait(0.03)
+end
+if gCore.Running and type(gCore.FinishRestoreNow)=="function"then
+pcall(gCore.FinishRestoreNow,gCore)
+end
+end
+end
 local previous=env.EDUHubSessionV1
 if previous then previous:Destroy()end
 if not previous then
@@ -18,12 +32,78 @@ end
 if type(library.Destroy)=="function"then pcall(library.Destroy,library)end
 end
 end
-for _,key in ipairs({"EDUHalloweenV1","EDUBossMiasmaV1","EDUBossLivingCheck","EDUAutoM1Luna","EDUBossSkillsV1","EDUPlayerFarmV1"})do
+for _,key in ipairs({"EDUHalloweenV1","EDUBossMiasmaV1","EDUBossLivingCheck","EDUAutoM1Luna","EDUBossSkillsV1","EDUPlayerFarmV1","EDUGraphicsBoostV1"})do
 local old=env[key]
-if old and type(old.Destroy)=="function"then pcall(old.Destroy,old)end
+if old and type(old.Destroy)=="function"then pcall(old.Destroy,old,true)end
 end
-local self={Running=true,Connections={},Threads={},Guis={},Managers={},Library=nil}
+local self={
+Running=true,
+Connections={},
+Threads={},
+Guis={},
+Managers={},
+Library=nil,
+CombatGeneration=0,
+MovementOwner=nil,
+MovementChar=nil,
+MovementRoot=nil,
+MovementUpdatedAt=0,
+}
 env.EDUHubSessionV1=self
+function self:NextCombatGeneration(owner,model,char,root)
+self.CombatGeneration+=1
+local gen=self.CombatGeneration
+local targetHum=model and model:FindFirstChildOfClass("Humanoid")or nil
+local targetRoot=model and(model:FindFirstChild("HumanoidRootPart")or model.PrimaryPart)or nil
+local token={
+Generation=gen,
+Owner=owner,
+Model=model,
+TargetHum=targetHum,
+TargetRoot=targetRoot,
+PlayerChar=char,
+PlayerRoot=root or(char and char:FindFirstChild("HumanoidRootPart"))or nil,
+StartedAt=os.clock(),
+LastHealth=targetHum and targetHum.Health or nil,
+LastHealthDropAt=os.clock(),
+}
+function token:IsValid()
+if not self or not env.EDUHubSessionV1 or env.EDUHubSessionV1.Running~=true then return false,"SessionStopped"end
+local okPlr,plrs=pcall(game.GetService,game,"Players")
+local lp=okPlr and plrs and plrs.LocalPlayer
+local curChar=lp and lp.Character
+if not curChar or curChar~=self.PlayerChar or not curChar.Parent then return false,"CharacterChanged"end
+local pHum=curChar:FindFirstChildOfClass("Humanoid")
+local pRoot=curChar:FindFirstChild("HumanoidRootPart")
+if not pHum or pHum.Health<=0 or not pRoot or(self.PlayerRoot and pRoot~=self.PlayerRoot)then
+return false,"NoAliveCharacter"
+end
+if self.Model then
+if not self.Model.Parent then return false,"WaitingRoot"end
+local tHum=self.Model:FindFirstChildOfClass("Humanoid")
+if not tHum or tHum.Health<=0 then return false,"TargetDead"end
+end
+return true,"Valid"
+end
+self.ActiveCombatSession=token
+return token
+end
+function self:ClaimMovement(owner,char,root)
+if not self.Running or self.GameMenuBusy or self.RestoringSettings then return false end
+if owner~="Dungeon"and self:IsDungeonActive()then return false end
+self.MovementOwner=owner
+self.MovementChar=char
+self.MovementRoot=root
+self.MovementUpdatedAt=os.clock()
+return true
+end
+function self:ReleaseMovement(owner)
+if owner==nil or self.MovementOwner==owner then
+self.MovementOwner=nil
+self.MovementChar=nil
+self.MovementRoot=nil
+end
+end
 function self:IsDungeonActive()
 local dungeon=env.EDULunaLairV1
 return self.Running and dungeon and dungeon.Running and dungeon:IsRequested()or false
@@ -69,28 +149,35 @@ end
 local bossCtrl=env.EDUHubBossCombatV1
 if bossCtrl and bossCtrl.Running~=false then
 local lease=bossCtrl.CurrentSession
-if lease and lease.Model and lease.Model.Parent then
-if type(bossCtrl.Ready)=="function"then
+if lease and lease.Model then
+if type(bossCtrl.GetCombatDiagnostics)=="function"then
+local okDiag,canFight,diagReason=pcall(bossCtrl.GetCombatDiagnostics,bossCtrl,lease.Model,char)
+if okDiag then
+if canFight then return true,"Boss",lease.Model,"BossReady"end
+return false,"Boss",lease.Model,diagReason or"Moving"
+end
+end
+if lease.Model.Parent and type(bossCtrl.Ready)=="function"then
 local okReady,isReady=pcall(bossCtrl.Ready,bossCtrl,lease.Model,char)
 if okReady and isReady then
 if type(bossCtrl.CanUseSkills)~="function"or bossCtrl:CanUseSkills(lease.Model,char)then
 return true,"Boss",lease.Model,"BossReady"
 end
-return false,"Boss",lease.Model,"BossCombatHold"
+return false,"Boss",lease.Model,"Snapback"
 end
 end
-return false,"Boss",lease.Model,"BossNotReady"
+return false,"Boss",lease.Model,lease.Model.Parent and"Moving"or"WaitingRoot"
 elseif self.BossQueueBusy then
-return false,"Boss",nil,"BossQueueBusy"
+return false,"Boss",nil,"Moving"
 end
 end
 local hw=env.EDUHalloweenV1
-if hw and hw.Running~=false and hw.GroupRestrictsAttacks and hw:GroupRestrictsAttacks()then
-return false,"Halloween",nil,"HalloweenGroupTurn"
-end
 if hw and hw.Running~=false and type(hw.IsFightingMob)=="function"then
 local okHw,hwActive=pcall(hw.IsFightingMob,hw)
-if okHw and hwActive then return true,"Halloween",nil,"HalloweenReady"end
+if okHw and hwActive then
+local hwTarget=type(hw.GetActiveTarget)=="function"and hw:GetActiveTarget()or nil
+return true,"Halloween",hwTarget,"HalloweenReady"
+end
 end
 if pf and pf.Running~=false and type(pf.IsCombatReady)=="function"and pf:IsCombatReady()then
 return true,"Player",pf:GetCombatTarget(),"PlayerReady"
@@ -103,6 +190,27 @@ return true,self.ActiveFarmOwner or"Quest",farmTarget,"FarmReady"
 end
 end
 return false,nil,nil,"Idle"
+end
+function self:GetDetailedCombatReason(allowDungeon)
+local canAttack,owner,target,reason=self:GetCombatState(allowDungeon)
+if not canAttack then
+if reason=="DungeonActive"or reason=="PlayerPickup"or reason=="BossTravelBusy"then
+return"Yielding",owner,target
+end
+return reason,owner,target
+end
+local combat=env.EDUHubCombatV1
+if combat and type(combat.GetSkillBlockReason)=="function"then
+local okSkill,skillReason=pcall(combat.GetSkillBlockReason,combat)
+if okSkill and(skillReason=="NoAttackSelected"or skillReason=="OnCooldown")then
+return skillReason,owner,target
+end
+end
+local bossCtrl=env.EDUHubBossCombatV1
+if owner=="Boss"and bossCtrl and bossCtrl.CurrentSession and bossCtrl.CurrentSession.StalledDamage then
+return"AttackingNoDamage",owner,target
+end
+return"Ready",owner,target
 end
 function self:YieldToDungeon()
 if not self:IsDungeonActive()then return false end
@@ -3826,7 +3934,12 @@ local okPlr,plrs=pcall(g.GetService,g,"Players")
 local lp=okPlr and plrs and plrs.LocalPlayer
 local char=lp and lp.Character
 if char then
-local okFire,res=pcall(combat.FireM1Only,combat,char)
+local target=nil
+if type(session.GetCombatState)=="function"then
+local okSt,_,_,t=pcall(session.GetCombatState,session,allowDungeon==true)
+if okSt then target=t end
+end
+local okFire,res=pcall(combat.FireM1Only,combat,char,target)
 fired=okFire and res==true
 end
 end
@@ -3921,7 +4034,7 @@ LeftUpperLeg=true,LeftLowerLeg=true,LeftFoot=true,RightUpperLeg=true,RightLowerL
 local function projected(model,root,axis,rotation)
 local low,high=math.huge,-math.huge
 for _,part in ipairs(model:GetChildren())do
-if bodyNames[part.Name]and part:IsA("BasePart")then
+if bodyNames[part.Name]and part:IsA("BasePart")and(part.Position-root.Position).Magnitude<=12 then
 local frame=part.CFrame
 if rotation then frame=CFrame.new(root.Position)*rotation*root.CFrame:ToObjectSpace(frame)end
 local extent=(math.abs(frame.RightVector:Dot(axis))*part.Size.X+math.abs(frame.UpVector:Dot(axis))*part.Size.Y+math.abs(frame.LookVector:Dot(axis))*part.Size.Z)*.5
@@ -3937,11 +4050,16 @@ local root=resolveRoot(model)
 local own=char and char:FindFirstChild("HumanoidRootPart")
 if not root or not own or not desired or(own.Position-desired.Position).Magnitude>3 then return false end
 if mode=="Behind"then
+if desired.Position.Y>=root.Position.Y+3.5 then
+return true
+end
 local direction=heading(root.CFrame)
 local bossBack=projected(model,root,direction)
 local _,ownFront=projected(char,own,direction)
 local front=(own.Position-root.Position):Dot(direction)+ownFront
 return front<=bossBack-.2 and own.CFrame.LookVector:Dot(direction)>.7
+elseif mode=="Above"then
+return own.Position.Y>=(desired.Position.Y-1.5)
 end
 return true
 end
@@ -4020,7 +4138,21 @@ local head=model:FindFirstChild("Head")
 local targetH=(poseEngine and type(poseEngine.TargetHeight)=="function")and poseEngine:TargetHeight(model)or 5
 local center=(head and head:IsA("BasePart")and head.Position)or(root.Position+Vector3.new(0,math.max(3,targetH*.45),0))
 local delta=leadPos-root.Position
-return center+Vector3.new(delta.X,config.Above,delta.Z)
+local rawAbove=center+Vector3.new(delta.X,config.Above,delta.Z)
+local _,bossTop=projected(model,root,Vector3.yAxis)
+local aboveRot=CFrame.lookAt(Vector3.zero,-Vector3.yAxis,Vector3.xAxis).Rotation
+local ownBottom=projected(char,own,Vector3.yAxis,aboveRot)
+local minSafeY=root.Position.Y+bossTop-ownBottom+.35
+local targetY=math.max(rawAbove.Y,minSafeY)
+local targetPos=Vector3.new(rawAbove.X,targetY,rawAbove.Z)
+local okCeil,ceilHit=pcall(function()
+return workspace:Raycast(root.Position,targetPos-root.Position,envRayParams(model,char))
+end)
+if okCeil and ceilHit and ceilHit.Position and ceilHit.Normal and ceilHit.Normal.Y<-.35 then
+local cappedY=math.max(minSafeY,ceilHit.Position.Y-1.1)
+if cappedY<targetY then targetPos=Vector3.new(rawAbove.X,cappedY,rawAbove.Z)end
+end
+return targetPos
 end
 local effectiveMode=mode
 local position
@@ -4052,9 +4184,25 @@ local anchor=root.Position
 local rearRotation=CFrame.lookAt(Vector3.zero,direction,Vector3.yAxis).Rotation
 local bossBack=projected(model,root,direction)
 local _,ownFront=projected(char,own,direction,rearRotation)
-local distance=math.max(config.Behind,-bossBack+ownFront+.6)
+local minClear=-bossBack+ownFront+.6
+local distance=math.max(config.Behind,minClear)
 local behind=anchor-direction*distance
 position=Vector3.new(behind.X,floor+(hum.HipHeight or 0)+own.Size.Y*.5,behind.Z)
+local rayOrigin=Vector3.new(anchor.X,position.Y,anchor.Z)
+local okWall,wallHit=pcall(function()
+return workspace:Raycast(rayOrigin,position-rayOrigin,envRayParams(model,char))
+end)
+if okWall and wallHit and wallHit.Position and wallHit.Normal and math.abs(wallHit.Normal.Y)<.6 then
+local freeDist=(Vector3.new(wallHit.Position.X,position.Y,wallHit.Position.Z)-rayOrigin).Magnitude-1.0
+if freeDist>=minClear then
+local safeBehind=anchor-direction*freeDist
+position=Vector3.new(safeBehind.X,position.Y,safeBehind.Z)
+else
+effectiveMode="Above"
+position=abovePosition()
+end
+end
+if effectiveMode~="Above"then
 if not self.Sample or(behind-self.Sample).Magnitude>2 or(now or 0)>=(self.RayAt or 0)then
 local okUis,uis=pcall(game.GetService,game,"UserInputService")
 local rayGap=(okUis and uis~=nil and uis.TouchEnabled==true and uis.KeyboardEnabled~=true)and.35 or.2
@@ -4063,6 +4211,7 @@ local hit=workspace:Raycast(position+Vector3.new(0,8,0),Vector3.new(0,-24,0),env
 if hit and hit.Normal.Y>.35 then self.Floor=hit.Position.Y end
 end
 if self.Floor then position=Vector3.new(position.X,math.max(position.Y,self.Floor+(hum.HipHeight or 0)+own.Size.Y*.5+.05),position.Z)end
+end
 end
 if type(fallen)=="number"and position.Y<=fallen+5 then return nil,"Chờ boss rời vùng hủy nhân vật"end
 if free then return CFrame.lookAt(position,position+direction,Vector3.yAxis)end
@@ -4193,12 +4342,17 @@ function self:ReleaseMiasma(model)
 if movement.Target and movement.Target~=model then return true end
 return self:ReleasePose()
 end
-function self:ClearSession()
+function self:ClearSession(notifySchedule,finishedModel)
 self.AttackRetryAt=0
 self.CleanupPending=not self:ReleasePose()
+local prevModel=finishedModel or(self.CurrentSession and self.CurrentSession.Model)or nil
 if self.CurrentSession then self.Generation+=1 end
 self.CurrentSession=nil
+if session.ReleaseMovement then session:ReleaseMovement("Boss")end
 if self.Skills then self.Skills:Reset("Chờ mục tiêu Auto Boss")end
+if notifySchedule and prevModel and session.BossSchedule and type(session.BossSchedule.OnBossFinished)=="function"then
+pcall(session.BossSchedule.OnBossFinished,session.BossSchedule,prevModel)
+end
 end
 function self:SetRequested(value)
 value=value==true
@@ -4233,15 +4387,36 @@ end
 if not lease then return nil end
 local living=workspace:FindFirstChild("Living")
 local model=lease.Model
-local hum=model:FindFirstChildOfClass("Humanoid")
-if model.Parent~=living or not living or not selected(model)or not hum or hum.Health<=0 then
-self:ClearSession();return nil
+if not model or not selected(model)then
+self:ClearSession(false,model);return nil
 end
-if currentRoot(model)then lease.MissingRootSince=nil
+local hum=model:FindFirstChildOfClass("Humanoid")
+local isDead=false
+if hum then
+if hum.Health<=0 then
+isDead=true
+else
+local okSt,st=pcall(hum.GetState,hum)
+if okSt and Enum and Enum.HumanoidStateType and st==Enum.HumanoidStateType.Dead then
+isDead=true
+end
+end
+end
+if isDead then
+self:ClearSession(true,model);return nil
+end
+if living and model.Parent==living and hum and currentRoot(model)then
+lease.MissingRootSince=nil
 else
 self:ReleasePose()
+if self.Skills and type(self.Skills.Release)=="function"then
+pcall(self.Skills.Release,self.Skills)
+end
+lease.Follow=nil
 lease.MissingRootSince=lease.MissingRootSince or os.clock()
-if os.clock()-lease.MissingRootSince>=1.5 then self:ClearSession();return nil end
+if os.clock()-lease.MissingRootSince>=1.5 then
+self:ClearSession(true,model);return nil
+end
 end
 return lease
 end
@@ -4295,13 +4470,39 @@ local rear={Dio_Coffin=true,STUTowh=true,Towh_Coffin=true}
 if rear[lease.Model.Name]then mode="Behind"
 elseif lease.Model.Name=="Alternate Jotaro Part 4"then mode="Above"
 elseif poseEngine and type(poseEngine.GetModeKey)=="function"then mode=poseEngine:GetModeKey()end
-local desired,why=movement:Frame(lease.Model,char,mode,os.clock())
+local now=os.clock()
+local desired,why=movement:Frame(lease.Model,char,mode,now)
 self.PositionStatus=why
 local previous=lease.Follow
+local measuredNow=desired~=nil and movement:Measured(lease.Model,char,mode,desired)
+if previous and previous.Character==char and previous.Root==characterRoot
+and previous.TargetRoot==targetRoot and previous.Token==self.RunToken
+and now>previous.At and(now-previous.At)<0.75 and not measuredNow
+then
+local bossMoved=previous.TargetPos and(targetRoot.Position-previous.TargetPos).Magnitude or 0
+local pullDist=previous.Frame and(characterRoot.Position-previous.Frame.Position).Magnitude or 0
+if bossMoved<6 and pullDist>7.5 then
+lease.SnapbackCount=(lease.SnapbackCount or 0)+1
+lease.SnapbackUntil=now+math.min(0.45,0.16+lease.SnapbackCount*0.05)
+if self.Skills and type(self.Skills.Release)=="function"then
+pcall(self.Skills.Release,self.Skills)
+end
+self.PositionStatus="Bị kéo ngược (Snapback) · Đang ổn định lại vị trí"
+if lease.SnapbackCount>=3 and now<(lease.NextSnapWriteAt or 0)then
+lease.PendingObservation={Ready=false,At=now,Character=char,Root=characterRoot,TargetRoot=targetRoot,Mode=mode}
+return nil
+end
+lease.NextSnapWriteAt=now+0.12
+end
+elseif measuredNow and(not lease.SnapbackUntil or now>=lease.SnapbackUntil)then
+lease.SnapbackCount=0
+lease.SnapbackUntil=nil
+lease.NextSnapWriteAt=nil
+end
 local observed=desired and previous and previous.Character==char and previous.Root==characterRoot
 and previous.TargetRoot==targetRoot and previous.Token==self.RunToken
-and os.clock()>previous.At and os.clock()-previous.At<1 and movement:Measured(lease.Model,char,mode,desired)
-lease.PendingObservation={Ready=observed==true,At=os.clock(),Character=char,Root=characterRoot,TargetRoot=targetRoot,Mode=mode}
+and now>previous.At and now-previous.At<1 and measuredNow
+lease.PendingObservation={Ready=observed==true,At=now,Character=char,Root=characterRoot,TargetRoot=targetRoot,Mode=mode}
 if not desired then lease.Follow=nil end
 return desired
 end
@@ -4311,7 +4512,7 @@ local char=player.Character
 if not running()or not lease or lease.Model~=model or targetRoot~=currentRoot(model)
 or not char or characterRoot~=char:FindFirstChild("HumanoidRootPart")then return end
 local observation=lease.PendingObservation;lease.PendingObservation=nil
-lease.Follow={Character=char,Root=characterRoot,TargetRoot=targetRoot,
+lease.Follow={Character=char,Root=characterRoot,TargetRoot=targetRoot,TargetPos=targetRoot.Position,
 Hum=char:FindFirstChildOfClass("Humanoid"),Frame=frame,At=os.clock(),Token=self.RunToken,Observation=observation}
 characterRoot.AssemblyLinearVelocity=Vector3.zero;characterRoot.AssemblyAngularVelocity=Vector3.zero
 local poseEngine=env.EDUFarmPoseV1
@@ -4344,12 +4545,45 @@ end
 return false
 end
 function self:MiasmaReady(model,char)return self:Ready(model,char)end
-function self:CanUseSkills(model,char)return self:Ready(model,char or player.Character)end
+function self:CanUseSkills(model,char)
+local lease=self.CurrentSession
+if lease and lease.SnapbackUntil and os.clock()<lease.SnapbackUntil then
+return false
+end
+return self:Ready(model,char or player.Character)
+end
+function self:GetCombatDiagnostics(model,char)
+char=char or player.Character
+if not running()or session.BossTravelBusy then return false,"Yielding"end
+local lease=self:Refresh()
+if not lease or lease.Model~=model then return false,"Yielding"end
+if lease.MissingRootSince or not currentRoot(model)then return false,"WaitingRoot"end
+if lease.SnapbackUntil and os.clock()<lease.SnapbackUntil then return false,"Snapback"end
+if not self:Ready(model,char)then return false,"Moving"end
+return true,"BossReady"
+end
 local function step(model)
 if not self:Accept(model)then return end
 local char=player.Character
 if not self.Skills or not self:CanUseSkills(model,char)then return end
 local lease,token=self.CurrentSession,self.RunToken
+local targetHum=model:FindFirstChildOfClass("Humanoid")
+if targetHum then
+local now=os.clock()
+local hp=targetHum.Health
+if lease.LastObservedHP==nil or hp<lease.LastObservedHP then
+lease.LastObservedHP=hp
+lease.LastHPDropAt=now
+lease.StalledDamage=false
+elseif self.Skills.GetSkillBlockReason and self.Skills:GetSkillBlockReason()=="Ready"then
+if now-(lease.LastHPDropAt or now)>=6 then
+lease.StalledDamage=true
+end
+else
+lease.LastHPDropAt=now
+lease.StalledDamage=false
+end
+end
 self.Skills:Step(model,function()
 return self.CurrentSession==lease and self.RunToken==token and self:CanUseSkills(model,char)
 end)
@@ -4375,7 +4609,7 @@ local installCombatSkills=assert(loadstring(([[!return function(tab,options,sess
 local env=getgenv and getgenv()or _G
 local http=game:GetService("HttpService")
 local unpackArgs=table.unpack or unpack
-local self={Running=true,Rows={},ByName={},MoveBy={},PendingEnds={},NextAt=0,NextM1At=0,Learning=false,LearnUntil=0,PendingStart={},Firing=false,SkillCursor=0,StandPartsCache=nil,SummonAttempts=0,LastError=nil,ErrorAt=0,HoldCooldownUntil={}}
+local self={Running=true,Rows={},ByName={},MoveBy={},PendingEnds={},NextAt=0,NextM1At=0,Learning=false,LearnUntil=0,PendingStart={},Firing=false,SkillCursor=0,FolderCursor=0,StandPartsCache=nil,SummonAttempts=0,LastError=nil,ErrorAt=0,HoldCooldownUntil={}}
 local excluded={Block=true,Quote=true,Pose=true,Summon=true,SummonStand=true,Heal=true,Jump=true,TogglePilot=true}
 local excludedLower={
 block=true,quote=true,pose=true,summon=true,summonstand=true,unsummon=true,
@@ -4547,6 +4781,11 @@ local boss=env.EDUHubBossCombatV1
 if boss and boss.CurrentSession and boss.CurrentSession.Model then
 return boss.CurrentSession.Model
 end
+local hw=env.EDUHalloweenV1
+if hw and hw.Running~=false and type(hw.GetActiveTarget)=="function"then
+local ht=hw:GetActiveTarget()
+if ht then return ht end
+end
 local pf=env.EDUPlayerFarmV1
 if pf and pf.Running~=false and type(pf.GetCombatTarget)=="function"then
 local pt=pf:GetCombatTarget()
@@ -4572,8 +4811,8 @@ local function resolveAimPosition(char,targetModel)
 local ownRoot=char and modelRootPart(char)
 local activeTarget=resolveActiveTarget(targetModel)
 local bRoot=activeTarget and modelRootPart(activeTarget)
-local pfLock=env.EDUPlayerFarmV1 and env.EDUPlayerFarmV1.Running~=false and targetModel~=nil and env.EDUPlayerFarmV1.LockedChar==targetModel
-if(not bRoot or not bRoot.Position)and not pfLock then
+local hasExplicitLock=(targetModel~=nil)or(activeTarget~=nil)
+if(not bRoot or not bRoot.Position)and not hasExplicitLock then
 local ownPos=ownRoot and ownRoot.Position
 local living=workspace and workspace:FindFirstChild("Living")
 if living and ownPos then
@@ -4804,6 +5043,7 @@ return rawStand
 end
 local serverCooldowns={}
 local cooldownRemote,cooldownConnection,nextCooldownBind=nil,nil,0
+local summonPacketRemote,summonPacketConn=nil,nil
 local function normCdKey(s)
 local key=string.lower(tostring(s or"")):gsub("[%s_%-%p]+","")
 if key=="m1"or key=="normalpunch"then return"punch"end
@@ -4829,10 +5069,10 @@ local rs=game:GetService("ReplicatedStorage")
 local events=rs and rs:FindFirstChild("Events")
 local found=events and events:FindFirstChild("CoolDownGUI")
 if found and not isRemoteEvent(found)then found=nil end
-if found==cooldownRemote then return end
+if found~=cooldownRemote then
 if cooldownConnection then cooldownConnection:Disconnect();cooldownConnection=nil end
 cooldownRemote=found
-if not found then return end
+if found then
 cooldownConnection=found.OnClientEvent:Connect(function(name,duration)
 if not alive()or cooldownRemote~=found or type(name)~="string"or#name==0 or#name>80
 or type(duration)~="number"or duration~=duration or duration<=0 or duration>600 then return end
@@ -4840,13 +5080,35 @@ local char,hum,kit=context()
 if char~=self.Char or hum~=self.Hum or kit~=self.Events or not char or not char.Parent
 or not hum or hum.Health<=0 or standName(char,kit)~=self.Stand then return end
 local key=normCdKey(name)
-local known=false
+local known=(key=="punch"or key=="togglestand")
+if not known then
 for moveName,move in pairs(self.MoveBy)do
 if normCdKey(moveName)==key or move.RemoteName and normCdKey(move.RemoteName)==key then known=true;break end
+end
 end
 if not known then return end
 serverCooldowns[key]=math.max(serverCooldowns[key]or 0,os.clock()+duration)
 end)
+end
+end
+local spFound=events and events:FindFirstChild("SummonPacket")
+if spFound and not isRemoteEvent(spFound)then spFound=nil end
+if spFound~=summonPacketRemote then
+if summonPacketConn then summonPacketConn:Disconnect();summonPacketConn=nil end
+summonPacketRemote=spFound
+if spFound then
+summonPacketConn=spFound.OnClientEvent:Connect(function(standModel,summonedFlag)
+if not alive()or summonPacketRemote~=spFound or type(summonedFlag)~="boolean"then return end
+local char=player.Character
+if not char or typeof(standModel)~="Instance"then return end
+local okDesc,isMine=pcall(standModel.IsDescendantOf,standModel,char)
+if okDesc and isMine then
+self.ObservedSummoned={Char=char,Model=standModel,Value=summonedFlag,At=os.clock()}
+self.StandPartsCache=nil
+end
+end)
+end
+end
 end
 local function readReplicatedStandProfile(stand)
 if type(stand)~="string"or stand==""then return nil end
@@ -4897,6 +5159,11 @@ end
 for _,childName in ipairs({"Aura","Summoned","StandSummoned"})do
 local v=char:FindFirstChild(childName)
 if v and v:IsA("BoolValue")then return v.Value end
+end
+local obs=self.ObservedSummoned
+if obs and obs.Char==char and obs.Model and obs.Model.Parent and(os.clock()-obs.At)<30 then
+local okOwn,stillMine=pcall(obs.Model.IsDescendantOf,obs.Model,char)
+if okOwn and stillMine then return obs.Value end
 end
 if standModel and standModel:IsA("Model")and type(standModel.GetDescendants)=="function"then
 local now=os.clock()
@@ -5043,6 +5310,7 @@ self.PendingEnds=keep
 end
 function self:Reset()
 self.NextAt=0
+self.FolderCursor=0
 flushPendingEnds(true)
 if self.Held then self:Release()end
 if self.HoldCooldownUntil then table.clear(self.HoldCooldownUntil)end
@@ -5367,15 +5635,25 @@ if not alive()then return end
 local char,hum,events=context()
 local kind=kindOf(events)
 local stand=standName(char,events)
+local childCount=0
+if events and(kind=="Folder"or kind=="Tool")and type(events.GetChildren)=="function"then
+local okCh,ch=pcall(events.GetChildren,events)
+if okCh and type(ch)=="table"then childCount=#ch end
+end
 local changed=char~=self.Char or hum~=self.Hum or events~=self.Events
-or kind~=self.Kind or stand~=self.Stand
+or kind~=self.Kind or stand~=self.Stand or childCount~=self.LastEventChildCount
 if changed then
+if char~=self.Char or hum~=self.Hum or events~=self.Events or stand~=self.Stand then
 self:Release();flushPendingEnds(true)
 if self.Learning and stand~=self.Stand then self:StopLearning()end
 self.Char=char;self.Hum=hum;self.Events=events;self.Kind=kind;self.Stand=stand
-self.NextAt=0;self.NextSummon=0;self.ScanAt=0;self.StandPartsCache=nil;self.SummonAttempts=0;self.NeedPrune=true
+self.NextAt=0;self.NextSummon=0;self.StandPartsCache=nil;self.SummonAttempts=0;self.FolderCursor=0
 clearServerCooldowns()
-elseif pruneStale then
+end
+self.LastEventChildCount=childCount
+self.ScanAt=0
+end
+if pruneStale then
 self.NeedPrune=true
 end
 local now=os.clock()
@@ -5454,7 +5732,7 @@ end
 local different=#rows~=#self.Rows
 if not different then for i,name in ipairs(rows)do if name~=self.Rows[i]then different=true;break end end end
 self.Rows=rows;self.ByName=byName;self.MoveBy=moves;self.ActiveProfile=profile
-local shouldPrune=char~=nil and events~=nil and(pruneStale==true or((changed or self.NeedPrune)and#rows>0))
+local shouldPrune=char~=nil and events~=nil and(pruneStale==true or self.NeedPrune==true)and#rows>0
 if shouldPrune and(self.Pending or type(selected.Value)=="table")then
 self.NeedPrune=false
 local srcSel=self.Pending or selected.Value
@@ -5469,12 +5747,27 @@ self.Syncing=true
 selected:SetValues(rows)
 setSelected(selected,kept);selected.Value=table.clone(kept)
 self.Syncing=false
-elseif shouldPrune then
-self.NeedPrune=false
-if different then self.Syncing=true;selected:SetValues(rows);self.Syncing=false end
 elseif different and#rows>0 then
-self.Syncing=true;selected:SetValues(rows)
-if self.Pending then setSelected(selected,self.Pending);selected.Value=table.clone(self.Pending)end
+local keep=self.Pending
+if not keep and type(selected.Value)=="table"then
+keep={}
+for k,on in pairs(selected.Value)do
+local name=type(k)=="number"and on or k
+if on and type(name)=="string"and not excluded[name]then keep[name]=true end
+end
+self.Pending=keep
+end
+keep=keep or{}
+local uiVisible={}
+for k,on in pairs(keep)do
+if on and(byName[k]~=nil or(isBasicPunch(k)and(byName["M1"]~=nil or byName["NormalPunch"]~=nil)))then
+uiVisible[k]=true
+end
+end
+self.Syncing=true
+selected:SetValues(rows)
+setSelected(selected,uiVisible)
+selected.Value=table.clone(keep)
 self.Syncing=false
 end
 if not force and not changed and not self.Learning and(self.ErrorAt or 0)>0 and(now-self.ErrorAt)<2.5 then
@@ -5495,6 +5788,8 @@ elseif profile then
 status(tostring(stand).." · "..#rows.." skill sẵn có")
 elseif kind=="Tool"and#rows>0 then
 status("Vũ khí "..tostring(stand or"Tool").." · Quét "..#rows.." remote · Có thể bấm Học để lưu tham số")
+elseif type(hookmetamethod)~="function"or type(getnamecallmethod)~="function"then
+status("Stand mới "..tostring(stand or"?").." · Chưa có hồ sơ sẵn; executor thiết bị này không hỗ trợ hookmetamethod để học chiêu")
 else
 status("Stand mới "..tostring(stand or"?").." · Chưa có skill · Bấm 'Quét / Học skill Stand mới' rồi bấm tay từng chiêu")
 end
@@ -5524,7 +5819,8 @@ setSelected(self,wanted);self.Value=table.clone(wanted)
 manager.Syncing=false;manager:Reset()
 end
 local function ready(char,hum,events,guard,owner,targetModel)
-if not alive()or self.Learning or session.GameMenuBusy or session.RestoringSettings or session.StartupReady==false
+if not alive()or self.Learning or session.GameMenuBusy or session.RestoringSettings
+or session.BossTravelBusy or session.StartupReady==false
 or char~=player.Character or not char or not char.Parent or not hum or hum.Health<=0
 or char:FindFirstChildOfClass("Humanoid")~=hum or not events or not isOwnedByChar(events,char)
 or not kindOf(events)or next(env.EDULunaM1Retired or{})then return false end
@@ -5538,7 +5834,12 @@ if not pf or pf.Running==false or type(pf.IsCombatReady)~="function"or pf:IsComb
 elseif owner~="Lair"then
 if pf and pf.Running~=false and type(pf.InActiveTurn)=="function"and pf:InActiveTurn()==true then return false end
 end
-if owner=="EDU"and(session.BossQueueBusy or boss and boss.Running~=false and boss:IsEngaged())then return false end
+if owner=="Boss"and targetModel~=nil and boss and boss.Running~=false and type(boss.Owns)=="function"and not boss:Owns(targetModel)then
+return false
+end
+if(owner=="EDU"or owner=="Halloween")and(session.BossQueueBusy or boss and boss.Running~=false and boss:IsEngaged())then
+return false
+end
 return not guard or guard()==true
 end
 local function isWanted(wanted,name)
@@ -5596,16 +5897,8 @@ if raw=="2 skill / nhịp"then return 2 end
 if raw=="3 skill / nhịp"then return 3 end
 return math.huge
 end
-function self:Fire(char,guard,owner,targetModel,policy)
+function self:Fire(char,guard,owner,targetModel)
 self:Refresh()
-local halloween=env.EDUHalloweenV1
-if halloween and halloween.GroupRestrictsAttacks and halloween:GroupRestrictsAttacks()then
-if owner~="Halloween"or not halloween:AcceptGroupPolicy(targetModel,policy)then
-self:Release();flushPendingEnds(true);return false
-end
-end
-local tagOnly=owner=="Halloween"and policy and policy.Mode=="Tag"
-if tagOnly and self.Held then self:Release()end
 if autoCancelHold.Value==true and self.Held and self.Held.TargetModel
 and not isTargetAlive(self.Held.TargetModel,self.Held.TargetParent)then
 self:Release()
@@ -5624,9 +5917,9 @@ if kind=="Folder"then
 local aura=char:FindFirstChild("Aura")
 if aura and aura:IsA("BoolValue")and not aura.Value then
 local summon=events:FindFirstChild("Summon")
-if summon and isRemoteCallable(summon)and now>=(self.NextSummon or 0)then
+if summon and isRemoteCallable(summon)and now>=(self.NextSummon or 0)and not serverOnCooldown("Toggle Stand")then
 self.SummonAttempts=(self.SummonAttempts or 0)+1
-self.NextSummon=now+(self.SummonAttempts>3 and 5 or 1)
+self.NextSummon=now+(self.SummonAttempts>3 and 5 or 1.35)
 local okSum,errSum=pcall(function()summon:FireServer()end)
 if not okSum then reportError("Summon: "..tostring(errSum))end
 end
@@ -5637,9 +5930,9 @@ end
 else
 local summoned=summonState(char,events)
 if summoned==false then
-if now>=(self.NextSummon or 0)then
+if now>=(self.NextSummon or 0)and not serverOnCooldown("Toggle Stand")then
 self.SummonAttempts=(self.SummonAttempts or 0)+1
-self.NextSummon=now+(self.SummonAttempts>3 and 5 or 1)
+self.NextSummon=now+(self.SummonAttempts>3 and 5 or 1.35)
 self.StandPartsCache=nil
 local summonMove=(self.ActiveProfile and self.ActiveProfile.Summon)
 or{Action="InitiateMove",Name="SummonStand",StartState="Start",ArgCount=4}
@@ -5653,14 +5946,17 @@ end
 local activeTarget=resolveActiveTarget(targetModel)
 local trackedTarget=(activeTarget and activeTarget.Parent~=nil and isTargetAlive(activeTarget,activeTarget.Parent))and activeTarget or nil
 local cdSet=snapshotCooldowns()
-local wanted=type(selected.Value)=="table"and selected.Value or{}
+local wanted=self.Pending or(type(selected.Value)=="table"and selected.Value)or{}
 local sent=false
 if kind=="Folder"then
 local budget=maxSkillsPerTick()
 local count=0
-for _,name in ipairs(self.Rows)do
+local size=#self.Rows
+local startIndex=budget<math.huge and size>0 and(self.FolderCursor%size)+1 or 1
+for offset=0,size-1 do
 if count>=budget then break end
-if tagOnly and not isBasicPunch(name)then continue end
+local index=((startIndex+offset-1)%size)+1
+local name=self.Rows[index]
 if not all.Value and not isWanted(wanted,name)then continue end
 if not ready(char,hum,events,guard,owner,targetModel)then break end
 if isMoveOnCooldown(cdSet,name,nil)then continue end
@@ -5670,16 +5966,15 @@ if not remote or not isOwnedByChar(remote,char)or events:FindFirstChild(name)~=r
 local move=self.MoveBy[name]
 if move and(move.ArgTemplate or move.EndArgTemplate or move.Aim or move.Action)then
 if fireProtocol(remote,move,nil,char,activeTarget)then
-sent=true;count+=1
+sent=true;count+=1;self.FolderCursor=index
 if move.TapRelease and(move.EndState~=nil or move.EndArgTemplate~=nil)then
 self.PendingEnds[#self.PendingEnds+1]={Move=move,Remote=remote,Char=char,Hum=hum,Until=now+.08}
 end
 end
 else
 local okFire,errFire=pcall(function()remote:FireServer(true)end)
-if okFire then sent=true;count+=1 else reportError(name..": "..tostring(errFire))end
+if okFire then sent=true;count+=1;self.FolderCursor=index else reportError(name..": "..tostring(errFire))end
 end
-if tagOnly and sent then break end
 end
 return sent
 end
@@ -5695,7 +5990,6 @@ end
 end
 local activeSkills,holdCandidates,m1Move={},{},nil
 for _,name in ipairs(self.Rows)do
-if tagOnly and not isBasicPunch(name)then continue end
 if not all.Value and not isWanted(wanted,name)then continue end
 local move=self.MoveBy[name]
 if not move then continue end
@@ -5743,6 +6037,7 @@ local resolvedRemote=resolveMoveRemote(char,events,pick)or events
 self.Held={
 Name=pick.Name,Move=pick,Remote=resolvedRemote,Char=char,Hum=hum,Until=now+pick.Hold,
 TargetModel=trackedTarget,TargetParent=trackedTarget and trackedTarget.Parent or nil,
+Guard=guard,Owner=owner,
 }
 end
 end
@@ -5752,17 +6047,50 @@ if fireProtocol(events,m1Move,nil,char,activeTarget)then sent=true end
 end
 return sent
 end
+function self:GetSkillBlockReason()
+local wanted=self.Pending or(type(selected.Value)=="table"and selected.Value)or{}
+local anySelected=(all.Value==true)
+if not anySelected then
+for k,on in pairs(wanted)do
+if(type(k)=="number"and type(on)=="string")or on==true then anySelected=true;break end
+end
+end
+if not anySelected then
+local useKey=options.UseKeySkills and options.UseKeySkills.Value==true
+local keySel=useKey and options.SelectKeySkills and options.SelectKeySkills.Value
+if type(keySel)=="table"then
+for k,on in pairs(keySel)do
+if(type(k)=="number"and type(on)=="string")or on==true then anySelected=true;break end
+end
+end
+end
+if not anySelected then return"NoAttackSelected"end
+if#self.Rows>0 then
+local cdSet=snapshotCooldowns()
+local anyWantedInRows,anyReady=false,false
+for _,name in ipairs(self.Rows)do
+if all.Value or isWanted(wanted,name)then
+anyWantedInRows=true
+local move=self.MoveBy[name]
+if not isMoveOnCooldown(cdSet,name,move and move.RemoteName)then
+anyReady=true
+break
+end
+end
+end
+if anyWantedInRows and not anyReady then return"OnCooldown"end
+end
+return"Ready"
+end
 function self:YieldForDungeon()
 self:Release()
 flushPendingEnds(true)
 self.NextAt=0
 return true
 end
-function self:FireM1Only(char)
-local halloween=env.EDUHalloweenV1
-if halloween and halloween.GroupRestrictsAttacks and halloween:GroupRestrictsAttacks()then return false end
+function self:FireM1Only(char,targetModel)
 if not alive()or self.Learning or self.Held then return false end
-if session.GameMenuBusy or session.RestoringSettings or session.StartupReady==false then return false end
+if session.GameMenuBusy or session.RestoringSettings or session.BossTravelBusy or session.StartupReady==false then return false end
 if session.IsMiasmaHolding and session:IsMiasmaHolding()then return false end
 if next(env.EDULunaM1Retired or{})then return false end
 self:Refresh()
@@ -5775,7 +6103,7 @@ self.NextM1At=now+.06
 local kind=kindOf(events)
 local move=self.MoveBy["M1"]or self.MoveBy["NormalPunch"]or self.MoveBy["Punch"]
 if move then
-return fireProtocol(events,move,nil,char,resolveActiveTarget(nil))
+return fireProtocol(events,move,nil,char,resolveActiveTarget(targetModel))
 end
 if kind=="Folder"then
 local remote=self.ByName["M1"]or self.ByName["NormalPunch"]or self.ByName["Punch"]
@@ -5791,23 +6119,48 @@ end
 function self:Step(model,guard)return self:Fire(player.Character,guard,"Boss",model)end
 selected:OnChanged(function()
 if self.Syncing then return end
-self.Pending=table.clone(type(selected.Value)=="table"and selected.Value or{})
+local incoming=type(selected.Value)=="table"and selected.Value or{}
+local merged={}
+if self.Pending and#self.Rows>0 then
+for k,on in pairs(self.Pending)do
+if on and self.ByName[k]==nil then merged[k]=true end
+end
+end
+for k,on in pairs(incoming)do
+local name=type(k)=="number"and on or k
+if on and type(name)=="string"and not excluded[name]then merged[name]=true end
+end
+self.Pending=merged
+self.Syncing=true
+selected.Value=table.clone(merged)
+self.Syncing=false
 self:Reset()
 end)
 all:OnChanged(function()self:Reset()end)
 local connection=game:GetService("RunService").Heartbeat:Connect(function()
 local now=os.clock()
-local hw=env.EDUHalloweenV1
-if hw and hw.GroupWaitingOrTagging and hw:GroupWaitingOrTagging()then
-if self.Held then self:Release()end
-flushPendingEnds(true)
-end
 if self.Learning and now>=self.LearnUntil then
 self:StopLearning("Đã tự dừng học sau khi hết thời gian chờ")
 end
-flushPendingEnds(session.GameMenuBusy or session.RestoringSettings or not alive())
-if self.Held and(now>=self.Held.Until or(autoCancelHold.Value==true and self.Held.TargetModel and not isTargetAlive(self.Held.TargetModel,self.Held.TargetParent))or session.GameMenuBusy or session.RestoringSettings or not alive())then
+flushPendingEnds(session.GameMenuBusy or session.RestoringSettings or session.BossTravelBusy or not alive())
+local heldNow=self.Held
+if heldNow then
+local guardOk=true
+if type(heldNow.Guard)=="function"then
+local okG,resG=pcall(heldNow.Guard)
+guardOk=okG and resG==true
+end
+if self.Held==heldNow then
+local charDead=(heldNow.Char~=player.Character)or(not heldNow.Hum)or(not heldNow.Hum.Parent)or(heldNow.Hum.Health<=0)
+if now>=heldNow.Until
+or not guardOk
+or charDead
+or(autoCancelHold.Value==true and heldNow.TargetModel and not isTargetAlive(heldNow.TargetModel,heldNow.TargetParent))
+or session.GameMenuBusy or session.RestoringSettings or session.BossTravelBusy or not alive()
+then
 self:Release()
+end
+end
 end
 if alive()and now>=(self.ScanAt or 0)then self:Refresh()end
 end)
@@ -5816,7 +6169,8 @@ if not self.Running then return end
 self.Running=false
 self.Learning=false;detachObserver()
 if cooldownConnection then cooldownConnection:Disconnect();cooldownConnection=nil end
-cooldownRemote=nil;clearServerCooldowns()
+if summonPacketConn then summonPacketConn:Disconnect();summonPacketConn=nil end
+cooldownRemote=nil;summonPacketRemote=nil;clearServerCooldowns()
 connection:Disconnect()
 flushPendingEnds(true);self:Release()
 self.Rows={};self.ByName={};self.MoveBy={};self.Events=nil;self.Char=nil;self.Hum=nil
@@ -5828,47 +6182,57 @@ end
 ]]):sub(2),"@EDUHub_New/Combat_Skills.lua"))()
 local function installHalloweenStorage()error("Luna Stand storage must be installed before Halloween",0)end
 local installHalloweenCombat=assert(loadstring(([[!return function(engine,state,player,allowed,combat)
-local env=getgenv and getgenv()or _G
-state.stopHalloweenGroupAttacks=function()
-local manager=env.EDUHubCombatV1
-if manager and manager.Running and manager.YieldForDungeon then manager:YieldForDungeon()end
-end
-local request,nextAt=nil,0
+local request,nextAt,generation=nil,0,0
 local function ready()
-return request~=nil and request.Character==player.Character and os.clock()-request.At<=.65
+if not request or request.Generation~=generation then return false end
+local char=player.Character
+local root=char and char:FindFirstChild("HumanoidRootPart")
+return char~=nil and request.Character==char and root~=nil and request.Root==root
+and os.clock()-request.At<=.65
 and engine:Get("HalloweenAutoDoor")and engine:Get("HalloweenAutoMob")
-and engine:IsRunning()and not state.gameMenuBusy and not state.halloweenRejoinPending and allowed()
+and engine:IsRunning()and not state.gameMenuBusy and not state.travelPreparing
+and not state.halloweenRejoinPending and allowed()
 and state.hasHalloweenGroup and state.hasHalloweenGroup()
 and state.isHalloweenAttackTarget and state.isHalloweenAttackTarget(request.Model)
 and not(state.halloweenDoorInputBusy and state.halloweenDoorInputBusy())
 end
 state.setHalloweenCombatRequest=function(model)
-if not request or request.Model~=model or request.Character~=player.Character then nextAt=0 end
-request=model and{Model=model,Character=player.Character,At=os.clock()}or nil
+local char=player.Character
+local root=char and char:FindFirstChild("HumanoidRootPart")
+if not model or not char or not root then
+if request then generation+=1;request=nil end
+return
+end
+if not request or request.Model~=model or request.Character~=char or request.Root~=root then
+generation+=1
+nextAt=0
+request={Model=model,Character=char,Root=root,Generation=generation,At=os.clock()}
+else
+request.At=os.clock()
+end
+end
+state.getHalloweenActiveTarget=function()
+return ready()and request and request.Model or nil
 end
 state.isHalloweenFightingMob=ready
 local connection=game:GetService("RunService").Heartbeat:Connect(function()
 local now=os.clock()
 if not request or now<nextAt then return end
-local ok,can=pcall(ready)
-if ok and can then
-nextAt=now+.1
-local group=state.halloweenCoop
-local policy=group and group.Enabled and group.Policy or nil
-local model=request.Model
-local sent
-ok,sent=pcall(combat,player.Character,nil,ready,"Halloween",model,policy)
-if ok and sent and group and policy then group:Sent(model,policy,now)end
+local active=request
+local activeGen=active.Generation
+local function guard()
+return request==active and generation==activeGen and ready()
 end
+local ok,can=pcall(guard)
+if ok and can then nextAt=now+.1;ok=pcall(combat,active.Character,nil,guard,"Halloween",active.Model)end
 if not ok then
 nextAt=now+1
 if engine.Notify then pcall(engine.Notify,engine,"Halloween","Skill Halloween chờ dữ liệu · Tự thử lại sau 1 giây")end
 end
 end)
 engine:OnStop(function()
-if state.halloweenCoop then state.halloweenCoop:ClearPolicy()end
-connection:Disconnect();request=nil;state.setHalloweenCombatRequest=nil;state.isHalloweenFightingMob=nil
-state.stopHalloweenGroupAttacks=nil
+connection:Disconnect();generation+=1;request=nil
+state.setHalloweenCombatRequest=nil;state.getHalloweenActiveTarget=nil;state.isHalloweenFightingMob=nil
 end)
 end
 ]]):sub(2),"@EDUHub_New/Halloween_Luna_Combat.lua"))()
@@ -6534,11 +6898,1366 @@ end
 return self
 end
 ]]):sub(2),"@EDUHub_New/Auto_Rejoin.lua"))()
-local installAFKOptimizer=assert(loadstring(([[!return function(tab,options,fluent,session)
+local installGraphicsOptimizer=assert(loadstring(([[!return function(services,config)
+config=config or{}
+local clock=config.Clock or os.clock
+local MAX_RECORDS=math.clamp(tonumber(config.MaxRecords)or 45000,64,100000)
+local MAX_QUEUE=math.clamp(tonumber(config.MaxQueue)or 2048,128,16384)
+local FAST_RING_SIZE=2048
+local CELL_SIZE=math.clamp(tonumber(config.CellSize)or 128,32,512)
+local CULL_RADIUS=math.clamp(tonumber(config.CullRadius)or 260,64,2000)
+local CULL_HYSTERESIS=math.clamp(tonumber(config.CullHysteresis)or 22,8,120)
+local CULL_OUT_SQ=(CULL_RADIUS+CULL_HYSTERESIS)^2
+local CULL_IN_SQ=math.max(24,CULL_RADIUS-CULL_HYSTERESIS)^2
+local CAM_MOVE_SQ=(tonumber(config.CameraMoveThreshold)or 16)^2
+local DECOR_NAMES={
+"Trees",
+"Bushes",
+"HalloweenProps",
+"Lamps",
+"StreetLights",
+"Powerlines",
+"Decorations",
+"Props",
+}
+local DECOR_SET={}
+for _,n in ipairs(DECOR_NAMES)do
+DECOR_SET[n]=true
+end
+local PROTECTED_ANCESTORS={
+Living=true,
+NPCs=true,
+NPCS=true,
+Doors=true,
+MiasmaQuest=true,
+Miasma=true,
+TUBodhiTree=true,
+TrickOrTreatKnock=true,
+TrickOrTreat=true,
+Knock=true,
+Items=true,
+Drops=true,
+}
+local INTERACTIVE_CHILD_CLASSES={
+ProximityPrompt=true,
+ClickDetector=true,
+TouchTransmitter=true,
+Dialog=true,
+Seat=true,
+VehicleSeat=true,
+SpawnLocation=true,
+Humanoid=true,
+}
+local FLOOR_WORDS={
+baseplate=true,
+floor=true,
+floors=true,
+ground=true,
+walkway=true,
+walkways=true,
+sidewalk=true,
+sidewalks=true,
+stair=true,
+stairs=true,
+staircase=true,
+platform=true,
+platforms=true,
+bridge=true,
+bridges=true,
+road=true,
+roads=true,
+path=true,
+paths=true,
+terrain=true,
+}
+local SURFACES={
+"TopSurface",
+"BottomSurface",
+"FrontSurface",
+"BackSurface",
+"LeftSurface",
+"RightSurface",
+}
+local VFX_CLASSES={
+ParticleEmitter=true,
+Beam=true,
+Trail=true,
+Fire=true,
+Smoke=true,
+Sparkles=true,
+Explosion=true,
+Highlight=true,
+}
+local LIGHT_CLASSES={
+PointLight=true,
+SpotLight=true,
+SurfaceLight=true,
+}
+local POST_CLASSES={
+BloomEffect=true,
+BlurEffect=true,
+DepthOfFieldEffect=true,
+ColorCorrectionEffect=true,
+SunRaysEffect=true,
+ColorGradingEffect=true,
+}
+local SKIP_SCAN_CLASSES={
+KeyframeSequence=true,
+Keyframe=true,
+Pose=true,
+Animation=true,
+AnimationClip=true,
+CurveAnimation=true,
+}
+local transparentSeq=NumberSequence and NumberSequence.new and NumberSequence.new(1)or nil
+local zeroSizeSeq=NumberSequence and NumberSequence.new and NumberSequence.new(0)or nil
+local emptyContent=nil
+pcall(function()
+emptyContent=Content and Content.none or nil
+end)
+local smoothMaterial=Enum and Enum.Material and Enum.Material.SmoothPlastic or nil
+local smoothSurface=Enum and Enum.SurfaceType and Enum.SurfaceType.Smooth or nil
+local perfFidelity=Enum and Enum.RenderFidelity and Enum.RenderFidelity.Performance or nil
+local lowSavedQuality=Enum and Enum.SavedQualitySetting and Enum.SavedQualitySetting.QualityLevel1 or nil
+local lowRenderQuality=Enum and Enum.QualityLevel and Enum.QualityLevel.Level01 or nil
+local self={
+Running=true,
+Wanted=false,
+State="OFF",
+Connections={},
+Watchers={},
+Records=setmetatable({},{__mode="k"}),
+Order=setmetatable({},{__mode="v"}),
+Taken={},
+Free={},
+OrderSize=0,
+Count=0,
+Cursor=0,
+Fast=setmetatable({},{__mode="v"}),
+FastSize=0,
+FastCursor=0,
+FastNext=0,
+Queue={},
+Queued=setmetatable({},{__mode="k"}),
+QHead=1,
+QTail=0,
+Stack={},
+Active={},
+Seen=setmetatable({},{__mode="k"}),
+SeenRing=setmetatable({},{__mode="v"}),
+SeenCursor=0,
+GridCells={},
+GridList={},
+GridCellCount=0,
+PartCell=setmetatable({},{__mode="k"}),
+CulledSet=setmetatable({},{__mode="k"}),
+CulledCount=0,
+FlushQueue={},
+FlushHead=1,
+FlushTail=0,
+GridDirty=false,
+GridEvalActive=false,
+GridCursor=0,
+LastCamPos=nil,
+LastEvalAt=0,
+NextRootsAt=0,
+LastScanAt=0,
+NeedRescan=false,
+Visited=0,
+Writes=0,
+Restored=0,
+Conflicts=0,
+Blocked=0,
+Limited=0,
+Dropped=0,
+HiddenDecor=0,
+PeakMs=0,
+LastError=nil,
+RetryAt=nil,
+DestroyRequested=false,
+}
+local function read(obj,key)
+if not obj then
+return nil
+end
+local ok,value=pcall(function()
+return obj[key]
+end)
+if ok then
+return value
+end
+return nil
+end
+local function isA(obj,className)
+if not obj then
+return false
+end
+local ok,value=pcall(obj.IsA,obj,className)
+return ok and value==true
+end
+local function under(obj,root)
+if not obj or not root then
+return false
+end
+if obj==root then
+return true
+end
+local ok,value=pcall(obj.IsDescendantOf,obj,root)
+return ok and value==true
+end
+local function isContentVal(v)
+if v==nil then return false end
+if typeof and typeof(v)=="Content"then return true end
+return type(v)=="table"and rawget(v,"_type")=="Content"
+end
+local function isNumSeqVal(v)
+if v==nil then return false end
+if typeof and typeof(v)=="NumberSequence"then return true end
+return type(v)=="table"and rawget(v,"_type")=="NumberSequence"
+end
+local function same(a,b)
+if a==b then
+return true
+end
+if isContentVal(a)and isContentVal(b)then
+if a.SourceType~=b.SourceType then
+return false
+end
+if Enum and Enum.ContentSourceType then
+if a.SourceType==Enum.ContentSourceType.None then
+return true
+end
+if a.SourceType==Enum.ContentSourceType.Uri then
+return a.Uri==b.Uri
+end
+if a.SourceType==Enum.ContentSourceType.Object then
+return a.Object==b.Object
+end
+end
+return false
+end
+if isNumSeqVal(a)and isNumSeqVal(b)then
+local aa,bb=a.Keypoints,b.Keypoints
+if not aa or not bb or#aa~=#bb then
+return false
+end
+for i,p in ipairs(aa)do
+local q=bb[i]
+if not q or p.Time~=q.Time or p.Value~=q.Value or p.Envelope~=q.Envelope then
+return false
+end
+end
+return true
+end
+return false
+end
+local function excluded(obj)
+if not obj then
+return true
+end
+if read(obj,"Name")=="LunaHalloweenSupport"then
+return true
+end
+local ex=config.Exclude
+if not ex then
+return false
+end
+if type(ex)=="function"then
+local ok,res=pcall(ex,obj)
+return ok and res==true
+elseif type(ex)=="table"and(not typeof or typeof(ex)~="Instance")and ex.IsDescendantOf==nil and ex.ClassName==nil then
+for _,root in ipairs(ex)do
+if root and under(obj,root)then
+return true
+end
+end
+return false
+end
+return under(obj,ex)
+end
+local function inScope(obj)
+return under(obj,services.Workspace)
+or under(obj,services.Lighting)
+or under(obj,services.PlayerGui)
+or(services.UserGameSettings~=nil and obj==services.UserGameSettings)
+or(services.RenderSettings~=nil and obj==services.RenderSettings)
+end
+local function getXYZ(v)
+if v==nil then
+return nil,nil,nil
+end
+local ok,x,y,z=pcall(function()
+return v.X,v.Y,v.Z
+end)
+if ok and type(x)=="number"and type(y)=="number"and type(z)=="number"then
+return x,y,z
+end
+return nil,nil,nil
+end
+local function getPartPos(part)
+local x,y,z=getXYZ(read(part,"Position"))
+if x then
+return x,y,z
+end
+local cf=read(part,"CFrame")
+if cf then
+return getXYZ(read(cf,"Position"))
+end
+return nil,nil,nil
+end
+local function refreshRoots()
+local ws=services.Workspace
+local map=ws and ws:FindFirstChild("Map")or nil
+local base=map and map:FindFirstChild("BaseMap")or nil
+self.MapRoot=map
+self.BaseMapRoot=base
+self.LivingRoot=ws and ws:FindFirstChild("Living")or nil
+self.ItemsRoot=ws and ws:FindFirstChild("Items")or nil
+self.DropsRoot=ws and ws:FindFirstChild("Drops")or nil
+self.MapNPCs=map and(map:FindFirstChild("NPCs")or map:FindFirstChild("NPCS"))or nil
+self.AltNPCs=ws and ws:FindFirstChild("NPCS")or nil
+self.DoorsRoot=base and base:FindFirstChild("Doors")or nil
+self.MiasmaRoot=map and map:FindFirstChild("MiasmaQuest")or nil
+self.BodhiRoot=map and map:FindFirstChild("TUBodhiTree")or nil
+local decorRoots={}
+local seen={}
+if base then
+for _,name in ipairs(DECOR_NAMES)do
+local r=base:FindFirstChild(name)
+if r and not seen[r]then
+seen[r]=true
+decorRoots[#decorRoots+1]=r
+end
+end
+end
+if map then
+for _,name in ipairs(DECOR_NAMES)do
+local r=map:FindFirstChild(name)
+if r and not seen[r]then
+seen[r]=true
+decorRoots[#decorRoots+1]=r
+end
+end
+end
+self.DecorRoots=decorRoots
+end
+local function isFloorOrWalkway(part)
+if read(part,"ClassName")=="SpawnLocation"then
+return true
+end
+local lower=string.lower(tostring(read(part,"Name")or""))
+for token in string.gmatch(lower,"[%a]+")do
+if FLOOR_WORDS[token]then
+return true
+end
+end
+local sx,sy,sz=getXYZ(read(part,"Size"))
+if sx and sy and sz and sx>=36 and sz>=36 and sy<=16 then
+return true
+end
+return false
+end
+local function hasInteractiveOrProtectedContext(obj)
+if not obj then
+return true
+end
+if self.LivingRoot and under(obj,self.LivingRoot)then
+return true
+end
+if self.MapNPCs and under(obj,self.MapNPCs)then
+return true
+end
+if self.AltNPCs and under(obj,self.AltNPCs)then
+return true
+end
+if self.DoorsRoot and under(obj,self.DoorsRoot)then
+return true
+end
+if self.MiasmaRoot and under(obj,self.MiasmaRoot)then
+return true
+end
+if self.BodhiRoot and under(obj,self.BodhiRoot)then
+return true
+end
+if self.ItemsRoot and under(obj,self.ItemsRoot)then
+return true
+end
+if self.DropsRoot and under(obj,self.DropsRoot)then
+return true
+end
+local lp=services.Players and read(services.Players,"LocalPlayer")
+local char=lp and read(lp,"Character")
+if char and under(obj,char)then
+return true
+end
+local name=tostring(read(obj,"Name")or"")
+if PROTECTED_ANCESTORS[name]then
+return true
+end
+local ws=services.Workspace
+local cur=read(obj,"Parent")
+local hops=0
+while cur and cur~=ws and hops<12 do
+local ancName=read(cur,"Name")
+if ancName and PROTECTED_ANCESTORS[ancName]then
+return true
+end
+if read(cur,"ClassName")=="Model"then
+local okH,hum=pcall(cur.FindFirstChildOfClass,cur,"Humanoid")
+if okH and hum~=nil then
+return true
+end
+end
+cur=read(cur,"Parent")
+hops+=1
+end
+local okCh,children=pcall(obj.GetChildren,obj)
+if okCh and type(children)=="table"then
+for _,ch in ipairs(children)do
+local cn=read(ch,"ClassName")
+if cn and INTERACTIVE_CHILD_CLASSES[cn]then
+return true
+end
+end
+end
+return false
+end
+local function isDecorPart(part)
+if read(part,"Anchored")~=true then
+return false
+end
+local inDecorBranch=false
+for _,root in ipairs(self.DecorRoots or{})do
+if under(part,root)then
+inDecorBranch=true
+break
+end
+end
+if not inDecorBranch then
+return false
+end
+if isFloorOrWalkway(part)or hasInteractiveOrProtectedContext(part)then
+return false
+end
+return true
+end
+local function isMapScene(obj)
+if self.NextRootsAt==0 then
+refreshRoots()
+self.NextRootsAt=clock()+1
+end
+return self.MapRoot~=nil
+and under(obj,self.MapRoot)
+and not(self.MapNPCs and under(obj,self.MapNPCs))
+and not(self.DoorsRoot and under(obj,self.DoorsRoot))
+and not(self.MiasmaRoot and under(obj,self.MiasmaRoot))
+and not(self.BodhiRoot and under(obj,self.BodhiRoot))
+end
+local function isMapSurfaceImage(obj)
+local parent=read(obj,"Parent")
+for _=1,32 do
+if not parent then
+return false
+end
+local cls=read(parent,"ClassName")
+if cls=="SurfaceGui"or cls=="BillboardGui"then
+return isMapScene(parent)or isMapScene(read(parent,"Adornee"))
+end
+parent=read(parent,"Parent")
+end
+return false
+end
+local function reserve(obj,fast)
+local rec=self.Records[obj]
+if rec then
+if fast and not rec.InFast then
+rec.InFast=true
+self.FastNext=(self.FastNext%FAST_RING_SIZE)+1
+self.Fast[self.FastNext]=obj
+self.FastSize=math.min(FAST_RING_SIZE,self.FastSize+1)
+end
+return rec
+end
+local slot=table.remove(self.Free)
+if not slot then
+if self.OrderSize>=MAX_RECORDS then
+self.Limited+=1
+return nil
+end
+self.OrderSize+=1
+slot=self.OrderSize
+end
+rec={Props={},Denied={},Slot=slot,InFast=fast==true}
+self.Records[obj]=rec
+self.Order[slot]=obj
+self.Taken[slot]=true
+self.Count+=1
+if fast then
+self.FastNext=(self.FastNext%FAST_RING_SIZE)+1
+self.Fast[self.FastNext]=obj
+self.FastSize=math.min(FAST_RING_SIZE,self.FastSize+1)
+end
+return rec
+end
+local function patch(obj,prop,desired,fast)
+if desired==nil then
+return false
+end
+local rec=reserve(obj,fast)
+if not rec or rec.Denied[prop]then
+return false
+end
+local current=read(obj,prop)
+if current==nil then
+rec.Denied[prop]=true
+return false
+end
+local saved=rec.Props[prop]
+if not saved then
+saved={Before=current,Applied=current,Desired=desired}
+rec.Props[prop]=saved
+elseif not same(current,saved.Applied)then
+saved.Before=current
+end
+saved.Desired=desired
+if same(current,desired)then
+saved.Applied=current
+return true
+end
+local ok=pcall(function()
+obj[prop]=desired
+end)
+if not ok then
+self.Blocked+=1
+rec.Denied[prop]=true
+if saved.Applied==saved.Before then
+rec.Props[prop]=nil
+end
+return false
+end
+saved.Applied=read(obj,prop)
+self.Writes+=1
+if not same(saved.Applied,desired)then
+self.Blocked+=1
+return false
+end
+return true
+end
+local function restoreProperty(obj,prop,saved)
+local current=read(obj,prop)
+if current==nil then
+return
+end
+if same(current,saved.Applied)then
+if not same(current,saved.Before)then
+local ok=pcall(function()
+obj[prop]=saved.Before
+end)
+if ok then
+self.Restored+=1
+else
+self.Blocked+=1
+end
+end
+else
+self.Conflicts+=1
+end
+end
+local function restoreRecord(obj,rec)
+for prop,saved in pairs(rec.Props)do
+restoreProperty(obj,prop,saved)
+end
+end
+local function releaseSlot(slot)
+if not self.Taken[slot]then
+return
+end
+local obj=self.Order[slot]
+if obj then
+if self.CulledSet[obj]then
+self.CulledSet[obj]=nil
+self.CulledCount=math.max(0,self.CulledCount-1)
+end
+self.Records[obj]=nil
+end
+self.Order[slot]=nil
+self.Taken[slot]=nil
+self.Free[#self.Free+1]=slot
+self.Count=math.max(0,self.Count-1)
+end
+local function getOrCreateCell(ix,iy,iz)
+local key=ix..","..iy..","..iz
+local cell=self.GridCells[key]
+if cell then
+return cell
+end
+local minX,minY,minZ=ix*CELL_SIZE,iy*CELL_SIZE,iz*CELL_SIZE
+cell={
+Key=key,
+MinX=minX,
+MinY=minY,
+MinZ=minZ,
+MaxX=minX+CELL_SIZE,
+MaxY=minY+CELL_SIZE,
+MaxZ=minZ+CELL_SIZE,
+PartList=setmetatable({},{__mode="v"}),
+ListLen=0,
+Culled=false,
+TargetCulled=false,
+InFlush=false,
+FlushIndex=1,
+}
+self.GridCells[key]=cell
+self.GridList[#self.GridList+1]=cell
+self.GridCellCount=#self.GridList
+return cell
+end
+local function applyPartCullState(part,wantCull)
+local rec=self.Records[part]
+if not rec or rec.IsDecor or rec.Denied.LocalTransparencyModifier then
+return
+end
+if wantCull then
+if patch(part,"LocalTransparencyModifier",1,false)then
+if not self.CulledSet[part]then
+self.CulledSet[part]=true
+self.CulledCount+=1
+end
+end
+else
+local saved=rec.Props.LocalTransparencyModifier
+if saved then
+restoreProperty(part,"LocalTransparencyModifier",saved)
+rec.Props.LocalTransparencyModifier=nil
+end
+if self.CulledSet[part]then
+self.CulledSet[part]=nil
+self.CulledCount=math.max(0,self.CulledCount-1)
+end
+end
+end
+local function registerCullCandidate(part,rec)
+if not self.Wanted or not rec or rec.IsDecor or self.PartCell[part]then
+return
+end
+if read(part,"Anchored")~=true or not isMapScene(part)then
+return
+end
+if isFloorOrWalkway(part)or hasInteractiveOrProtectedContext(part)then
+return
+end
+local curAlpha=read(part,"LocalTransparencyModifier")
+if type(curAlpha)~="number"then
+return
+end
+local baseTrans=read(part,"Transparency")
+if type(baseTrans)=="number"and baseTrans>=0.98 then
+return
+end
+local sx,sy,sz=getXYZ(read(part,"Size"))
+if sx and sy and sz and(sx*sx+sy*sy+sz*sz)>(150*150)then
+return
+end
+local px,py,pz=getPartPos(part)
+if not px then
+return
+end
+local cell=getOrCreateCell(math.floor(px/CELL_SIZE),math.floor(py/CELL_SIZE),math.floor(pz/CELL_SIZE))
+cell.ListLen+=1
+cell.PartList[cell.ListLen]=part
+self.PartCell[part]=cell
+self.GridDirty=true
+if cell.Culled then
+applyPartCullState(part,true)
+end
+end
+local function enqueueFlushCell(cell)
+if cell.InFlush then
+return
+end
+cell.InFlush=true
+cell.FlushIndex=1
+self.FlushTail+=1
+self.FlushQueue[self.FlushTail]=cell
+end
+local function flushCullQueue(deadline,maxOps)
+local ops=0
+while self.FlushHead<=self.FlushTail and ops<maxOps and clock()<deadline do
+local cell=self.FlushQueue[self.FlushHead]
+if not cell then
+self.FlushQueue[self.FlushHead]=nil
+self.FlushHead+=1
+else
+local idx=cell.FlushIndex or 1
+local list=cell.PartList
+local wantCull=cell.TargetCulled
+while idx<=cell.ListLen and ops<maxOps and clock()<deadline do
+local part=list[idx]
+if not part or read(part,"Parent")==nil or not self.Records[part]then
+list[idx]=list[cell.ListLen]
+list[cell.ListLen]=nil
+cell.ListLen-=1
+if part then
+if self.PartCell[part]==cell then
+self.PartCell[part]=nil
+end
+if self.CulledSet[part]then
+self.CulledSet[part]=nil
+self.CulledCount=math.max(0,self.CulledCount-1)
+end
+end
+else
+applyPartCullState(part,wantCull)
+ops+=1
+idx+=1
+end
+end
+cell.FlushIndex=idx
+if idx>cell.ListLen then
+cell.Culled=wantCull
+cell.InFlush=false
+cell.FlushIndex=1
+self.FlushQueue[self.FlushHead]=nil
+self.FlushHead+=1
+else
+break
+end
+end
+end
+if self.FlushHead>self.FlushTail then
+self.FlushQueue={}
+self.FlushHead=1
+self.FlushTail=0
+end
+return ops
+end
+local function getCameraPos()
+local cam=services.Workspace and read(services.Workspace,"CurrentCamera")
+if not cam then
+return nil,nil,nil
+end
+local cf=read(cam,"CFrame")
+if cf then
+return getXYZ(read(cf,"Position"))
+end
+return nil,nil,nil
+end
+local function evaluateSpatialGrid(deadline)
+if not self.Wanted or self.GridCellCount==0 then
+return
+end
+local cx,cy,cz=getCameraPos()
+if not cx then
+return
+end
+local now=clock()
+if not self.GridEvalActive then
+local trigger=self.GridDirty or not self.LastCamPos
+if not trigger and self.LastCamPos then
+local dx=cx-self.LastCamPos[1]
+local dy=cy-self.LastCamPos[2]
+local dz=cz-self.LastCamPos[3]
+if(dx*dx+dy*dy+dz*dz)>=CAM_MOVE_SQ and(now-self.LastEvalAt)>=0.15 then
+trigger=true
+elseif(now-self.LastEvalAt)>=0.8 then
+trigger=true
+end
+end
+if not trigger then
+return
+end
+self.GridEvalActive=true
+self.GridDirty=false
+self.GridCursor=1
+self.EvalCamPos={cx,cy,cz}
+self.LastCamPos={cx,cy,cz}
+self.LastEvalAt=now
+end
+local ep=self.EvalCamPos or{cx,cy,cz}
+local ex,ey,ez=ep[1],ep[2],ep[3]
+local checked=0
+while self.GridCursor<=self.GridCellCount and checked<48 and clock()<deadline do
+local cell=self.GridList[self.GridCursor]
+self.GridCursor+=1
+checked+=1
+if cell and cell.ListLen>0 then
+local qx=ex-math.clamp(ex,cell.MinX,cell.MaxX)
+local qy=ey-math.clamp(ey,cell.MinY,cell.MaxY)
+local qz=ez-math.clamp(ez,cell.MinZ,cell.MaxZ)
+local distSq=qx*qx+qy*qy+qz*qz
+local wantCull=cell.Culled
+if distSq>=CULL_OUT_SQ then
+wantCull=true
+elseif distSq<=CULL_IN_SQ then
+wantCull=false
+end
+if wantCull~=cell.TargetCulled or(wantCull~=cell.Culled and not cell.InFlush)then
+if cell.InFlush and wantCull~=cell.TargetCulled then
+cell.FlushIndex=1
+end
+cell.TargetCulled=wantCull
+enqueueFlushCell(cell)
+end
+end
+end
+if self.GridCursor>self.GridCellCount then
+self.GridEvalActive=false
+self.GridCursor=0
+end
+end
+local function clearSpatialGrid()
+self.GridCells={}
+self.GridList={}
+self.GridCellCount=0
+self.PartCell=setmetatable({},{__mode="k"})
+self.CulledSet=setmetatable({},{__mode="k"})
+self.CulledCount=0
+self.FlushQueue={}
+self.FlushHead=1
+self.FlushTail=0
+self.GridDirty=false
+self.GridEvalActive=false
+self.GridCursor=0
+self.LastCamPos=nil
+end
+local function apply(obj)
+if not self.Wanted or not inScope(obj)or excluded(obj)then
+return
+end
+local className=read(obj,"ClassName")
+if not className then
+return
+end
+local inGui=services.PlayerGui~=nil and under(obj,services.PlayerGui)
+if inGui then
+if className=="ViewportFrame"then
+patch(obj,"Visible",false,true)
+elseif className=="ParticleEmitter"then
+patch(obj,"Enabled",false,true)
+patch(obj,"Rate",0,true)
+if transparentSeq then
+patch(obj,"Transparency",transparentSeq,true)
+end
+if zeroSizeSeq then
+patch(obj,"Size",zeroSizeSeq,true)
+end
+elseif className=="Beam"or className=="Trail"then
+patch(obj,"Enabled",false,true)
+if transparentSeq then
+patch(obj,"Transparency",transparentSeq,true)
+end
+elseif LIGHT_CLASSES[className]then
+patch(obj,"Enabled",false,true)
+patch(obj,"Shadows",false,true)
+end
+return
+end
+local fast=VFX_CLASSES[className]
+or LIGHT_CLASSES[className]
+or POST_CLASSES[className]
+or className=="Atmosphere"
+or className=="Clouds"
+or className=="Lighting"
+local function set(prop,value)
+return patch(obj,prop,value,fast)
+end
+local function clearTextureAlias(legacy,modern)
+local rec=reserve(obj,fast)
+if not rec then
+return
+end
+if rec.NoLegacy and rec.NoLegacy[modern]then
+return
+end
+if emptyContent~=nil and read(obj,modern)~=nil and not rec.Denied[modern]then
+local beforeModern=read(obj,modern)
+if isContentVal(beforeModern)
+and Enum and Enum.ContentSourceType
+and beforeModern.SourceType~=Enum.ContentSourceType.Uri
+and beforeModern.SourceType~=Enum.ContentSourceType.None
+then
+rec.NoLegacy=rec.NoLegacy or{}
+rec.NoLegacy[modern]=true
+return
+end
+if set(modern,emptyContent)then
+return
+end
+local saved=rec.Props[modern]
+if saved and not same(read(obj,modern),saved.Before)then
+rec.NoLegacy=rec.NoLegacy or{}
+rec.NoLegacy[modern]=true
+return
+end
+rec.Props[modern]=nil
+end
+set(legacy,"")
+end
+if className=="Lighting"then
+set("GlobalShadows",false)
+set("EnvironmentDiffuseScale",0)
+set("EnvironmentSpecularScale",0)
+set("ShadowSoftness",0)
+elseif className=="Terrain"then
+set("Decoration",false)
+set("WaterReflectance",0)
+set("WaterWaveSize",0)
+set("WaterWaveSpeed",0)
+elseif className=="ParticleEmitter"then
+set("Enabled",false)
+set("Rate",0)
+if transparentSeq then
+set("Transparency",transparentSeq)
+end
+if zeroSizeSeq then
+set("Size",zeroSizeSeq)
+end
+elseif className=="Beam"or className=="Trail"then
+set("Enabled",false)
+if transparentSeq then
+set("Transparency",transparentSeq)
+end
+elseif className=="Fire"or className=="Smoke"or className=="Sparkles"or className=="Highlight"or LIGHT_CLASSES[className]or POST_CLASSES[className]then
+set("Enabled",false)
+if LIGHT_CLASSES[className]then
+set("Shadows",false)
+end
+elseif className=="Explosion"then
+set("Visible",false)
+elseif className=="Atmosphere"then
+set("Density",0)
+set("Haze",0)
+set("Glare",0)
+elseif className=="Clouds"then
+set("Enabled",false)
+elseif className=="Sky"then
+set("StarCount",0)
+set("CelestialBodiesShown",false)
+for _,prop in ipairs({"SkyboxBk","SkyboxDn","SkyboxFt","SkyboxLf","SkyboxRt","SkyboxUp","SunTextureId","MoonTextureId"})do
+set(prop,"")
+end
+elseif isA(obj,"BasePart")then
+local rec=reserve(obj,false)
+if not rec then
+return
+end
+set("CastShadow",false)
+set("Reflectance",0)
+if smoothMaterial then
+set("Material",smoothMaterial)
+end
+set("MaterialVariant","")
+if className=="MeshPart"then
+clearTextureAlias("TextureID","TextureContent")
+if perfFidelity then
+set("RenderFidelity",perfFidelity)
+end
+end
+if read(obj,"Anchored")==true and smoothSurface and isMapScene(obj)then
+for _,prop in ipairs(SURFACES)do
+set(prop,smoothSurface)
+end
+end
+if isDecorPart(obj)then
+if not rec.IsDecor then
+rec.IsDecor=true
+self.HiddenDecor+=1
+end
+patch(obj,"LocalTransparencyModifier",1,true)
+else
+registerCullCandidate(obj,rec)
+end
+elseif className=="Texture"or className=="Decal"then
+set("Transparency",1)
+clearTextureAlias("Texture",read(obj,"ColorMapContent")~=nil and"ColorMapContent"or"TextureContent")
+elseif className=="SpecialMesh"or className=="FileMesh"then
+set("TextureId","")
+elseif className=="SurfaceAppearance"then
+for _,prop in ipairs({"ColorMap","MetalnessMap","RoughnessMap","NormalMap"})do
+clearTextureAlias(prop,prop.."Content")
+end
+set("EmissiveStrength",0)
+if emptyContent~=nil then
+set("EmissiveMaskContent",emptyContent)
+end
+elseif className=="ImageLabel"or className=="ImageButton"then
+if isMapSurfaceImage(obj)then
+set("ImageTransparency",1)
+clearTextureAlias("Image","ImageContent")
+end
+elseif services.UserGameSettings~=nil and obj==services.UserGameSettings and lowSavedQuality~=nil then
+set("SavedQualityLevel",lowSavedQuality)
+elseif services.RenderSettings~=nil and obj==services.RenderSettings and lowRenderQuality~=nil then
+set("QualityLevel",lowRenderQuality)
+end
+end
+local function useful(obj)
+local className=read(obj,"ClassName")
+if not className then
+return false
+end
+return VFX_CLASSES[className]
+or LIGHT_CLASSES[className]
+or POST_CLASSES[className]
+or className=="ViewportFrame"
+or className=="Atmosphere"
+or className=="Clouds"
+or className=="Sky"
+or className=="Decal"
+or className=="Texture"
+or className=="SurfaceAppearance"
+or className=="SpecialMesh"
+or className=="FileMesh"
+or className=="Terrain"
+or isA(obj,"BasePart")
+or((className=="ImageLabel"or className=="ImageButton")and isMapSurfaceImage(obj))
+end
+local function enqueue(obj)
+if not self.Wanted or not obj or self.Queued[obj]or excluded(obj)then
+return
+end
+local name=read(obj,"Name")
+if name=="Map"or name=="BaseMap"or DECOR_SET[name]then
+self.NextRootsAt=0
+end
+if not useful(obj)then
+return
+end
+if(self.QTail-self.QHead+1)>=MAX_QUEUE then
+self.Dropped+=1
+self.NeedRescan=true
+return
+end
+self.QTail+=1
+self.Queue[self.QTail]=obj
+self.Queued[obj]=true
+end
+local function disconnectWatchers()
+for _,c in ipairs(self.Watchers)do
+pcall(c.Disconnect,c)
+end
+self.Watchers={}
+end
+local function startScan()
+self.Stack={}
+self.Active={}
+self.Seen=setmetatable({},{__mode="k"})
+self.SeenRing=setmetatable({},{__mode="v"})
+self.SeenCursor=0
+local roots={
+services.RenderSettings,
+services.UserGameSettings,
+services.PlayerGui,
+services.Lighting,
+services.Workspace,
+}
+for _,root in ipairs(roots)do
+if root then
+self.Stack[#self.Stack+1]={Object=root,Depth=0}
+end
+end
+self.State="APPLYING"
+self.LastScanAt=clock()
+self.NeedRescan=false
+end
+local function beginEnable()
+refreshRoots()
+self.NextRootsAt=clock()+1
+startScan()
+self.Queue={}
+self.Queued=setmetatable({},{__mode="k"})
+self.QHead=1
+self.QTail=0
+disconnectWatchers()
+for _,root in ipairs({services.Workspace,services.Lighting,services.PlayerGui})do
+if root and root.DescendantAdded then
+local ok,conn=pcall(root.DescendantAdded.Connect,root.DescendantAdded,enqueue)
+if ok and conn then
+self.Watchers[#self.Watchers+1]=conn
+end
+end
+end
+end
+local function beginRestore()
+disconnectWatchers()
+clearSpatialGrid()
+self.State="RESTORING"
+self.RestoreCursor=1
+self.Stack={}
+self.Active={}
+self.Queue={}
+self.Queued=setmetatable({},{__mode="k"})
+self.QHead=1
+self.QTail=0
+self.HiddenDecor=0
+end
+local function resetRegistryAfterRestore()
+self.OrderSize=0
+self.Count=0
+self.Cursor=0
+self.Order=setmetatable({},{__mode="v"})
+self.Records=setmetatable({},{__mode="k"})
+self.Taken={}
+self.Free={}
+self.Fast=setmetatable({},{__mode="v"})
+self.FastSize=0
+self.FastCursor=0
+self.FastNext=0
+self.Seen=setmetatable({},{__mode="k"})
+self.SeenRing=setmetatable({},{__mode="v"})
+self.State="OFF"
+end
+local function finalizeDestroy()
+self.Running=false
+self.State="DESTROYED"
+disconnectWatchers()
+clearSpatialGrid()
+for _,c in ipairs(self.Connections)do
+pcall(c.Disconnect,c)
+end
+self.Connections={}
+self.Stack={}
+self.Active={}
+self.Records=setmetatable({},{__mode="k"})
+self.Order=setmetatable({},{__mode="v"})
+self.Taken={}
+self.Free={}
+self.Fast=setmetatable({},{__mode="v"})
+end
+function self:FinishRestoreNow()
+if not self.Running then
+return
+end
+if self.State~="OFF"or self.Count>0 then
+if self.State~="RESTORING"then
+beginRestore()
+end
+for slot=self.RestoreCursor or 1,self.OrderSize do
+local obj=self.Order[slot]
+local rec=obj and self.Records[obj]
+if rec then
+restoreRecord(obj,rec)
+end
+releaseSlot(slot)
+end
+resetRegistryAfterRestore()
+end
+if self.DestroyRequested then
+finalizeDestroy()
+end
+end
+function self:SetEnabled(value)
+if not self.Running or self.DestroyRequested then
+return
+end
+self.Wanted=value==true
+if self.Wanted then
+if self.State=="OFF"then
+beginEnable()
+end
+elseif self.State=="ACTIVE"or self.State=="APPLYING"then
+beginRestore()
+end
+end
+function self:Destroy(immediate)
+if not self.Running then
+return
+end
+self.DestroyRequested=true
+self.Wanted=false
+if self.State=="OFF"and self.Count==0 then
+finalizeDestroy()
+elseif immediate then
+self:FinishRestoreNow()
+elseif self.State~="RESTORING"then
+beginRestore()
+end
+end
+local function maintain(obj)
+local rec=self.Records[obj]
+if not rec then
+return
+end
+for prop,saved in pairs(rec.Props)do
+if not rec.Denied[prop]and saved.Desired~=nil then
+patch(obj,prop,saved.Desired,false)
+end
+end
+end
+local function scanOne()
+local frame=self.Stack[#self.Stack]
+if not frame then
+return
+end
+local obj=frame.Object
+local function pop()
+table.remove(self.Stack)
+if self.Active[obj]==frame then
+self.Active[obj]=nil
+end
+end
+if not frame.Children then
+if excluded(obj)or self.Active[obj]or self.Seen[obj]or(frame.Parent and read(obj,"Parent")~=frame.Parent)then
+pop()
+return
+end
+if not inScope(obj)then
+pop()
+return
+end
+self.Active[obj]=frame
+self.SeenCursor=(self.SeenCursor%20000)+1
+local old=self.SeenRing[self.SeenCursor]
+if old then
+self.Seen[old]=nil
+end
+self.SeenRing[self.SeenCursor]=obj
+self.Seen[obj]=true
+self.Visited+=1
+apply(obj)
+local className=read(obj,"ClassName")
+if SKIP_SCAN_CLASSES[className]or isA(obj,"ValueBase")or isA(obj,"LuaSourceContainer")then
+pop()
+return
+end
+local ok,children=pcall(obj.GetChildren,obj)
+if not ok or type(children)~="table"then
+self.LastError="Có nhánh chưa đọc được: "..tostring(read(obj,"Name"))
+pop()
+return
+end
+frame.Children=children
+frame.Size=#children
+frame.Index=1
+elseif frame.Index>frame.Size then
+pop()
+else
+local i=frame.Index
+frame.Index+=1
+local child=frame.Children[i]
+frame.Children[i]=nil
+if child then
+if frame.Depth>=256 then
+self.LastError="Bỏ qua nhánh vượt 256 tầng"
+else
+self.Stack[#self.Stack+1]={Object=child,Parent=obj,Depth=frame.Depth+1}
+end
+end
+end
+end
+function self:Step()
+if not self.Running or self.State=="OFF"then
+return
+end
+local began=clock()
+local units=0
+if self.State=="RESTORING"then
+while self.RestoreCursor<=self.OrderSize and units<110 and(clock()-began)<0.0015 do
+local slot=self.RestoreCursor
+self.RestoreCursor+=1
+units+=1
+local obj=self.Order[slot]
+local rec=obj and self.Records[obj]
+if rec then
+restoreRecord(obj,rec)
+end
+releaseSlot(slot)
+end
+if self.RestoreCursor>self.OrderSize then
+resetRegistryAfterRestore()
+if self.DestroyRequested then
+finalizeDestroy()
+elseif self.Wanted then
+beginEnable()
+end
+end
+else
+if clock()>=(self.NextRootsAt or 0)then
+refreshRoots()
+self.NextRootsAt=clock()+1
+end
+while self.QHead<=self.QTail and units<20 and(clock()-began)<0.0008 do
+local obj=self.Queue[self.QHead]
+self.Queue[self.QHead]=nil
+self.QHead+=1
+units+=1
+if obj then
+self.Queued[obj]=nil
+apply(obj)
+end
+end
+if self.QHead>self.QTail then
+self.Queue={}
+self.QHead=1
+self.QTail=0
+end
+while#self.Stack>0 and units<76 and(clock()-began)<0.0013 do
+scanOne()
+units+=1
+end
+if#self.Stack==0 then
+self.State="ACTIVE"
+end
+local fastUnits=0
+while self.FastSize>0 and fastUnits<16 and units<92 and(clock()-began)<0.0015 do
+self.FastCursor=(self.FastCursor%FAST_RING_SIZE)+1
+local obj=self.Fast[self.FastCursor]
+if obj then
+maintain(obj)
+end
+fastUnits+=1
+units+=1
+if self.FastCursor>=self.FastSize and self.FastSize<FAST_RING_SIZE then
+self.FastCursor=0
+break
+end
+end
+local slowUnits=0
+while self.OrderSize>0 and slowUnits<20 and units<112 and(clock()-began)<0.0016 do
+self.Cursor=(self.Cursor%self.OrderSize)+1
+local obj=self.Order[self.Cursor]
+if obj then
+maintain(obj)
+elseif self.Taken[self.Cursor]then
+releaseSlot(self.Cursor)
+end
+slowUnits+=1
+units+=1
+end
+local cullDeadline=began+0.0019
+if clock()<cullDeadline then
+evaluateSpatialGrid(cullDeadline)
+end
+if self.FlushHead<=self.FlushTail and clock()<cullDeadline then
+flushCullQueue(cullDeadline,48)
+end
+if self.NeedRescan and#self.Stack==0 and self.QHead>self.QTail and(clock()-self.LastScanAt)>=15 then
+startScan()
+end
+end
+self.PeakMs=math.max(self.PeakMs,(clock()-began)*1000)
+end
+self.Connections[#self.Connections+1]=services.RunService.Heartbeat:Connect(function()
+if not self.Running then
+return
+end
+if self.RetryAt and clock()<self.RetryAt then
+return
+end
+local ok,err=pcall(self.Step,self)
+if not ok then
+self.LastError=tostring(err):sub(1,180)
+self.RetryAt=clock()+0.35
+end
+end)
+return self
+end
+]]):sub(2),"@EDUHub_New/Graphics_Optimizer.lua"))()
+local installAFKOptimizer=assert(loadstring(([[!return function(tab,options,fluent,session,installGraphicsOptimizer)
 local env=getgenv and getgenv()or _G
 local previous=env.EDUAFKOptimizerV1
 if previous and type(previous.Destroy)=="function"then
-pcall(previous.Destroy,previous)
+pcall(previous.Destroy,previous,true)
 end
 local players=game:GetService("Players")
 local player=players.LocalPlayer
@@ -6549,12 +8268,14 @@ Running=true,
 VoidRescues=0,
 StuckRescues=0,
 LastStatus=nil,
+GraphicsCore=nil,
 }
 env.EDUAFKOptimizerV1=self
 session:Own(self)
-local section=tab:AddSection("Treo máy 24/7 · AFK Siêu nhẹ")
+local section=tab:AddSection("Treo máy 24/7 · Giảm Lag & AFK")
 local fpsBoostToggle=section:AddToggle("EDUAFKFpsBoost",{
-Title="FPS Booster (Tắt VFX / Bóng đổ)",
+Title="Giảm đồ họa & Ẩn xa có khôi phục (Không dùng sương mù)",
+Description="Ẩn cây/trang trí, giảm VFX/texture/đèn, ẩn part xa theo camera; tắt sẽ khôi phục trên Instance còn sống.",
 Default=false,
 })
 local blackToggle=section:AddToggle("EDUAFKBlackScreen",{
@@ -6572,26 +8293,10 @@ Title="Anti-Stuck Watchdog (Tự cứu khi kẹt)",
 Default=false,
 })
 local statusLabel=section:AddParagraph({
-Title="Trạng thái AFK",
-Content="Đã tắt · Mọi tối ưu đang nghỉ",
+Title="Trạng thái Giảm Lag & AFK",
+Content="Đã tắt · Mọi tối ưu đang nghỉ\nLưu ý: Vật thể từng bị bản Destroy cũ xóa cần tải lại vùng hoặc rejoin.",
 })
 local SAFE_ZONE_CFRAME=CFrame.new(3343.3833,98.8131409,-143.222626)
-local VFX_CLASSES={
-ParticleEmitter=true,
-Trail=true,
-Beam=true,
-Fire=true,
-Smoke=true,
-Sparkles=true,
-Explosion=true,
-}
-local POST_EFFECT_CLASSES={
-BlurEffect=true,
-BloomEffect=true,
-SunRaysEffect=true,
-ColorCorrectionEffect=true,
-DepthOfFieldEffect=true,
-}
 local FARM_TOGGLES={
 "AutoFarmBoss",
 "AutoFarm",
@@ -6599,12 +8304,11 @@ local FARM_TOGGLES={
 "FarmItems",
 "EDUHW_HalloweenAutoDoor",
 "EDUHW_HalloweenAutoMob",
+"EDUPlayerFarm",
 }
-local lightingSnap=nil
-local postEffectSnap={}
-local vfxConn=nil
 local overlayGui=nil
 local overlayStatsText=nil
+local overlayLastText=nil
 local overlayConn=nil
 local fpsCapped=false
 local deadSince=nil
@@ -6613,8 +8317,42 @@ local lastPos=nil
 local lastChar=nil
 local lastVoidRescue=-math.huge
 local lastResetAt=-math.huge
-local nextVfxSweep=0
 local nextStepAt=0
+local playerGui=player and(player:FindFirstChildOfClass("PlayerGui")or player:FindFirstChild("PlayerGui"))or nil
+local userSettings=nil
+pcall(function()
+userSettings=UserSettings():GetService("UserGameSettings")
+end)
+local renderSettings=nil
+pcall(function()
+renderSettings=settings()and settings().Rendering or nil
+end)
+if type(installGraphicsOptimizer)=="function"then
+self.GraphicsCore=installGraphicsOptimizer({
+Workspace=workspace,
+Lighting=lighting,
+PlayerGui=playerGui,
+Players=players,
+RunService=runService,
+UserGameSettings=userSettings,
+RenderSettings=renderSettings,
+},{
+Exclude=function(inst)
+if not inst then
+return false
+end
+local fluentGui=type(fluent)=="table"and rawget(fluent,"GUI")or nil
+if fluentGui and(inst==fluentGui or pcall(inst.IsDescendantOf,inst,fluentGui)and inst:IsDescendantOf(fluentGui))then
+return true
+end
+if overlayGui and(inst==overlayGui or pcall(inst.IsDescendantOf,inst,overlayGui)and inst:IsDescendantOf(overlayGui))then
+return true
+end
+return false
+end,
+})
+env.EDUGraphicsBoostV1=self.GraphicsCore
+end
 local function current()
 return self.Running and session.Running and not fluent.Unloaded and env.EDUAFKOptimizerV1==self
 end
@@ -6626,8 +8364,25 @@ end
 end
 local function summarizeStatus()
 local active={}
-if fpsBoostToggle.Value then active[#active+1]="FPS Boost"end
-if blackToggle.Value then active[#active+1]="Màn hình đen"end
+local g=self.GraphicsCore
+if g then
+if g.Wanted or g.State=="APPLYING"or g.State=="ACTIVE"then
+active[#active+1]=string.format(
+"Giảm lag (%s · Quản lý %d · Ẩn cây %d · Ẩn xa %d)",
+g.State=="APPLYING"and"Đang áp dụng"or"Đang bật",
+g.Count or 0,
+g.HiddenDecor or 0,
+g.CulledCount or 0
+)
+elseif g.State=="RESTORING"then
+active[#active+1]=string.format("Đang khôi phục đồ họa (%d còn lại)",g.Count or 0)
+end
+elseif fpsBoostToggle.Value then
+active[#active+1]="FPS Boost"
+end
+if blackToggle.Value then
+active[#active+1]="Màn hình đen"
+end
 if fpsCapDrop.Value and fpsCapDrop.Value~="Mặc định"then
 active[#active+1]=tostring(fpsCapDrop.Value).." FPS"
 end
@@ -6635,97 +8390,18 @@ if antiStuckToggle.Value then
 active[#active+1]=string.format("Anti-Stuck (Void %d · Kẹt %d)",self.VoidRescues,self.StuckRescues)
 end
 if#active==0 then
-setStatus("Đã tắt · Mọi tối ưu đang nghỉ")
+setStatus("Đã tắt · Mọi tối ưu đang nghỉ\nLưu ý: Vật thể từng bị bản Destroy cũ xóa cần tải lại vùng hoặc rejoin.")
 else
-setStatus("Đang bật: "..table.concat(active," · "))
+local line="Đang bật: "..table.concat(active," · ")
+if g and g.LastError then
+line=line.."\nCảnh báo: "..tostring(g.LastError)
 end
+setStatus(line)
 end
-local function isPostEffect(inst)
-if not inst then return false end
-local okCls,cls=pcall(function()return inst.ClassName end)
-if okCls and POST_EFFECT_CLASSES[cls]then return true end
-local okIs,res=pcall(inst.IsA,inst,"PostEffect")
-return okIs and res==true
-end
-local function suppressVfxInstance(inst)
-if not inst then return end
-local okCls,cls=pcall(function()return inst.ClassName end)
-if not okCls or not VFX_CLASSES[cls]then return end
-pcall(function()
-if inst.Enabled~=nil then
-inst.Enabled=false
-end
-end)
-end
-local function sweepWorkspaceVfx()
-pcall(function()
-for _,desc in ipairs(workspace:GetDescendants())do
-suppressVfxInstance(desc)
-end
-end)
-end
-local function restoreLighting()
-if lightingSnap then
-pcall(function()
-if lightingSnap.GlobalShadows~=nil then lighting.GlobalShadows=lightingSnap.GlobalShadows end
-if lightingSnap.FogEnd~=nil then lighting.FogEnd=lightingSnap.FogEnd end
-if lightingSnap.Brightness~=nil then lighting.Brightness=lightingSnap.Brightness end
-end)
-lightingSnap=nil
-end
-for inst,prevEnabled in pairs(postEffectSnap)do
-pcall(function()
-if inst and inst.Parent then
-inst.Enabled=prevEnabled
-end
-end)
-end
-table.clear(postEffectSnap)
 end
 local function applyFpsBoost(enabled)
-if vfxConn then
-pcall(function()vfxConn:Disconnect()end)
-vfxConn=nil
-end
-if not enabled then
-restoreLighting()
-summarizeStatus()
-return
-end
-if not lightingSnap then
-local snap={}
-pcall(function()snap.GlobalShadows=lighting.GlobalShadows end)
-pcall(function()snap.FogEnd=lighting.FogEnd end)
-pcall(function()snap.Brightness=lighting.Brightness end)
-lightingSnap=snap
-end
-pcall(function()
-lighting.GlobalShadows=false
-lighting.FogEnd=9e9
-end)
-pcall(function()
-for _,child in ipairs(lighting:GetDescendants())do
-if isPostEffect(child)then
-if postEffectSnap[child]==nil then
-local okE,prevE=pcall(function()return child.Enabled end)
-if okE and type(prevE)=="boolean"then
-postEffectSnap[child]=prevE
-end
-end
-pcall(function()child.Enabled=false end)
-end
-end
-end)
-sweepWorkspaceVfx()
-local okAdd,conn=pcall(function()
-return workspace.DescendantAdded:Connect(function(inst)
-if self.Running and fpsBoostToggle.Value then
-suppressVfxInstance(inst)
-end
-end)
-end)
-if okAdd and conn then
-vfxConn=conn
+if self.GraphicsCore then
+self.GraphicsCore:SetEnabled(enabled==true)
 end
 summarizeStatus()
 end
@@ -6759,6 +8435,7 @@ pcall(function()overlayConn:Disconnect()end)
 overlayConn=nil
 end
 overlayStatsText=nil
+overlayLastText=nil
 if overlayGui then
 pcall(function()overlayGui:Destroy()end)
 overlayGui=nil
@@ -6786,9 +8463,15 @@ end
 local function buildOverlay()
 destroyOverlay()
 local parentHost=nil
+if type(gethui)=="function"then
+local okH,h=pcall(gethui)
+if okH and h then parentHost=h end
+end
+if not parentHost then
 pcall(function()
 parentHost=game:GetService("CoreGui")
 end)
+end
 if not parentHost then
 parentHost=player:FindFirstChildOfClass("PlayerGui")or player:FindFirstChild("PlayerGui")
 end
@@ -6819,7 +8502,8 @@ statsLbl.Name="Stats"
 statsLbl.Size=UDim2.new(1,-40,0,110)
 statsLbl.Position=UDim2.new(0,20,0.32,44)
 statsLbl.BackgroundTransparency=1
-statsLbl.Text=formatOverlayText()
+overlayLastText=formatOverlayText()
+statsLbl.Text=overlayLastText
 statsLbl.TextColor3=Color3.fromRGB(228,232,244)
 statsLbl.TextSize=15
 statsLbl.Parent=bg
@@ -6833,7 +8517,8 @@ btn.Text="Tắt màn hình đen (Bật lại 3D)"
 btn.TextColor3=Color3.fromRGB(255,255,255)
 btn.TextSize=15
 btn.Parent=bg
-overlayConn=btn.MouseButton1Click:Connect(function()
+local clickSig=btn.Activated or btn.MouseButton1Click
+overlayConn=clickSig:Connect(function()
 if self.Running and blackToggle.Value then
 blackToggle:SetValue(false)
 else
@@ -6878,8 +8563,31 @@ return okBreak or okHp or okSt
 end
 return okBreak
 end
+local function isActivelyExpectingMovement()
+local bossCtrl=env.EDUHubBossCombatV1
+if bossCtrl and bossCtrl.Running~=false and type(bossCtrl.IsEngaged)=="function"and bossCtrl:IsEngaged()then
+return true
+end
+local hw=env.EDUHalloweenV1
+if hw and hw.Running~=false and type(hw.HasPendingWork)=="function"then
+local okHw,hwPending=pcall(hw.HasPendingWork,hw)
+if okHw and hwPending==true then
+return true
+end
+end
+local pf=env.EDUPlayerFarmV1
+if pf and pf.Running~=false and type(pf.InActiveTurn)=="function"and pf:InActiveTurn()then
+return true
+end
+if(options.AutoFarm and options.AutoFarm.Value==true)
+or(options.AutoFarmLevels and options.AutoFarmLevels.Value==true)
+or(options.FarmItems and options.FarmItems.Value==true)
+then
+return true
+end
+return false
+end
 local function stepAntiStuck(now)
-deadSince=deadSince or nil
 if not antiStuckToggle.Value then
 deadSince,stillSince,lastPos,lastChar=nil,nil,nil,nil
 return
@@ -6913,10 +8621,17 @@ return
 end
 end
 local bossCtrl=env.EDUHubBossCombatV1
-if bossCtrl and bossCtrl.Running~=false and bossCtrl.CurrentSession
-and type(bossCtrl.Ready)=="function"then
+if bossCtrl and bossCtrl.Running~=false and bossCtrl.CurrentSession and type(bossCtrl.Ready)=="function"then
 local okWait,waiting=pcall(bossCtrl.Ready,bossCtrl,bossCtrl.CurrentSession.Model,char)
 if okWait and waiting then
+deadSince,stillSince,lastPos=nil,nil,nil
+return
+end
+end
+local hw=env.EDUHalloweenV1
+if hw and hw.Running~=false and type(hw.IsFightingMob)=="function"then
+local okFight,fighting=pcall(hw.IsFightingMob,hw)
+if okFight and fighting then
 deadSince,stillSince,lastPos=nil,nil,nil
 return
 end
@@ -6948,8 +8663,7 @@ return
 end
 local curPos=root.Position
 if lastPos and curPos then
-local moved=(curPos-lastPos).Magnitude
-if moved>=1.5 then
+if(curPos-lastPos).Magnitude>=1.5 then
 lastPos=curPos
 stillSince=now
 return
@@ -6959,14 +8673,7 @@ lastPos=curPos
 stillSince=now
 return
 end
-local bossBusy=bossCtrl and bossCtrl.Running~=false and type(bossCtrl.IsEngaged)=="function"and bossCtrl:IsEngaged()
-local activeMovingFarm=(options.AutoFarm and options.AutoFarm.Value==true)
-or(options.AutoFarmLevels and options.AutoFarmLevels.Value==true)
-or(options.FarmItems and options.FarmItems.Value==true)
-or(options.EDUHW_HalloweenAutoDoor and options.EDUHW_HalloweenAutoDoor.Value==true)
-or(options.EDUHW_HalloweenAutoMob and options.EDUHW_HalloweenAutoMob.Value==true)
-or bossBusy
-if not activeMovingFarm then
+if not isActivelyExpectingMovement()then
 stillSince=now
 return
 end
@@ -6987,15 +8694,21 @@ function self:Step(now)
 if not current()then return end
 now=now or os.clock()
 if overlayStatsText and blackToggle.Value then
+local nextText=formatOverlayText()
+if nextText~=overlayLastText then
+overlayLastText=nextText
 pcall(function()
-overlayStatsText.Text=formatOverlayText()
+overlayStatsText.Text=nextText
 end)
 end
-if fpsBoostToggle.Value and now>=nextVfxSweep then
-nextVfxSweep=now+30
-sweepWorkspaceVfx()
 end
 stepAntiStuck(now)
+summarizeStatus()
+end
+function self:PrepareUnload()
+if self.GraphicsCore and self.GraphicsCore.Running then
+self.GraphicsCore:Destroy(false)
+end
 end
 fpsBoostToggle:OnChanged(function(value)
 if self.Running then applyFpsBoost(value==true)end
@@ -7013,7 +8726,7 @@ end)
 local connection=runService.Heartbeat:Connect(function()
 if not current()then
 if not self.Running then return end
-self:Destroy()
+self:Destroy(true)
 return
 end
 local now=os.clock()
@@ -7021,20 +8734,26 @@ if now<nextStepAt then return end
 nextStepAt=now+1
 pcall(self.Step,self,now)
 end)
-function self:Destroy()
-if not self.Running then return end
+function self:Destroy(immediate)
+if not self.Running then
+if immediate and self.GraphicsCore and self.GraphicsCore.Running then
+pcall(self.GraphicsCore.FinishRestoreNow,self.GraphicsCore)
+end
+return
+end
 self.Running=false
 if connection then
 pcall(function()connection:Disconnect()end)
 connection=nil
 end
-if vfxConn then
-pcall(function()vfxConn:Disconnect()end)
-vfxConn=nil
-end
 destroyOverlay()
 set3DRendering(true)
-restoreLighting()
+if self.GraphicsCore then
+pcall(self.GraphicsCore.Destroy,self.GraphicsCore,immediate~=false)
+if env.EDUGraphicsBoostV1==self.GraphicsCore then
+env.EDUGraphicsBoostV1=nil
+end
+end
 if fpsCapped then
 local fn=resolveSetFpsCap()
 if fn then pcall(fn,60)end
@@ -8635,8 +10354,15 @@ local function releaseTravel()
 if session.BossTravelBusy==self then session.BossTravelBusy=nil;session.GameMenuBusy=false end
 end
 local function releaseOwnership()
+local hadOwnership=(session.BossQueueBusy==self)or(session.BossTravelBusy==self)
 releaseTravel()
 if session.BossQueueBusy==self then session.BossQueueBusy=nil end
+if hadOwnership then
+local hw=env.EDUHalloweenV1
+if hw and hw.Running~=false and type(hw.OnBossReleased)=="function"then
+pcall(hw.OnBossReleased,hw)
+end
+end
 end
 local function dropActive()
 self.Active=nil;releaseOwnership()
@@ -8650,13 +10376,26 @@ if not entry then return end
 local spec=byName[entry.Name]
 if not spec or not spec.Point then return end
 local due=entry.Due
-if not due and spec.Period and lastSeconds then
-due=math.floor(lastSeconds/spec.Period)*spec.Period
+if not due and spec.Period then
+local secs=lastSeconds
+if secs==nil and clock and type(clock.Read)=="function"then
+local okS,readS=pcall(clock.Read,clock,os.clock())
+if okS then secs=readS end
+end
+if secs then
+due=math.floor(secs/spec.Period)*spec.Period
+end
 end
 if due then
 local key=regionKey(entry.Name)
 local prev=self.CheckedRegions[key]
 if prev==nil or due>prev then self.CheckedRegions[key]=due end
+end
+for i=#self.Queue,1,-1 do
+local q=self.Queue[i]
+if sameBoss(q.Name,entry.Name)and not alive(q.Model)then
+table.remove(self.Queue,i)
+end
 end
 end
 local function liveModel(name)
@@ -8780,7 +10519,27 @@ for _,entry in ipairs(self.Queue)do if pendingEntry(entry)then return true end e
 return false
 end
 function self:OnAccepted(model)
-if self.Active and self.Active.Model==model then self.Active.Engaged=true end
+if self.Active and self.Active.Model==model then self.Active.Engaged=true;self.Active.StreamOutSince=nil end
+end
+function self:OnBossFinished(model)
+if not self.Running then return end
+local now=os.clock()
+scan(now,true)
+local active=self.Active
+local finishedName=model and canonical(model.Name)or nil
+if active and(active.Model==model or(finishedName and sameBoss(active.Name,finishedName)))then
+local sibling=liveModel(active.Name)
+if alive(sibling)and sibling~=model then
+active.Model=sibling;active.Engaged=false;active.Ready=false;active.StreamOutSince=nil
+else
+markRegionChecked(active)
+self.Active=nil
+if#self.Queue==0 then
+releaseOwnership()
+end
+end
+end
+pcall(self.Step,self,now)
 end
 function self:Step(now)
 if not self.Running then return end
@@ -8817,11 +10576,23 @@ wasEnabled=true
 if session.RestoringSettings or not session.StartupReady then releaseOwnership();status("Chờ khởi tạo / Skip / Play");return end
 scan(now);updateCycles(seconds)
 local active=self.Active
-if active and active.Model and not alive(active.Model)and alive(liveModel(active.Name))then
-active.Model=liveModel(active.Name);active.Engaged=false;active.Ready=false
+if active and active.Model and alive(active.Model)then
+active.StreamOutSince=nil
 end
-if active and(not selected(active.Name)or active.Model and not alive(active.Model)or not active.Model and not timed.Value or regionAlreadyChecked(active))then
-if selected(active.Name)and active.Model and not alive(active.Model)and(active.Engaged or active.ArrivalChar)then
+local activeConfirmedDead=false
+if active and active.Model then
+local aHum=active.Model:FindFirstChildOfClass("Humanoid")
+if aHum and aHum.Health<=0 then activeConfirmedDead=true end
+end
+if active and active.Model and not alive(active.Model)and alive(liveModel(active.Name))then
+active.Model=liveModel(active.Name);active.Engaged=false;active.Ready=false;active.StreamOutSince=nil
+elseif active and active.Model and not alive(active.Model)and not activeConfirmedDead and active.Engaged then
+active.StreamOutSince=active.StreamOutSince or now
+end
+local activeLost=active and active.Model and not alive(active.Model)
+and(activeConfirmedDead or not active.Engaged or(now-(active.StreamOutSince or now))>=1.5)
+if active and(not selected(active.Name)or activeLost or not active.Model and not timed.Value or regionAlreadyChecked(active))then
+if selected(active.Name)and activeLost and(active.Engaged or active.ArrivalChar)then
 scan(now,true)
 markRegionChecked(active)
 end
@@ -8833,12 +10604,22 @@ if not selected(entry.Name)or regionAlreadyChecked(entry)or not alive(entry.Mode
 end
 local controller=env.EDUHubBossCombatV1
 if controller and type(controller.Refresh)=="function"then controller:Refresh()end
+active=self.Active
 local lease=controller and controller.CurrentSession
 if lease and valid(lease.Model)then
 if not active or active.Model~=lease.Model then
 local name=canonical(lease.Model.Name)
-for i=#self.Queue,1,-1 do if sameBoss(self.Queue[i].Name,name)then table.remove(self.Queue,i)end end
-active={Name=name,Model=lease.Model,Engaged=true,Ready=true};self.Active=active
+local preservedDue=active and sameBoss(active.Name,name)and active.Due or nil
+local prevChar=active and sameBoss(active.Name,name)and active.ArrivalChar or nil
+local prevRoot=active and sameBoss(active.Name,name)and active.ArrivalRoot or nil
+for i=#self.Queue,1,-1 do
+if sameBoss(self.Queue[i].Name,name)then
+preservedDue=preservedDue or self.Queue[i].Due
+table.remove(self.Queue,i)
+end
+end
+active={Name=name,Model=lease.Model,Due=preservedDue,ArrivalChar=prevChar,ArrivalRoot=prevRoot,Engaged=true,Ready=true}
+self.Active=active
 end
 end
 if session:IsDungeonActive()then
@@ -10248,7 +12029,7 @@ local session=env.EDUHubSessionV1
 return self.Running and env.EDUBossMiasmaV1==self and not fluent.Unloaded and toggle.Value
 and options.AutoFarmBoss and options.AutoFarmBoss.Value
 and session and session.Running
-and not(session and(session.GameMenuBusy or session.RestoringSettings
+and not(session and(session.GameMenuBusy or session.RestoringSettings or session.BossTravelBusy
 or session.IsDungeonActive and session:IsDungeonActive()))
 end
 local function valid(model)
@@ -10269,6 +12050,7 @@ local function reset()
 self.Generation+=1
 local previous=self.Target
 self.Target=nil;self.Char=nil;self.TargetHum=nil;self.TargetRoot=nil;self.OwnHum=nil;self.OwnRoot=nil;self.Lease=nil
+self.InitialHP=nil;self.LastHP=nil;self.HPDropped=false
 if previous then owner:SetMiasmaPhase(previous,nil)end
 self.CleanupPending=not placement:Restore()
 return not self.CleanupPending
@@ -10306,13 +12088,19 @@ if not self.Target then
 if not placement:Restore()then self.CleanupPending=true;status("Chờ thu dao cũ · Vẫn dùng M1/skill");return true end
 self.CleanupPending=false
 self.Target=model;self.TargetHum=hum;self.TargetRoot=root;self.Char=char;self.OwnHum=ownHum;self.OwnRoot=ownRoot
+self.InitialHP=hum.Health;self.LastHP=hum.Health;self.HPDropped=false
 self.Lease=owner.CurrentSession;self.LeaseGeneration=self.Lease.Generation;self.RunToken=owner.RunToken
 owner:SetMiasmaPhase(model,"ORBIT")
 end
 if not valid(model)then reset();return true end
+if self.LastHP==nil or hum.Health<self.LastHP then
+if self.InitialHP and hum.Health<self.InitialHP then self.HPDropped=true end
+self.LastHP=hum.Health
+end
 if not owner:Ready(model,char)then status(owner.PositionStatus or"Đang bám đúng vị trí · Chờ đo lại");return true end
 local ok,why=placement:Orbit(model,root,os.clock())
-status(string.format("%s · HP %.0f / %.0f\n%s · M1/skill chạy đồng thời",model.Name,hum.Health,hum.MaxHealth,why or(ok and"Dao đang xoay"or"Chưa điều khiển được dao")))
+local hpNote=self.HPDropped and"HP boss đang giảm (tổng đòn đánh · chưa tách riêng dao)"or"Chờ HP boss giảm"
+status(string.format("%s · HP %.0f / %.0f (%s)\n%s · M1/skill chạy đồng thời",model.Name,hum.Health,hum.MaxHealth,hpNote,why or(ok and"Dao đang xoay"or"Chưa điều khiển được dao")))
 return true
 end
 function self:SafeAccept(model)
@@ -10519,9 +12307,7 @@ end
 return self
 end
 ]]):sub(2),"@EDUHub_New/Boss_Miasma_0552.lua"))()
-local installHalloweenCore=assert(loadstring(([[!return function(engine,featureState,localplr,ReplicatedStorage,installGroup)
-local coop=installGroup and installGroup(engine,featureState,localplr)
-featureState.halloweenCoop=coop
+local installHalloweenCore=assert(loadstring(([[!return function(engine,featureState,localplr,ReplicatedStorage)
 local function newHalloweenGroup(d)
 local self={Members=nil,Primary=nil,Kind=nil,Started=nil}
 function self:Clear()
@@ -10959,7 +12745,6 @@ if featureState.setHalloweenCombatRequest then featureState.setHalloweenCombatRe
 end
 local function clearCombatModeState()
 cancelCombatRequest();skill.InCombat=false
-if coop then coop:ClearPolicy()end
 restoreAllMobParts()
 combatMode=nil
 combatAnchor=nil
@@ -10992,6 +12777,7 @@ return
 end
 featureState.halloweenDoorLimited=true
 featureState.halloweenLimitDaySeen=false
+featureState.halloweenLimitedAtSession=featureState.halloweenNightSession or 0
 releasePrompt()
 setStatus("Hết lượt gõ cửa đêm này — chờ đêm sau")
 if autoDoor then
@@ -11328,9 +13114,9 @@ end
 local naturalEnd=nextOwner~="Boss"and featureState.halloweenNight==false
 and not(featureState.hasHalloweenCombat and featureState.hasHalloweenCombat())
 and not featureState.travelPreparing and not featureState.gameMenuBusy and not featureState.halloweenRejoinPending
-local pending=awaitingCandy
+doorSessionCounter+=1
 releaseActions(naturalEnd)
-if not naturalEnd then awaitingCandy=pending end
+chosenDoor,doorPoint,changeDoor=nil,nil,false
 activityPausedAt=os.clock()
 nextRegionReturnAt=0
 nextScanAt=0
@@ -11338,6 +13124,12 @@ inUndergroundSession=false
 preFarmOriginCFrame,preFarmRoot=nil,nil
 lastKnownGroundPos,lastValidUndergroundCFrame=nil,nil
 playerLockedUndergroundCFrame=nil
+end
+featureState.onHalloweenBossReleased=function()
+activityPausedAt=nil
+nextRegionReturnAt=0
+nextScanAt=0
+elapsed=0.1
 end
 local function halloweenOwnsActivity()
 return not featureState.getActivityOwner or featureState.getActivityOwner()=="Halloween"
@@ -11351,11 +13143,9 @@ end
 local function waitForHalloweenActivity()
 if halloweenOwnsActivity()then
 if activityPausedAt then
-if awaitingCandy then
-local pause=os.clock()-activityPausedAt
-awaitingCandy.At+=pause;awaitingCandy.LastPressAt+=pause
-end
 activityPausedAt=nil
+nextScanAt=0
+nextRegionReturnAt=0
 end
 return false
 end
@@ -11399,7 +13189,29 @@ if not remote then
 return
 end
 rewardConnection=remote.OnClientEvent:Connect(function(kind,payload)
-if rewardRemote~=remote then return end
+if rewardRemote~=remote or not engine:IsRunning()then return end
+if kind=="Night"then
+if type(payload)=="table"and type(payload.Started)=="boolean"then
+featureState.halloweenAnnouncedNight=payload.Started
+if payload.Started==true then
+featureState.halloweenNightSession=(featureState.halloweenNightSession or 0)+1
+featureState.halloweenDoorLimited=false
+featureState.halloweenLimitDaySeen=false
+featureState.halloweenLimitedAtSession=nil
+visits,visitOrder,changeDoor={},0,false
+nextDoorAt=0;nextScanAt=0
+else
+featureState.halloweenLimitDaySeen=true
+if awaitingCandy then
+releasePrompt()
+awaitingCandy=nil
+resetEWait()
+end
+end
+if featureState.updateHalloweenPhase then featureState.updateHalloweenPhase()end
+end
+return
+end
 if kind=="BossSpawned"then
 if announceBoss(payload)then nextScanAt=0 end
 return
@@ -11427,6 +13239,15 @@ or not humanoid or humanoid.Health<=0
 or character:FindFirstChild("HumanoidRootPart")~=attempt.Root
 or os.clock()-attempt.At>DOOR_AWAIT_TIMEOUT
 then
+return
+end
+if kind=="Outcome"and type(payload.Kind)=="string"and payload.Kind~=""then
+if payload.Kind~="Treat"and not attempt.NonTreatKind then
+attempt.NonTreatKind=payload.Kind
+attempt.NonTreatGraceUntil=os.clock()+(autoMob and 1.25 or 0.2)
+releasePrompt()
+nextScanAt=0
+end
 return
 end
 if
@@ -11643,7 +13464,6 @@ local targetRoot=model:FindFirstChild("HumanoidRootPart")or model.PrimaryPart
 if not hum or not targetRoot or not targetRoot:IsA("BasePart")or not targetRoot:IsDescendantOf(model)then return nil,"missing"end
 local char=localplr.Character
 local root=char and char:FindFirstChild("HumanoidRootPart")
-if coop and not coop:AllowsMob(model,targetRoot,mobs[model]or-math.huge,os.clock(),isBossModel(model))then return nil,"dead"end
 return{model=model,humanoid=hum,root=targetRoot,isBoss=isBossModel(model),
 distance=root and(targetRoot.Position-root.Position).Magnitude or 0}
 end
@@ -11663,9 +13483,7 @@ if hasBossAnnouncement(os.clock())then return true end
 for model,seenAt in pairs(mobs)do
 if isValidHalloweenMobModel(model)then
 local hum=model:FindFirstChildOfClass("Humanoid")
-local root=model:FindFirstChild("HumanoidRootPart")or model.PrimaryPart
-local eligible=not coop or coop:AllowsMob(model,root,seenAt,os.clock(),isBossModel(model))
-if eligible and(isAliveMobHumanoid(hum)or(not hum and os.clock()-seenAt<2))then return true end
+if isAliveMobHumanoid(hum)or(not hum and os.clock()-seenAt<2)then return true end
 end
 end
 return false
@@ -11813,7 +13631,7 @@ chosenDoor,doorPoint,changeDoor=nil,nil,false
 end
 if chosenDoor and validDoor(chosenDoor)and chosenDoor.Enabled then
 doorPoint=originalDoorPoint(chosenDoor)
-if doorPoint and(not coop or coop:OwnsDoor(doorPoint,now))then
+if doorPoint then
 return
 end
 end
@@ -11827,7 +13645,7 @@ if validDoor(prompt)and prompt.Enabled then
 local point=originalDoorPoint(prompt)
 local distance=point and(point-root.Position).Magnitude or math.huge
 local lastVisit=visits[prompt]or 0
-if point and(not coop or coop:OwnsDoor(point,now))and(lastVisit<oldest or(lastVisit==oldest and distance<nearest))then
+if point and(lastVisit<oldest or(lastVisit==oldest and distance<nearest))then
 chosenDoor,doorPoint,nearest,oldest=prompt,point,distance,lastVisit
 end
 elseif not validDoor(prompt)then
@@ -11871,7 +13689,6 @@ mobPulledHistory[model]=nil
 else
 local humanoid=model:FindFirstChildOfClass("Humanoid")
 local targetRoot=model:FindFirstChild("HumanoidRootPart")or model.PrimaryPart
-if coop and not coop:AllowsMob(model,targetRoot,seenAt,now,isBossModel(model))then continue end
 if not humanoid or not targetRoot then
 if now-seenAt<2 then
 pending=true
@@ -11917,13 +13734,11 @@ table.sort(banditEntries,function(a,b)
 return a.distance<b.distance
 end)
 table.sort(bossEntries,function(a,b)
-if coop and coop.Enabled then return coop:BossBefore(a,b)end
 return a.distance<b.distance
 end)
 if not groupActive then
 local firstBandit,firstBoss=banditEntries[1],bossEntries[1]
 local primary=firstBandit and firstBoss and(firstBandit.distance<=firstBoss.distance and firstBandit or firstBoss)or firstBandit or firstBoss
-if coop and coop.Enabled and firstBoss then primary=firstBoss end
 if primary then halloweenGroup:Begin(primary,banditEntries,now)end
 end
 local live,groupPending=halloweenGroup:Entries(now)
@@ -12090,21 +13905,6 @@ end
 return tracker,not tracker.failed
 end
 local function stepCombatPositioning(character,humanoid,root,primaryEntry,banditEntries,now)
-if coop and coop.Enabled then
-restoreAllMobParts();destroySupportRig()
-local frame,text=coop:Step(primaryEntry,character,humanoid,root,findRealGroundPosition,
-measurePlayerFootClearance(character,humanoid,root),now)
-if not frame then
-releaseCharacterLockOnly();combatAnchor=nil
-inUndergroundSession=false;lastKnownGroundPos=nil;lastValidUndergroundCFrame=nil
-return false,text
-end
-acquireMovement(character,humanoid,root)
-combatAnchor={Surface=true,OwnerModel=primaryEntry.model,PlayerFrame=frame}
-playerLockedUndergroundCFrame=frame
-root.CFrame=frame;root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
-return true,text
-end
 local model,targetRoot=primaryEntry.model,primaryEntry.root
 local primaryTracker,primaryReady=inspectAndUpdateMobTrackerBeforePlace(primaryEntry,true,now)
 if not primaryReady then return false,primaryTracker.failReason end
@@ -12209,7 +14009,6 @@ local root=model:FindFirstChild("HumanoidRootPart")or model.PrimaryPart
 if not ownHum or ownHum.Health<=0 or not ownRoot or not isAliveMobHumanoid(hum)
 or not root or not root:IsDescendantOf(model)then return false end
 if combatAnchor.PlayerFrame and(ownRoot.Position-combatAnchor.PlayerFrame.Position).Magnitude>6 then return false end
-if coop and not coop:CanAttack(model,coop.Policy)then return false end
 return true
 end
 local function pressDoor(now,root)
@@ -12217,7 +14016,6 @@ if heldPrompt then
 return
 end
 if not awaitingCandy or awaitingCandy.Door~=chosenDoor or awaitingCandy.Root~=root then
-if coop then coop:DoorStarted(originalDoorPoint(chosenDoor),now)end
 doorSessionCounter=doorSessionCounter+1
 awaitingCandy={
 At=now,
@@ -12229,29 +14027,56 @@ RewardPoint=originalDoorPoint(chosenDoor),
 Remote=rewardRemote,
 Session=doorSessionCounter,
 LastPressAt=now,
+PressCount=1,
 }
 else
 awaitingCandy.LastPressAt=now
+awaitingCandy.PressCount=(awaitingCandy.PressCount or 1)+1
 end
 heldPrompt,promptEndAt=chosenDoor,now+chosenDoor.HoldDuration+0.05
 chosenDoor:InputHoldBegin()
 end
 nextRegionReturnAt=nextRegionReturnAt or 0
+local regionArrivalWaitUntil=nil
+local regionArrivalTarget=nil
 local mainlandEntry=Vector3.new(111.568245,67.8253555,-504.725433)
 local function returnToHalloweenRegion(root,now)
-if not autoDoor or featureState.halloweenNight==false or featureState.halloweenDoorLimited then return false end
-local entry,nearest=nil,math.huge
+if not autoDoor or featureState.halloweenNight==false or featureState.halloweenDoorLimited then
+regionArrivalWaitUntil,regionArrivalTarget=nil,nil
+return false
+end
+local entry,nearest,hasValidDoor=nil,math.huge,false
 for prompt in pairs(prompts)do
 if validDoor(prompt)then
+hasValidDoor=true
 local point=originalDoorPoint(prompt)
 local distance=point and(point-root.Position).Magnitude or math.huge
 if distance<nearest then entry=point+Vector3.new(0,4,0);nearest=distance end
 end
 end
 entry=entry or mainlandEntry
+if regionArrivalWaitUntil then
+if now>=regionArrivalWaitUntil then
+regionArrivalWaitUntil,regionArrivalTarget=nil,nil
+rescan(now)
+if featureState.updateHalloweenPhase then featureState.updateHalloweenPhase()end
+else
+local targetPt=regionArrivalTarget or entry
+local arrived=(root.Position-targetPt).Magnitude<=250
+local groundReady=arrived and findRealGroundPosition(root.Position)~=nil
+if arrived and groundReady and hasValidDoor then
+regionArrivalWaitUntil,regionArrivalTarget=nil,nil
+rescan(now)
+if featureState.updateHalloweenPhase then featureState.updateHalloweenPhase()end
+return false
+end
+setStatus("Đã quay về khu chính · Chờ tải cửa và mặt đất Halloween...")
+return true
+end
+end
 local delta=root.Position-entry
 local horizontal=Vector3.new(delta.X,0,delta.Z).Magnitude
-if horizontal<=2000 and math.abs(delta.Y)<=400 then return false end
+if horizontal<=1800 and math.abs(delta.Y)<=400 then return false end
 if now<nextRegionReturnAt then setStatus("Đang chờ tải khu Halloween sau khi quay về");return true end
 releaseActions(false)
 inUndergroundSession=false;preFarmOriginCFrame,preFarmRoot=nil,nil
@@ -12259,6 +14084,18 @@ lastKnownGroundPos,lastValidUndergroundCFrame=nil,nil
 playerLockedUndergroundCFrame=nil
 root.CFrame=CFrame.new(entry)*root.CFrame.Rotation
 root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
+if workspace.StreamingEnabled and not streamPending then
+streamPending=true
+local run=streamRun
+local targetEntry=entry
+task.spawn(function()
+if run~=streamRun or not engine:IsRunning()then return end
+pcall(localplr.RequestStreamAroundAsync,localplr,targetEntry,2)
+if run==streamRun then streamPending=false end
+end)
+end
+regionArrivalTarget=entry
+regionArrivalWaitUntil=now+3.5
 nextRegionReturnAt=now+3;nextScanAt=0
 setStatus("Đã rời đảo boss xa · Quay về khu cửa Halloween")
 return true
@@ -12292,18 +14129,6 @@ if run~=streamRun or not engine:IsRunning()then return end
 pcall(localplr.RequestStreamAroundAsync,localplr,row.Position,1)
 if run==streamRun then streamPending=false end
 end)
-end
-if coop and coop.Enabled then
-local frame=coop:AnnouncedPosition(row.Position,findRealGroundPosition,
-measurePlayerFootClearance(character,humanoid,root),now)
-if frame then
-acquireMovement(character,humanoid,root)
-combatAnchor={Surface=true,PlayerFrame=frame}
-playerLockedUndergroundCFrame=frame;root.CFrame=frame
-root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero
-end
-setStatus("Nhóm · Chờ boss / mặt đất tải đủ tại vùng server báo")
-return true
 end
 if row.Root~=root or not lastKnownGroundPos or(root.Position-row.Position).Magnitude>80 then
 local ground=findRealGroundPosition(row.Position)
@@ -12350,9 +14175,6 @@ lastKnownGroundPos=nil
 setStatus("Chờ nhân vật hồi sinh")
 return
 end
-if coop and not coop:Ready(now)then
-releaseActions(true);setStatus(coop.Error);return
-end
 if visitAnnouncedBoss(character,humanoid,root,now)then return end
 if returnToHalloweenRegion(root,now)then return end
 if awaitingCandy and(awaitingCandy.Root~=root or awaitingCandy.Door~=chosenDoor)then
@@ -12381,12 +14203,9 @@ end
 local posOk,posMsg=stepCombatPositioning(character,humanoid,root,primaryMob,banditEntries,now)
 if not posOk then
 cancelCombatRequest()
-if not(coop and coop.Enabled)then holdSafeUndergroundPosture(character,humanoid,root)end
+holdSafeUndergroundPosture(character,humanoid,root)
 setStatus(posMsg or"Thử nghiệm gom/đánh mục tiêu thất bại — đang chuyển mục tiêu / chờ backoff")
 return
-end
-if coop and coop.Enabled and(not coop.Policy or not coop.Policy.Allow)then
-cancelCombatRequest();setStatus(posMsg);return
 end
 if attack(character,now,primaryMob.model,primaryMob.root)then
 local daySuffix=(featureState.halloweenNight~=true)and" [Trời sáng: đang đánh nốt]"or""
@@ -12444,6 +14263,25 @@ resetEWait()
 nextDoorAt=now+0.1
 holdSafeUndergroundPosture(character,humanoid,root)
 setStatus("Đã xác nhận nhận Candy — chuyển thẳng sang vị trí dưới đất của cửa tiếp theo")
+elseif awaitingCandy.NonTreatKind~=nil then
+releasePrompt()
+if now<(awaitingCandy.NonTreatGraceUntil or 0)then
+holdSafeUndergroundPosture(character,humanoid,root)
+setStatus("Cửa ra "..tostring(awaitingCandy.NonTreatKind).." — chờ quái xuất hiện")
+else
+local resolvedKind=tostring(awaitingCandy.NonTreatKind)
+restoreDoorAnchor()
+awaitingCandy=nil
+resetEWait()
+visitOrder=visitOrder+1
+if chosenDoor then
+visits[chosenDoor]=visitOrder
+end
+changeDoor=true
+nextDoorAt=now+0.25
+holdSafeUndergroundPosture(character,humanoid,root)
+setStatus("Cửa ra "..resolvedKind.." (không có Candy) — chuyển sang cửa tiếp theo")
+end
 elseif now-awaitingCandy.At>=DOOR_AWAIT_TIMEOUT then
 releasePrompt()
 restoreDoorAnchor()
@@ -12459,11 +14297,16 @@ holdSafeUndergroundPosture(character,humanoid,root)
 setStatus("Quá hạn chờ phản hồi cửa (chưa nhận Candy) — thử chuyển sang cửa tiếp theo")
 elseif chosenDoor and validDoor(chosenDoor)and chosenDoor.Enabled then
 if pullDoorAnchorUnderground(character,humanoid,root)then
-if doorInteractionReady(chosenDoor,root,character)and not heldPrompt and now-awaitingCandy.LastPressAt>=autoEDelay then
+local retryGap=math.max(1.5,autoEDelay)
+if doorInteractionReady(chosenDoor,root,character)
+and not heldPrompt
+and(awaitingCandy.PressCount or 1)<3
+and now-awaitingCandy.LastPressAt>=retryGap
+then
 pressDoor(now,root)
 end
 end
-setStatus("Đang gửi E tại cùng cửa — chờ server xác nhận thưởng đúng vị trí")
+setStatus("Đang chờ server xác nhận kết quả cửa (thử lại có giãn nhịp)")
 else
 holdSafeUndergroundPosture(character,humanoid,root)
 setStatus("Chờ cửa phản hồi kết quả / nhận Candy tại cửa này")
@@ -12776,265 +14619,18 @@ autoDoor,autoMob,autoMobAbove=false,false,false
 stop(true)
 featureState.releaseHalloweenActions=nil
 featureState.pauseHalloweenForActivity=nil
+featureState.onHalloweenBossReleased=nil
 featureState.isHalloweenAttackTarget=nil
 featureState.cancelHalloweenSkillInput=nil
 featureState.hasHalloweenCombatInput=nil
 featureState.hasHalloweenCombat=nil
 featureState.hasHalloweenGroup=nil
 featureState.halloweenDoorInputBusy=nil;featureState.halloweenDoorRangeStatus=nil
-featureState.halloweenCoop=nil
 end)
 end
 end
 ]]):sub(2),"@EDUHub_New/Halloween_Luna_Core.lua"))()
-local installHalloweenGroup=assert(loadstring(([[!return function(engine,state,player)
-local players=game:GetService("Players")
-local self={Enabled=false,Text="",Radius=5,Damage=0,Roster={},Slot=nil,Error=nil,NextRoster=0,
-Tickets={},Claims=setmetatable({},{__mode="k"}),Fights=setmetatable({},{__mode="k"}),Blocked=setmetatable({},{__mode="k"})}
-local directions={Vector3.new(1,0,0),Vector3.new(-1,0,0),Vector3.new(0,0,-1),Vector3.new(0,0,1)}
-local names={"Đông","Tây","Bắc","Nam"}
-local function finite(n)return type(n)=="number"and n==n and math.abs(n)<math.huge end
-local function rootOf(who)
-local char=who and who.Character
-local hum=char and char:FindFirstChildOfClass("Humanoid")
-local root=char and char:FindFirstChild("HumanoidRootPart")
-if char and char.Parent and hum and hum.Health>0 and root and root:IsA("BasePart")then return root,hum end
-end
-local function flatDistance(a,b)
-local v=a-b;return Vector3.new(v.X,0,v.Z).Magnitude
-end
-local function onGroundLevel(part,hum,y)
-local clearance=math.clamp((tonumber(hum.HipHeight)or 2)+part.Size.Y*.5,2,6)
-return math.abs(part.Position.Y-clearance-y)<=2
-end
-function self:Reset()
-self:ClearPolicy();self.Tickets={}
-self.Claims=setmetatable({},{__mode="k"});self.Fights=setmetatable({},{__mode="k"})
-self.Blocked=setmetatable({},{__mode="k"})
-end
-function self:Refresh(now)
-if now<self.NextRoster then return self.Error==nil end
-self.NextRoster=now+.5
-local tokens,seen={},{}
-for token in self.Text:gmatch("[^,%s;]+")do
-token=token:lower()
-if not seen[token]then seen[token]=true;tokens[#tokens+1]=token end
-end
-local roster,ids={},{}
-local available=players:GetPlayers()
-for _,token in ipairs(tokens)do
-local found
-for _,who in ipairs(available)do
-if tostring(who.UserId)==token or who.Name:lower()==token then found=who;break end
-end
-if not found then self.Error="Chờ acc trong nhóm: "..token;return false end
-if not ids[found.UserId]then ids[found.UserId]=true;roster[#roster+1]=found end
-end
-if#roster<2 or#roster>4 or not ids[player.UserId]then
-self.Error="Nhập cùng danh sách 2–4 username / UserId, gồm acc này";return false
-end
-table.sort(roster,function(a,b)return a.UserId<b.UserId end)
-local key={};local slot
-for i,who in ipairs(roster)do key[i]=tostring(who.UserId);if who==player then slot=i end end
-key=table.concat(key,",")
-if self.Key~=key then self:Reset();self.Key=key end
-self.Roster=roster;self.Slot=slot;self.Error=nil
-return true
-end
-function self:Ready(now)
-return not self.Enabled or self:Refresh(now)
-end
-function self:OwnsDoor(point,now)
-if not self.Enabled then return true end
-if not point or not self:Refresh(now)then return false end
-local x,z=math.floor(point.X+.5),math.floor(point.Z+.5)
-return((x*73856093+z*19349663)%#self.Roster)+1==self.Slot
-end
-function self:DoorStarted(point,now)
-if not self.Enabled or not self:OwnsDoor(point,now)then return end
-for i=#self.Tickets,1,-1 do if now-self.Tickets[i].At>12 then table.remove(self.Tickets,i)end end
-if#self.Tickets>=4 then table.remove(self.Tickets,1)end
-self.Tickets[#self.Tickets+1]={Point=point,At=now}
-end
-function self:AllowsMob(model,root,seenAt,now,isBoss)
-if not self.Enabled then return true end
-if not self:Refresh(now)then return false end
-if self.Blocked[model]then return false end
-if isBoss then return true end
-if self.Claims[model]then return true end
-if not root then return false end
-for _,ticket in ipairs(self.Tickets)do
-if now-ticket.At<=12 and seenAt>=ticket.At and math.abs(root.Position.Y-ticket.Point.Y)<18
-and flatDistance(root.Position,ticket.Point)<=35 then self.Claims[model]=true;return true end
-end
-return false
-end
-function self:BossBefore(a,b)
-local leader=rootOf(self.Roster[1])
-if leader then
-local da,db=flatDistance(a.root.Position,leader.Position),flatDistance(b.root.Position,leader.Position)
-if math.min(da,db)<35 and da~=db then return da<db end
-end
-if a.model.Name~=b.model.Name then return a.model.Name<b.model.Name end
-local pa,pb=a.root.Position,b.root.Position
-if pa.X~=pb.X then return pa.X<pb.X end
-return pa.Z<pb.Z
-end
-function self:ClearPolicy()
-if self.Policy and state.stopHalloweenGroupAttacks then state.stopHalloweenGroupAttacks()end
-self.Policy=nil;self.Current=nil
-end
-function self:Restricts()
-return self.Enabled and self.Current~=nil and self.Policy~=nil
-end
-function self:CanAttack(model,policy)
-if not self.Enabled then return true end
-if self.Current~=model or policy~=self.Policy or not policy or not policy.Allow then return false end
-local f=self.Fights[model]
-if f then
-if f.Character~=player.Character or not f.Hum.Parent or f.Hum.Health<=0 or not f.Root.Parent then return false end
-for _,who in ipairs(self.Roster)do
-local part,hum=rootOf(who)
-if not part or flatDistance(part.Position,f.Root.Position)>65 or not onGroundLevel(part,hum,f.GroundY)then return false end
-if policy.Mode=="Full"and who~=player then
-local p=f.Peers[who.UserId]
-if not p or not p.Done or p.Character~=who.Character then return false end
-end
-end
-if policy.Mode=="Tag"then
-local ok,t=pcall(workspace.GetServerTimeNow,workspace)
-if not ok or not finite(t)then return false end
-local phase=t%(#self.Roster*4)
-if math.floor(phase/4)+1~=self.Slot or phase%4<.65 or phase%4>2.5 then return false end
-if f.Pending or self.Damage<=0 or self.Damage>f.Max*.05 or f.Hum.Health<=self.Damage*(#self.Roster+1)then return false end
-end
-end
-return true
-end
-function self:Sent(model,policy,now)
-if not self:CanAttack(model,policy)or policy.Mode~="Tag"then return end
-local f=self.Fights[model]
-if not f or f.Pending then return end
-f.Pending={Health=policy.HealthBefore,At=now};f.NextPunch=now+1.25;policy.Allow=false
-end
-function self:AnnouncedPosition(position,ground,clearance,now)
-if not self:Refresh(now)then return nil end
-local dir=directions[self.Slot]
-local point=ground(position+dir*(self.Radius+5))
-if not point or math.abs(point.Y-position.Y)>12 then return nil end
-local p=point+Vector3.new(0,clearance,0)
-return CFrame.lookAt(p,Vector3.new(position.X,p.Y,position.Z))
-end
-function self:Step(entry,char,hum,root,ground,clearance,now)
-if not self:Refresh(now)then self:ClearPolicy();return nil,self.Error end
-self.Current=entry.model
-local policy={Mode="Wait",Allow=false};self.Policy=policy
-local base=ground(entry.root.Position)
-if not base then return nil,"Chờ mặt đất tại boss · Không đổi sang trên / dưới"end
-local dir=directions[self.Slot];local radius=self.Radius
-local status="Nhóm · "..names[self.Slot]
-if entry.isBoss then
-local maximum=entry.humanoid.MaxHealth;local health=entry.humanoid.Health
-if not finite(maximum)or maximum<=0 or not finite(health)or health<=0 then return nil,"Chờ HP boss hợp lệ"end
-local f=self.Fights[entry.model]
-if not f then
-f={Hum=entry.humanoid,Root=entry.root,Character=char,Max=maximum,Damage=0,NextPunch=0,Peers={},At=now,LastHP=health,ProgressAt=now}
-self.Fights[entry.model]=f
-elseif f.Hum~=entry.humanoid or f.Max~=maximum then
-return nil,"Boss đang chia lượt đã đổi Humanoid / HP · Chờ boss ổn định"
-elseif f.Character~=char then
-f.Character=char;f.Damage=0;f.Pending=nil;f.Done=nil;f.Finish=nil;f.NextPunch=now+1;f.At=now
-end
-f.Root=entry.root
-f.GroundY=base.Y
-if health<f.LastHP then f.ProgressAt=now end
-f.LastHP=health
-if now-math.max(f.At,f.ProgressAt)>180 then
-self.Blocked[entry.model]=true
-return nil,"Bỏ lượt boss sau 180s không tiến triển · Tiếp tục cửa / mục tiêu khác"
-end
-local quota=maximum*.05
-if f.Pending and now-f.Pending.At>=.85 then
-local delta=f.Pending.Health-health
-if delta>self.Damage*1.5+.01 then f.Uncertain=true end
-if delta>0 and not f.Uncertain then f.Damage+=delta end
-f.Pending=nil
-end
-if f.Damage>=quota then f.Done=true end
-local allPresent=true;local allDone=f.Done==true
-for i,who in ipairs(self.Roster)do
-local peerRoot,peerHum=rootOf(who)
-if not peerRoot or flatDistance(peerRoot.Position,entry.root.Position)>65
-or not onGroundLevel(peerRoot,peerHum,base.Y)then allPresent=false end
-if who~=player then
-local p=f.Peers[who.UserId]or{};f.Peers[who.UserId]=p
-local offset=peerRoot and peerRoot.Position-entry.root.Position
-local desired=directions[i]*(self.Radius+15)
-if p.Character~=who.Character then p.Character=who.Character;p.Armed=nil;p.Done=false;p.Since=nil end
-local level=peerRoot and onGroundLevel(peerRoot,peerHum,base.Y)
-if offset and level and(flatDistance(offset,directions[i]*self.Radius)<=1.8
-or flatDistance(offset,directions[i]*(self.Radius+5))<=1.8)then p.Armed=true end
-if p.Armed and offset and level and flatDistance(offset,desired)<=1.8 then
-p.Since=p.Since or now
-if now-p.Since>=.8 then p.Done=true end
-else p.Since=nil;p.Done=false end
-if not p.Done then allDone=false end
-end
-end
-if f.Done and allDone and allPresent then f.Finish=true end
-if f.Done then
-radius=self.Radius+15
-status=status..string.format(" · Đã chia lượt ~%.1f%% · Chờ nhóm",100*f.Damage/maximum)
-if f.Finish and allPresent and self.Slot==1 then
-radius=self.Radius;policy.Mode="Full";policy.Allow=true;status="Nhóm đủ lượt · Acc đầu kết liễu"
-end
-else
-radius=self.Radius+5
-local okTime,serverTime=pcall(workspace.GetServerTimeNow,workspace)
-local hasClock=okTime and finite(serverTime)
-local phase=hasClock and serverTime%(#self.Roster*4)or 0
-local turn=math.floor(phase/4)+1;local inTurn=phase%4
-local safeDamage=finite(self.Damage)and self.Damage>0 and self.Damage<=quota
-if not safeDamage then status="Nhập damage M1 nhỏ hơn 5% MaxHP ("..math.floor(quota)..")"
-elseif f.Uncertain then status="Damage ngoài dự kiến · Chờ kiểm tra, không kết liễu"
-elseif not allPresent then status="Chờ đủ acc sống trong nhóm tới boss"
-elseif not hasClock then status="Chờ đồng hồ server để chia lượt"
-elseif health<=self.Damage*(#self.Roster+1)then status="Boss quá ít HP · Giữ đòn, tránh giết trước khi chia đủ"
-elseif turn==self.Slot and inTurn>=.65 and inTurn<=2.5 then
-radius=self.Radius;policy.Mode="Tag"
-policy.Allow=not f.Pending and now>=f.NextPunch
-policy.HealthBefore=health
-status=string.format("Lượt %d/%d · M1 nhỏ · Ước tính %.0f / %.0f HP",self.Slot,#self.Roster,f.Damage,quota)
-else status=string.format("Chờ lượt %d · Ước tính %.0f / %.0f HP",turn,f.Damage,quota)end
-end
-else policy.Mode="Full";policy.Allow=true end
-local target=entry.root.Position
-local point=ground(target+dir*radius)
-if not point or not base or math.abs(point.Y-base.Y)>3 then
-policy.Allow=false;return nil,"Chưa có mặt đất ngang hợp lệ ở hướng "..names[self.Slot]
-end
-local p=point+Vector3.new(0,clearance,0)
-return CFrame.lookAt(p,Vector3.new(target.X,p.Y,target.Z)),status,policy
-end
-engine:Define("HalloweenGroupEnabled",{Type="boolean"},false,function(value)
-self.Enabled=value==true;self.NextRoster=0;self:Reset()
-if state.releaseHalloweenActions then state.releaseHalloweenActions(true)end
-end)
-engine:Define("HalloweenGroupRoster",{Type="string"},"",function(value)
-self.Text=tostring(value or""):sub(1,240);self.NextRoster=0;self:Reset()
-if state.releaseHalloweenActions then state.releaseHalloweenActions(true)end
-end)
-engine:Define("HalloweenGroupDamage",{Type="number"},0,function(value)
-local n=tonumber(value);self.Damage=finite(n)and math.clamp(n,0,10000000)or 0
-end)
-engine:Define("HalloweenGroupRadius",{Type="number"},5,function(value)
-local n=tonumber(value);self.Radius=finite(n)and math.clamp(n,3,10)or 5
-end)
-engine:OnStop(function()self.Enabled=false;self:Reset()end)
-return self
-end
-]]):sub(2),"@EDUHub_New/Halloween_Group.lua"))()
-local installHalloween=assert(loadstring(([[!return function(window,options,combat,fluent,installCore,resolveBossRoot,selectionName,installCombat,installStorage,installGroup)
+local installHalloween=assert(loadstring(([[!return function(window,options,combat,fluent,installCore,resolveBossRoot,selectionName,installCombat,installStorage)
 local env=getgenv and getgenv()or _G
 local session=env.EDUHubSessionV1
 if env.EDUHalloweenV1 then env.EDUHalloweenV1:Destroy()end
@@ -13200,8 +14796,9 @@ if announced then
 night=featureState.halloweenAnnouncedNight;loaded=math.max(loaded,1)
 end
 if night then
-if featureState.halloweenDoorLimited and featureState.halloweenLimitDaySeen then
-featureState.halloweenDoorLimited=false;featureState.halloweenLimitDaySeen=false
+local curNightSeq=featureState.halloweenNightSession or 0
+if featureState.halloweenDoorLimited and(featureState.halloweenLimitDaySeen or(featureState.halloweenLimitedAtSession and featureState.halloweenLimitedAtSession<curNightSeq))then
+featureState.halloweenDoorLimited=false;featureState.halloweenLimitDaySeen=false;featureState.halloweenLimitedAtSession=nil
 end
 featureState.halloweenNight=true;daySince=nil
 elseif loaded>0 then
@@ -13227,31 +14824,7 @@ local ok,why=pcall(engine.Stops[i]);if not ok then warn("[EDU Halloween cleanup]
 end
 if env.EDUHalloweenV1==self then env.EDUHalloweenV1=nil end
 end
-installCore(engine,featureState,player,game:GetService("ReplicatedStorage"),installGroup)
-function self:GroupRestrictsAttacks()
-local group=featureState.halloweenCoop
-return self.Running and group and group:Restricts()or false
-end
-function self:AcceptGroupPolicy(model,policy)
-local group=featureState.halloweenCoop
-return self.Running and group and group:CanAttack(model,policy)or false
-end
-function self:GroupWaitingOrTagging()
-local group=featureState.halloweenCoop
-return group and group:Restricts()and group.Policy.Mode~="Full"or false
-end
-if installGroup then
-local groupTab=section("Nhóm Halloween · 2–4 acc",2)or tab
-local roster=groupTab:AddInput("EDUHW_HalloweenGroupRoster",{Title="Nhóm: username / UserId, cách nhau dấu phẩy",Default="",Finished=true})
-roster:OnChanged(function(v)engine:Set("HalloweenGroupRoster",tostring(v or""))end)
-local damage=groupTab:AddInput("EDUHW_HalloweenGroupDamage",{Title="Damage 1 M1 của acc này (0 = chờ)",Default="0",Numeric=true,Finished=true})
-damage:OnChanged(function(v)engine:Set("HalloweenGroupDamage",tonumber(v)or 0)end)
-local radius=groupTab:AddSlider("EDUHW_HalloweenGroupRadius",{Title="Khoảng cách đứng ngang",Default=5,Min=3,Max=10,Rounding=1})
-radius:OnChanged(function(v)engine:Set("HalloweenGroupRadius",v)end)
-local enabled=groupTab:AddToggle("EDUHW_HalloweenGroupEnabled",{Title="Farm nhóm · Chia cửa / lượt boss",Default=false})
-enabled:OnChanged(function(v)engine:Set("HalloweenGroupEnabled",v)end)
-groupTab:AddParagraph({Title="Chia lượt ~5% MaxHP",Content="Cùng danh sách và khoảng cách trên mọi acc. Thứ tự UserId: Đông / Tây / Bắc / Nam. M1 phải nhỏ hơn 5% MaxHP; chia lượt chỉ M1, acc đầu kết liễu. Damage là ước tính, không phải xác nhận đủ thưởng. Tắt Miasma / sát thương kéo dài khác khi chia lượt."})
-end
+installCore(engine,featureState,player,game:GetService("ReplicatedStorage"))
 local function toggle(key,title,default,host)
 local c=(host or farmTab):AddToggle("EDUHW_"..key,{Title=title,Default=default})
 controls[key]=c;c:OnChanged(function(value)engine:Set(key,value)end);return c
@@ -13308,6 +14881,18 @@ end
 installCombat(engine,featureState,player,function()return not otherFarm()and not joining end,combat)
 function self:YieldToBoss()
 if self.Running and featureState.pauseHalloweenForActivity then featureState.pauseHalloweenForActivity("Boss")end
+end
+function self:OnBossReleased()
+if not self.Running then return end
+nextScan=0
+if featureState.onHalloweenBossReleased then
+pcall(featureState.onHalloweenBossReleased)
+end
+end
+function self:GetActiveTarget()
+if not self.Running or type(featureState.getHalloweenActiveTarget)~="function"then return nil end
+local ok,target=pcall(featureState.getHalloweenActiveTarget)
+return ok and target or nil
 end
 function self:IsFightingMob()
 if not self.Running or type(featureState.isHalloweenFightingMob)~="function"then return false end
@@ -18800,7 +20385,7 @@ installAutoReset(tabs.Settings,options,fluent,eduSession)
 installPersistence(tabs.Settings,options,fluent,eduSession)
 installAutoRejoin(tabs.Settings,options,fluent,eduSession)
 installWebhookDashboard(tabs.Dashboard,options,fluent,eduSession)
-installAFKOptimizer(tabs.Settings,options,fluent,eduSession)
+installAFKOptimizer(tabs.Settings,options,fluent,eduSession,installGraphicsOptimizer)
 installFarmPose(tabs.Settings,options,fluent,eduSession)
 do
 local startChar=waitForCharacter()
@@ -18832,12 +20417,12 @@ if not eduSession.Running then
 return
 end
 local eduBossMiasma,eduBossController,eduSharedCombat
-local function eduBossCombat(char,chosen,guard,source,targetModel,policy)
-return eduSharedCombat and eduSharedCombat:Fire(char,guard,source or"EDU",targetModel,policy)or false
+local function eduBossCombat(char,chosen,guard,source,targetModel)
+return eduSharedCombat and eduSharedCombat:Fire(char,guard,source or"EDU",targetModel)or false
 end
 local storageTab=window:AddTab({Title="Kho",Icon="box"})
 installLunaStand(tabs.StandFarm,options,fluent,eduSession,installLunaStandCore,installLunaStandExtras,storageTab)
-eduSession:Own(installHalloween(window,options,eduBossCombat,fluent,installHalloweenCore,eduBossRoot,eduBossSelectionName,installHalloweenCombat,installHalloweenStorage,installHalloweenGroup))
+eduSession:Own(installHalloween(window,options,eduBossCombat,fluent,installHalloweenCore,eduBossRoot,eduBossSelectionName,installHalloweenCombat,installHalloweenStorage))
 local yOffset=-5
 local zOffset=0
 local QUEST_DATA={
@@ -19247,14 +20832,24 @@ local ownRoot=char and char:FindFirstChild("HumanoidRootPart")
 if not char or not bossRoot or not ownRoot then
 return
 end
+if eduSession.ClaimMovement and not eduSession:ClaimMovement("Boss",char,ownRoot)then
+return
+end
 local rawFrame=bossRoot.CFrame*CFrame.new(0,10+yOffset,zOffset)*CFrame.Angles(math.rad(-90),0,0)
 local desiredFrame=eduBossController:AdjustFollowFrame(bossRoot,ownRoot,rawFrame)
 if not desiredFrame then
 return
 end
+local posDelta=(ownRoot.Position-desiredFrame.Position).Magnitude
+local aligned=ownRoot.CFrame.LookVector:Dot(desiredFrame.LookVector)>=0.9985
+and ownRoot.CFrame.UpVector:Dot(desiredFrame.UpVector)>=0.9985
 local moved=pcall(function()
+if posDelta>0.06 or not aligned then
 ownRoot.CFrame=desiredFrame
+end
+if ownRoot.AssemblyLinearVelocity.Magnitude>0.05 then
 ownRoot.AssemblyLinearVelocity=Vector3.zero
+end
 end)
 if moved then
 eduBossController:RecordFollow(model,bossRoot,ownRoot,desiredFrame)
@@ -19511,7 +21106,7 @@ loadCFrame=CFrame.new(-4.18469238,33.3382645,-132.123505,-1,0,0,0,1,0,0,0,-1),
 },
 }
 local function dungeonSkills(char,model,stillAllowed)
-return eduBossCombat(char,nil,stillAllowed,"Lair")
+return eduBossCombat(char,nil,stillAllowed,"Lair",model)
 end
 installLunaLair(tabs.DungeonFarm,options,fluent,eduSession,installLunaLairCore,dungeonSkills,DUNGEON_DATA)
 tabs.ItemFarm:AddButton({
