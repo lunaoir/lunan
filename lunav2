@@ -3867,7 +3867,10 @@ end
 local function release(id,entry)
 if self.Held[id]~=entry then return true end
 local ok=pcall(dispatch,entry,false)
-if ok and self.Held[id]==entry then self.Held[id]=nil end
+if ok and self.Held[id]==entry then
+self.Held[id]=nil
+if entry.CombatLease then pcall(entry.CombatLease.Manager.EndKeyAttack,entry.CombatLease.Manager,entry.CombatLease)end
+end
 return ok
 end
 local function releaseAll()
@@ -3904,6 +3907,19 @@ end
 if not ready()then return false end
 local generation=self.Generation
 local entry={Backend=backend,Key=key,Button=button,Game=environment.game}
+if not antiAFK then
+local combat=env.EDUHubCombatV1
+if combat and type(combat.BeginKeyAttack)=="function"then
+local g=(type(environment)=="table"and environment.game)or game
+local plrs=g:GetService("Players");local actor=plrs and plrs.LocalPlayer and plrs.LocalPlayer.Character
+local target
+if type(session.GetCombatState)=="function"then local _,_,model=session:GetCombatState(allowDungeon==true);target=model end
+local inputKey=button==0 and"LeftClick"or button==1 and"RightClick"or key
+local mapped,ticket=combat:BeginKeyAttack(inputKey,actor,target)
+if mapped and not ticket then return false end
+entry.CombatLease=ticket
+end
+end
 self.Held[id]=entry
 local ok=pcall(function()
 if not ready()or generation~=self.Generation then return end
@@ -4468,7 +4484,7 @@ local poseEngine=env.EDUFarmPoseV1
 local mode="Above"
 local rear={Dio_Coffin=true,STUTowh=true,Towh_Coffin=true}
 if rear[lease.Model.Name]then mode="Behind"
-elseif lease.Model.Name=="Alternate Jotaro Part 4"then mode="Above"
+elseif lease.Model.Name=="Alternate Jotaro Part 4"or lease.Model.Name=="The Turkey"then mode="Above"
 elseif poseEngine and type(poseEngine.GetModeKey)=="function"then mode=poseEngine:GetModeKey()end
 local now=os.clock()
 local desired,why=movement:Frame(lease.Model,char,mode,now)
@@ -4609,7 +4625,7 @@ local installCombatSkills=assert(loadstring(([[!return function(tab,options,sess
 local env=getgenv and getgenv()or _G
 local http=game:GetService("HttpService")
 local unpackArgs=table.unpack or unpack
-local self={Running=true,Rows={},ByName={},MoveBy={},PendingEnds={},NextAt=0,NextM1At=0,Learning=false,LearnUntil=0,PendingStart={},Firing=false,SkillCursor=0,FolderCursor=0,StandPartsCache=nil,SummonAttempts=0,LastError=nil,ErrorAt=0,HoldCooldownUntil={}}
+local self={Running=true,Rows={},ByName={},MoveBy={},PendingEnds={},NextAt=0,NextM1At=0,Learning=false,LearnUntil=0,PendingStart={},Firing=false,SkillCursor=0,FolderCursor=0,StandPartsCache=nil,SummonAttempts=0,LastError=nil,ErrorAt=0,HoldCooldownUntil={},MetadataDirty=true,MetadataConnections={},RemoteConnections={},PlayerConnections={},Diagnostics={MetadataBuilds=0,ToolScans=0},RemoteCache=setmetatable({},{__mode="k"})}
 local excluded={Block=true,Quote=true,Pose=true,Summon=true,SummonStand=true,Heal=true,Jump=true,TogglePilot=true}
 local excludedLower={
 block=true,quote=true,pose=true,summon=true,summonstand=true,unsummon=true,
@@ -4622,25 +4638,40 @@ local learned=env.EDUHubLearnedStandsV1
 local section=tab:AddSection("Auto Skill · Dùng chung")
 local all=section:AddToggle("UseAllSkills",{Title="Dùng tất cả M1 + skill",Default=false})
 local selected=section:AddDropdown("SelectedSkills",{Title="Chọn M1 / skill (chọn nhiều)",Values={},Multi=true,Default={}})
-section:AddButton({Title="Quét / Học skill Stand mới",Description="Bật rồi bấm tay 1 lượt các chiêu · Tự lưu vĩnh viễn theo tên Stand",Callback=function()
-if self.Learning then self:StopLearning("Đã dừng học skill Stand mới")else self:StartLearning()end
-end})
-section:AddButton({Title="Xóa skill đã học của Stand này",Description="Xóa dữ liệu đã học để quét lại từ đầu",Callback=function()
-self:ClearLearnedStand()
-end})
-section:AddButton({Title="Làm mới skill",Description="Quét lại Stand / vũ khí hiện tại và lọc bỏ skill cũ",Callback=function()
+section:AddButton({Title="Làm mới skill",Callback=function()
 self:ManualRefresh()
 end})
-local label=section:AddParagraph({Title="M1 + Skill",Content="Dùng chung cho các mục farm · Chọn M1 để đấm"})
+local label=section:AddParagraph({Title="Skill",Content="Chọn M1 / skill để farm"})
+local advanced=section:AddToggle("EDUCombatAdvanced",{Title="Tùy chọn nâng cao",Default=false})
+advanced.Transient=true
+local learnButton=section:AddButton({Title="Quét / Học skill Stand mới",Description="Bật rồi bấm tay từng chiêu để học và lưu",Callback=function()
+if self.Learning then self:StopLearning("Đã dừng học skill Stand mới")else self:StartLearning()end
+end})
+local clearButton=section:AddButton({Title="Xóa skill đã học của Stand này",Callback=function()
+self:ClearLearnedStand()
+end})
 local smartCooldown=section:AddToggle("EDUCombatSmartCooldown",{Title="Lọc thêm cooldown từ CDgui",Default=false,
 Description="Luôn tôn trọng cooldown server đã nhận; bật để đối chiếu thêm giao diện."})
 local autoCancelHold=section:AddToggle("EDUCombatAutoCancelHold",{Title="Tự hủy chiêu giữ (Hold) khi mục tiêu chết",Default=true})
 local leadAimToggle=section:AddToggle("EDUCombatLeadAim",{Title="Lead Aim · Đón đầu mục tiêu",Default=true})
 local rangeGateToggle=section:AddToggle("EDUCombatRangeGate",{Title="Chỉ xả skill khi áp sát mục tiêu",Default=false})
 local throttleDrop=section:AddDropdown("EDUCombatThrottle",{Title="Giới hạn bắn Remote mỗi nhịp",Values={"Tất cả (Mặc định)","2 skill / nhịp","3 skill / nhịp"},Multi=false,Default="Tất cả (Mặc định)"})
+local detail=section:AddParagraph({Title="Chi tiết skill",Content="Chờ nhận diện Stand"})
+advanced:OnChanged(function(value)
+for _,control in ipairs({learnButton,clearButton,smartCooldown,autoCancelHold,leadAimToggle,rangeGateToggle,throttleDrop,detail})do
+if control and control.SetVisible then control:SetVisible(value==true)end
+end
+end)
 local setSelected=selected.SetValue
 local function alive()return self.Running and session.Running and not fluent.Unloaded end
-local function status(text)if self.Last~=text then self.Last=text;label:SetDesc(text)end end
+local function status(text,summary)
+if self.Last==text then return end
+self.Last=text
+detail:SetDesc(text)
+local brief=(summary or text):gsub("%s+"," ")
+local cut=utf8.offset(brief,61)
+label:SetDesc(cut and brief:sub(1,cut-1).."…"or brief)
+end
 local function isRemoteEvent(inst)
 if not inst then return false end
 local okR,r=pcall(inst.IsA,inst,"RemoteEvent")
@@ -4682,21 +4713,74 @@ if not cur then return nil end
 end
 return cur
 end
+local kitCache={Dirty=true}
+local function disconnectList(list)
+for _,conn in ipairs(list)do pcall(conn.Disconnect,conn)end
+table.clear(list)
+end
+local function invalidateMetadata()
+if not self.Running then return end
+self.MetadataDirty=true;self.ScanAt=0
+if kitCache.Char~=player.Character or kitCache.Tool and kitCache.Tool.Parent~=player.Character then kitCache={Dirty=true}
+else kitCache.Dirty=true end
+self.RemoteCache=setmetatable({},{__mode="k"})
+end
+local function connectMetadata(list,signal,fn)
+if not signal then return end
+local ok,conn=pcall(signal.Connect,signal,fn)
+if ok and conn then list[#list+1]=conn end
+end
+local function bindMetadata(char,events)
+local data=player:FindFirstChild("Data")
+local standValue=data and data:FindFirstChild("Stand")
+local tool=kitCache.Tool
+if self.MetadataChar==char and self.MetadataEvents==events and self.MetadataData==data
+and self.MetadataStandValue==standValue and self.MetadataTool==tool then return end
+disconnectList(self.MetadataConnections)
+self.MetadataChar=char;self.MetadataEvents=events;self.MetadataData=data;self.MetadataStandValue=standValue;self.MetadataTool=tool
+if data then
+local function changedStand(object)if object.Name=="Stand"then invalidateMetadata()end end
+connectMetadata(self.MetadataConnections,data.ChildAdded,changedStand)
+connectMetadata(self.MetadataConnections,data.ChildRemoved,changedStand)
+end
+if standValue then connectMetadata(self.MetadataConnections,standValue:GetPropertyChangedSignal("Value"),invalidateMetadata)end
+if tool then connectMetadata(self.MetadataConnections,tool:GetPropertyChangedSignal("Name"),invalidateMetadata)end
+if not char then return end
+local function changed(object)
+if not self.Running or self.MetadataChar~=char then return end
+local kitFolder=object:IsA("Folder")and(events and isOwnedByChar(object,events)or kitCache.Tool and isOwnedByChar(object,kitCache.Tool))
+if isRemoteCallable(object)or object:IsA("Tool")or kitFolder or object.Name=="StandEvents"or object:IsA("Humanoid")then
+invalidateMetadata()
+end
+end
+connectMetadata(self.MetadataConnections,char.DescendantAdded,changed)
+connectMetadata(self.MetadataConnections,char.DescendantRemoving,changed)
+end
+connectMetadata(self.PlayerConnections,player.CharacterAdded,invalidateMetadata)
+connectMetadata(self.PlayerConnections,player.CharacterRemoving,invalidateMetadata)
 local function findToolContainer(char)
 if not char then return nil end
+local now=os.clock()
+if kitCache.Char==char and not kitCache.Dirty and now<(kitCache.Until or 0)
+and(not kitCache.Tool or kitCache.Tool.Parent==char)
+and(not kitCache.Events or isOwnedByChar(kitCache.Events,char))then
+return kitCache.Tool,kitCache.Events
+end
+self.Diagnostics.ToolScans+=1
+kitCache={Char=char,Dirty=false,Until=now+2}
 for _,child in ipairs(char:GetChildren())do
 if child.Parent==char then
 local okT,isTool=pcall(child.IsA,child,"Tool")
 if okT and isTool then
 local se=child:FindFirstChild("StandEvents")
-if se then return child,se end
+if se then kitCache.Tool=child;kitCache.Events=se;return child,se end
 if type(child.GetDescendants)=="function"then
 for _,desc in ipairs(child:GetDescendants())do
-if isRemoteCallable(desc)then return child,nil end
+if isRemoteCallable(desc)then kitCache.Tool=child;return child,nil end
 end
 elseif type(child.GetChildren)=="function"then
 for _,sub in ipairs(child:GetChildren())do
-if isRemoteCallable(sub)then return child,nil end
+if isRemoteCallable(sub)then kitCache.Tool=child;return child,nil end
 end
 end
 end
@@ -4950,6 +5034,7 @@ AimArgTemplate=aimTpl,
 EndArgTemplate=endTpl,
 TargetMode=type(raw.TargetMode)=="string"and raw.TargetMode or(aim and"AimPos"or nil),
 Source=type(raw.Source)=="string"and raw.Source or(defaultSource or"Preset"),
+InputKey=type(raw.InputKey)=="string"and raw.InputKey or nil,
 }
 end
 local function normalizeProfile(raw,defaultProtocol,defaultSource)
@@ -5189,26 +5274,36 @@ if sawPart then return false end
 end
 end
 local function resolveMoveRemote(char,events,move)
+local cached=move and self.RemoteCache[move]
+if cached and cached.Char==char and cached.Events==events and cached.Remote.Name==cached.Name and cached.Remote.Parent==cached.Parent
+and isOwnedByChar(cached.Remote,char)then return cached.Remote end
+local function found(remote)
+if move and remote then self.RemoteCache[move]={Char=char,Events=events,Remote=remote,Name=remote.Name,Parent=remote.Parent}end
+return remote
+end
 if move and type(move.RemotePath)=="string"and move.RemotePath~=""then
 local byPath=resolveRelativePath(char,move.RemotePath)
-if isRemoteCallable(byPath)and isOwnedByChar(byPath,char)then return byPath end
+if isRemoteCallable(byPath)and isOwnedByChar(byPath,char)then return found(byPath)end
 end
-if isRemoteCallable(events)and isOwnedByChar(events,char)then return events end
+if isRemoteCallable(events)and isOwnedByChar(events,char)then return found(events)end
 if events and isOwnedByChar(events,char)then
 local name=(move and(move.RemoteName or move.Name))
 if type(name)=="string"and name~=""then
 local found=events:FindFirstChild(name)
-if isRemoteCallable(found)then return found end
+if isRemoteCallable(found)then
+if move then self.RemoteCache[move]={Char=char,Events=events,Remote=found,Name=found.Name,Parent=found.Parent}end
+return found
+end
 end
 if events:IsA("Tool")and type(events.GetDescendants)=="function"then
 local fallbackRemote=nil
-for _,d in ipairs(events:GetDescendants())do
+for _,d in ipairs(self.ToolRemotes or events:GetDescendants())do
 if isRemoteCallable(d)then
-if d.Name==name then return d end
+if d.Name==name then return found(d)end
 fallbackRemote=fallbackRemote or d
 end
 end
-if fallbackRemote and move and move.Action then return fallbackRemote end
+if fallbackRemote and move and move.Action then return found(fallbackRemote)end
 end
 end
 return nil
@@ -5240,6 +5335,12 @@ if tpl[i]=="__AIM__"or tpl[i]=="__AIM_CF__"then return true end
 end
 return false
 end
+local claimAttack
+local function finishClaim(ticket,success)
+if not ticket then return end
+ticket.Active=false
+ticket.Until=success and math.max(ticket.Until,os.clock()+.02)or 0
+end
 local function fireProtocol(events,move,stateOverride,char,targetModel)
 if not char or not char.Parent then return false end
 local remote=resolveMoveRemote(char,events,move)
@@ -5247,6 +5348,11 @@ if not remote or not isOwnedByChar(remote,char)then return false end
 local wireName=move.RemoteName or move.Name
 local stateVal=stateOverride~=nil and stateOverride or move.StartState
 local useInvoke=move.Method=="InvokeServer"
+local ticket
+if claimAttack and stateOverride==nil and not isSummonName(move.Name)then
+ticket=claimAttack(remote,move,char,targetModel)
+if not ticket then return false end
+end
 self.Firing=true
 local ok,err=pcall(function()
 if stateOverride~=nil and move.EndArgTemplate and isEndToken(stateOverride)then
@@ -5287,6 +5393,7 @@ end
 end
 end)
 self.Firing=false
+finishClaim(ticket,ok)
 if not ok then
 reportError(tostring(wireName or move.Name)..": "..tostring(err))
 end
@@ -5632,16 +5739,12 @@ return false
 end
 function self:Refresh(force,pruneStale)
 if not alive()then return end
+if force then invalidateMetadata()end
 local char,hum,events=context()
 local kind=kindOf(events)
 local stand=standName(char,events)
-local childCount=0
-if events and(kind=="Folder"or kind=="Tool")and type(events.GetChildren)=="function"then
-local okCh,ch=pcall(events.GetChildren,events)
-if okCh and type(ch)=="table"then childCount=#ch end
-end
 local changed=char~=self.Char or hum~=self.Hum or events~=self.Events
-or kind~=self.Kind or stand~=self.Stand or childCount~=self.LastEventChildCount
+or kind~=self.Kind or stand~=self.Stand
 if changed then
 if char~=self.Char or hum~=self.Hum or events~=self.Events or stand~=self.Stand then
 self:Release();flushPendingEnds(true)
@@ -5649,8 +5752,9 @@ if self.Learning and stand~=self.Stand then self:StopLearning()end
 self.Char=char;self.Hum=hum;self.Events=events;self.Kind=kind;self.Stand=stand
 self.NextAt=0;self.NextSummon=0;self.StandPartsCache=nil;self.SummonAttempts=0;self.FolderCursor=0
 clearServerCooldowns()
+self.AttackClaims=setmetatable({},{__mode="k"})
 end
-self.LastEventChildCount=childCount
+invalidateMetadata()
 self.ScanAt=0
 end
 if pruneStale then
@@ -5658,8 +5762,16 @@ self.NeedPrune=true
 end
 local now=os.clock()
 bindServerCooldowns(changed or force)
-if not changed and not force and now<(self.ScanAt or 0)then return end
-self.ScanAt=now+.5
+if not changed and not force and not self.MetadataDirty and now<(self.ScanAt or 0)then return end
+bindMetadata(char,events)
+disconnectList(self.RemoteConnections)
+self.MetadataDirty=false;self.ScanAt=now+(self.Learning and.5 or 2)
+self.Diagnostics.MetadataBuilds+=1
+self.RemoteCache=setmetatable({},{__mode="k"});self.ToolRemotes=nil
+if kind=="Tool"then
+self.ToolRemotes={}
+for _,remote in ipairs(events:GetDescendants())do if isRemoteCallable(remote)then self.ToolRemotes[#self.ToolRemotes+1]=remote end end
+end
 local rows,byName,moves={},{},{}
 local profile,isLearned=nil,false
 if char and char.Parent and hum and hum.Health>0 and events then
@@ -5704,7 +5816,9 @@ end
 end
 end
 local toolRemotes={}
-if type(events.GetDescendants)=="function"then
+if self.ToolRemotes then
+toolRemotes=self.ToolRemotes
+elseif type(events.GetDescendants)=="function"then
 for _,d in ipairs(events:GetDescendants())do if isRemoteCallable(d)then toolRemotes[#toolRemotes+1]=d end end
 elseif type(events.GetChildren)=="function"then
 for _,c in ipairs(events:GetChildren())do if isRemoteCallable(c)then toolRemotes[#toolRemotes+1]=c end end
@@ -5732,6 +5846,13 @@ end
 local different=#rows~=#self.Rows
 if not different then for i,name in ipairs(rows)do if name~=self.Rows[i]then different=true;break end end end
 self.Rows=rows;self.ByName=byName;self.MoveBy=moves;self.ActiveProfile=profile
+local watched={}
+for _,remote in pairs(byName)do
+if not watched[remote]then
+watched[remote]=true
+connectMetadata(self.RemoteConnections,remote:GetPropertyChangedSignal("Name"),invalidateMetadata)
+end
+end
 local shouldPrune=char~=nil and events~=nil and(pruneStale==true or self.NeedPrune==true)and#rows>0
 if shouldPrune and(self.Pending or type(selected.Value)=="table")then
 self.NeedPrune=false
@@ -5776,7 +5897,7 @@ end
 if self.Learning then
 local left=math.max(0,math.ceil(self.LearnUntil-now))
 local preview=#rows>0 and table.concat(rows,", "):sub(1,90)or"chưa bắt chiêu nào"
-status("Đang học "..tostring(stand or"Stand mới").." ("..left.."s) · "..#rows.." skill: "..preview.." · Bấm tay từng chiêu rồi bấm lại nút để dừng")
+status("Đang học "..tostring(stand or"Stand mới").." ("..left.."s) · "..#rows.." skill: "..preview.." · Bấm tay từng chiêu rồi bấm lại nút để dừng","Đang học · "..#rows.." skill · "..left.."s")
 elseif not char or not hum or hum.Health<=0 or not events then
 status("Chờ nhân vật / Stand")
 elseif not kind then
@@ -5787,14 +5908,14 @@ status(tostring(stand).." · Đã học "..#rows.." skill (tự lưu)")
 elseif profile then
 status(tostring(stand).." · "..#rows.." skill sẵn có")
 elseif kind=="Tool"and#rows>0 then
-status("Vũ khí "..tostring(stand or"Tool").." · Quét "..#rows.." remote · Có thể bấm Học để lưu tham số")
+status("Vũ khí "..tostring(stand or"Tool").." · Quét "..#rows.." remote · Có thể bấm Học để lưu tham số","Vũ khí "..tostring(stand or"Tool").." · "..#rows.." skill")
 elseif type(hookmetamethod)~="function"or type(getnamecallmethod)~="function"then
-status("Stand mới "..tostring(stand or"?").." · Chưa có hồ sơ sẵn; executor thiết bị này không hỗ trợ hookmetamethod để học chiêu")
+status("Stand mới "..tostring(stand or"?").." · Chưa có hồ sơ sẵn; executor thiết bị này không hỗ trợ hookmetamethod để học chiêu","Chưa có skill · Thiết bị chưa hỗ trợ học chiêu")
 else
-status("Stand mới "..tostring(stand or"?").." · Chưa có skill · Bấm 'Quét / Học skill Stand mới' rồi bấm tay từng chiêu")
+status("Stand mới "..tostring(stand or"?").." · Chưa có skill · Bấm 'Quét / Học skill Stand mới' rồi bấm tay từng chiêu","Chưa có skill · Mở Nâng cao để học")
 end
 else
-status("Stand cũ (tự quét "..#rows.." skill) · Chọn M1 / skill hoặc bật tất cả")
+status("Stand cũ (tự quét "..#rows.." skill) · Chọn M1 / skill hoặc bật tất cả","Đã nhận diện "..#rows.." skill")
 end
 end
 function self:ManualRefresh()
@@ -5897,6 +6018,43 @@ if raw=="2 skill / nhịp"then return 2 end
 if raw=="3 skill / nhịp"then return 3 end
 return math.huge
 end
+local function actionKey(move)
+local name=move.RemoteName or move.Name
+if name=="M1"or name=="NormalPunch"or name=="Punch"then return"M1",true end
+return tostring(move.Action or"")..":"..tostring(name),false
+end
+claimAttack=function(remote,move,char,target)
+self.AttackClaims=self.AttackClaims or setmetatable({},{__mode="k"})
+local actions=self.AttackClaims[remote]
+if not actions then actions={};self.AttackClaims[remote]=actions end
+local key,m1=actionKey(move);local old=actions[key];local now=os.clock()
+if old and old.Char==char and(old.Active or now<old.Until)then return nil end
+local ticket={Manager=self,Char=char,Active=true,Until=now+(m1 and.06 or.08)}
+actions[key]=ticket;return ticket
+end
+function self:BeginKeyAttack(key,char,target)
+if not alive()then return false end
+self:Refresh()
+local move,remote
+for name,candidate in pairs(self.MoveBy)do
+local wire=candidate.RemoteName or name
+local matches=candidate.InputKey==key or key=="LeftClick"and(wire=="M1"or wire=="NormalPunch"or wire=="Punch")
+if matches then
+if move then return false end
+move=candidate;remote=self.ByName[name]
+end
+end
+if not move then return false end
+if self.Learning or char~=player.Character or char~=self.Char or not self.Hum or self.Hum.Health<=0
+or not remote or not isOwnedByChar(remote,char)or target and not isTargetAlive(target,target.Parent)then return true end
+if isMoveOnCooldown(snapshotCooldowns(),move.Name,move.RemoteName)then return true end
+local held=self.Held
+if held and held.Char==char and held.Remote==remote and actionKey(held.Move or{Name=held.Name})==actionKey(move)then return true end
+return true,claimAttack(remote,move,char,target)
+end
+function self:EndKeyAttack(ticket)
+if ticket and ticket.Manager==self then finishClaim(ticket,true)end
+end
 function self:Fire(char,guard,owner,targetModel)
 self:Refresh()
 if autoCancelHold.Value==true and self.Held and self.Held.TargetModel
@@ -5972,8 +6130,12 @@ self.PendingEnds[#self.PendingEnds+1]={Move=move,Remote=remote,Char=char,Hum=hum
 end
 end
 else
+local ticket=claimAttack(remote,move or{Name=name},char,activeTarget)
+if ticket then
 local okFire,errFire=pcall(function()remote:FireServer(true)end)
+finishClaim(ticket,okFire)
 if okFire then sent=true;count+=1;self.FolderCursor=index else reportError(name..": "..tostring(errFire))end
+end
 end
 end
 return sent
@@ -6109,7 +6271,10 @@ if kind=="Folder"then
 local remote=self.ByName["M1"]or self.ByName["NormalPunch"]or self.ByName["Punch"]
 or events:FindFirstChild("M1")or events:FindFirstChild("NormalPunch")or events:FindFirstChild("Punch")
 if isRemoteCallable(remote)and isOwnedByChar(remote,char)then
+local ticket=claimAttack(remote,{Name=remote.Name},char,targetModel)
+if not ticket then return false end
 local okFire,errFire=pcall(function()remote:FireServer(true)end)
+finishClaim(ticket,okFire)
 if not okFire then reportError("M1: "..tostring(errFire))end
 return okFire
 end
@@ -6162,11 +6327,18 @@ self:Release()
 end
 end
 end
-if alive()and now>=(self.ScanAt or 0)then self:Refresh()end
+if alive()then
+bindServerCooldowns(false)
+if now>=(self.ScanAt or 0)then self:Refresh()end
+end
 end)
 function self:Destroy()
 if not self.Running then return end
 self.Running=false
+disconnectList(self.MetadataConnections);disconnectList(self.RemoteConnections);disconnectList(self.PlayerConnections)
+self.RemoteCache={};self.ToolRemotes=nil;kitCache={}
+self.AttackClaims={}
+self.MetadataChar=nil;self.MetadataEvents=nil;self.MetadataData=nil;self.MetadataStandValue=nil;self.MetadataTool=nil
 self.Learning=false;detachObserver()
 if cooldownConnection then cooldownConnection:Disconnect();cooldownConnection=nil end
 if summonPacketConn then summonPacketConn:Disconnect();summonPacketConn=nil end
@@ -6289,7 +6461,7 @@ end
 local function snapshot()
 local result={}
 for key,control in pairs(options)do
-if type(key)=="string"and key~="EDUBossMiasmaHP"and key~="EDUFarmPoseApplyPostMiasma"and type(control)=="table"then result[key]=safe(control.Value,0)end
+if type(key)=="string"and key~="EDUBossMiasmaHP"and key~="EDUFarmPoseApplyPostMiasma"and type(control)=="table"and not control.Transient then result[key]=safe(control.Value,0)end
 end
 return result
 end
@@ -6458,7 +6630,7 @@ local failures=0
 local function apply(key,value)
 assert(current(),"Phiên khôi phục đã được thay thế")
 local c=options[key]
-if c and type(c.SetValue)=="function"then
+if c and not c.Transient and type(c.SetValue)=="function"then
 local ok,why=pcall(c.SetValue,c,value)
 assert(current(),"Phiên khôi phục đã được thay thế")
 if not ok then
@@ -8778,7 +8950,7 @@ Running=true,
 }
 env.EDUFarmPoseV1=self
 session:Own(self)
-local section=tab:AddSection("Dáng Farm PC · Boss & Quest")
+local section=tab:AddSection("Tư thế farm · Boss & Quest")
 local modeDrop=section:AddDropdown("EDUFarmPoseMode",{
 Title="Dáng farm (Boss thường & Quest)",
 Values={"Trên đầu (Above)","Sau lưng (Behind)","Dưới đất (Underground)","Xoay vòng (Orbit)"},
@@ -8786,7 +8958,7 @@ Multi=false,
 Default="Trên đầu (Above)",
 })
 local sitAboveToggle=section:AddToggle("EDUFarmPoseSitAbove",{
-Title="Ngồi (Sit) khi đứng trên đầu",
+Title="Ngồi khi ở trên đầu",
 Default=true,
 })
 local undergroundDepth=section:AddSlider("EDUFarmPoseUndergroundDepth",{
@@ -8818,6 +8990,16 @@ local autoFaceToggle=section:AddToggle("EDUFarmPoseAutoFace",{
 Title="Tự xoay mặt nhân vật & Stand vào mục tiêu",
 Default=true,
 })
+modeDrop:OnChanged(function(value)
+for _,entry in ipairs({
+{sitAboveToggle,value=="Trên đầu (Above)"},
+{undergroundDepth,value=="Dưới đất (Underground)"},
+{orbitRadius,value=="Xoay vòng (Orbit)"},
+{orbitSpeed,value=="Xoay vòng (Orbit)"},
+})do
+if entry[1].SetVisible then entry[1]:SetVisible(entry[2])end
+end
+end)
 local MODE_MAP={
 ["Trên đầu (Above)"]="Above",
 ["Sau lưng (Behind)"]="Behind",
@@ -10262,7 +10444,8 @@ local catalogue={
 {Name="Alternate Jotaro Part 4",Point=3,Frame=frames[3]},
 {Name="STUTowh",Point=5,Period=3600,Frame=frames[5]},
 {Name="Towh_Coffin",Point=5,Period=3600,Frame=frames[5]},
-{Name="Dio_Coffin",Point=5,Period=3600,Frame=frames[5]}
+{Name="Dio_Coffin",Point=5,Period=3600,Frame=frames[5]},
+{Name="The Turkey",Point=5,Frame=frames[5]}
 }
 local function canonical(name)
 if name=="TWOH"then return"Towh_Coffin"end
@@ -12524,7 +12707,11 @@ local streamPoints,streamIndex,streamPending,streamRun={},0,false,nil
 local nextStreamAt=0
 local nextDoorAt,nextScanAt,elapsed,nextRegionReturnAt=0,0,0,0
 local recoverAt,lastRecoveryWarning=0,-math.huge
-local indexedLiving,indexedDoors,livingAdded,doorsAdded
+local indexedLiving,indexedDoors
+local indexConnections,indexBacks={},{}
+local indexScan,indexReconcileAt,indexGeneration=nil,0,0
+local indexStats={Passes=0,Visited=0,Events=0,ReadErrors=0}
+featureState.halloweenIndexDiagnostics=indexStats
 featureState.halloweenStatus="Đã tắt"
 local function setStatus(text)
 if featureState.halloweenStatus~=text then
@@ -13504,15 +13691,13 @@ end
 local model=object
 while model and model~=workspace do
 if model:IsA("Model")and isHalloweenMobName(model.Name)and not Players:GetPlayerFromCharacter(model)and model~=localplr.Character then
-if not mobs[model]then
-mobs[model]=os.clock()
-if not mobPulledHistory[model]then
+if not mobs[model]then mobs[model]=os.clock()end
+if not mobPulledHistory[model]and not mobOriginGroundY[model]then
 local mRoot=model:FindFirstChild("HumanoidRootPart")or model.PrimaryPart
-if mRoot then
+if mRoot and mRoot:IsA("BasePart")and mRoot:IsDescendantOf(model)then
 local g=findRealGroundPosition(mRoot.Position)
 if g then
 mobOriginGroundY[model]=g
-end
 end
 end
 end
@@ -13523,56 +13708,100 @@ end
 end
 local function bindIndexFolders()
 local living=workspace:FindFirstChild("Living")
-if living~=indexedLiving or living and not livingAdded then
-if livingAdded then livingAdded:Disconnect();livingAdded=nil end
-indexedLiving=living
-if living then livingAdded=living.ChildAdded:Connect(function(child)
-if not engine:IsRunning()or child.Parent~=indexedLiving or not child:IsA("Model")then return end
-indexObject(child)
-if featureState.notifyBossDescendant then featureState.notifyBossDescendant(child)end
+local doors=doorFolder()
+if living==indexedLiving and doors==indexedDoors then return end
+for _,conn in ipairs(indexConnections)do conn:Disconnect()end
+table.clear(indexConnections)
+indexGeneration+=1;local generation=indexGeneration
+indexedLiving,indexedDoors=living,doors;indexScan=nil;indexReconcileAt=0;nextScanAt=0
+local function listen(signal,fn)
+if signal then indexConnections[#indexConnections+1]=signal:Connect(function(object)
+if generation==indexGeneration and engine:IsRunning()and autoDoor then indexStats.Events+=1;fn(object)end
 end)end
 end
-local doors=doorFolder()
-if doors~=indexedDoors or doors and not doorsAdded then
-if doorsAdded then doorsAdded:Disconnect();doorsAdded=nil end
-indexedDoors=doors
-if doors then doorsAdded=doors.DescendantAdded:Connect(function(desc)
-if engine:IsRunning()and desc:IsA("ProximityPrompt")and validDoor(desc)then prompts[desc]=true end
-end)end
+local function livingAdded(object)
+local model=object
+while model and model.Parent~=living do model=model.Parent end
+if model and model.Parent==living and model:IsA("Model")then
+if object==model or object:IsA("Humanoid")or object:IsA("BasePart")then
+if object==model or isHalloweenMobName(model.Name)then indexObject(model)end
+if featureState.notifyBossDescendant then featureState.notifyBossDescendant(model)end
+end
+end
+end
+if living then
+listen(living.ChildAdded,livingAdded)
+listen(living.DescendantAdded,function(object)
+if object.Parent~=living and(object:IsA("Humanoid")or object.Name=="HumanoidRootPart")then livingAdded(object)end
+end)
+listen(living.ChildRemoved,function(model)mobs[model]=nil end)
+end
+if doors then
+listen(doors.DescendantAdded,function(object)
+if object:IsA("ProximityPrompt")and validDoor(object)then prompts[object]=true end
+if object:IsA("BasePart")and object.Name:match("^DoorType%d+Back$")then indexBacks[object]=true end
+end)
+listen(doors.DescendantRemoving,function(object)prompts[object]=nil;indexBacks[object]=nil;visits[object]=nil end)
 end
 end
 local function rescan(now)
 bindIndexFolders()
-local foundPrompts,foundMobs,points={},{},{}
-local doors=doorFolder()
-if doors then
-for _,object in ipairs(doors:GetDescendants())do
+if not indexScan and now>=indexReconcileAt then
+indexStats.Passes+=1
+indexScan={Cursor=0,Roots={}}
+for _,root in ipairs({indexedDoors or false,indexedLiving or false})do
+if root then indexScan.Roots[#indexScan.Roots+1]={Root=root,Shallow=root==indexedLiving,Stack={{Object=root}}}end
+end
+end
+if indexScan then
+local deadline=os.clock()+.001;local units=0;local roots=indexScan.Roots
+while#roots>0 and units<96 and os.clock()<deadline do
+indexScan.Cursor=indexScan.Cursor%#roots+1
+local scan=roots[indexScan.Cursor];local stack=scan.Stack;local frame=stack[#stack]
+units+=1
+if not frame then table.remove(roots,indexScan.Cursor);indexScan.Cursor=0
+else
+local object=frame.Object
+if object~=scan.Root and not object:IsDescendantOf(scan.Root)then table.remove(stack)
+elseif not frame.Children then
+indexStats.Visited+=1
+if scan.Shallow then
+if object~=scan.Root and object:IsA("Model")then
 indexObject(object)
-if prompts[object]then
-foundPrompts[object]=true
+if featureState.notifyBossDescendant then featureState.notifyBossDescendant(object)end
 end
-if object:IsA("BasePart")and object.Name:match("^DoorType%d+Back$")then
+else
+if object:IsA("ProximityPrompt")then indexObject(object)end
+if object:IsA("BasePart")and object.Name:match("^DoorType%d+Back$")then indexBacks[object]=true end
+end
+if scan.Shallow and object~=scan.Root then table.remove(stack)
+else
+local ok,children=pcall(object.GetChildren,object)
+if not ok then indexStats.ReadErrors+=1;indexScan.Failed=true;table.remove(stack)
+else frame.Children=children;frame.Index=1 end
+end
+elseif frame.Index>#frame.Children then table.remove(stack)
+else
+local child=frame.Children[frame.Index];frame.Index+=1
+if child and child.Parent==object then stack[#stack+1]={Object=child}end
+end
+end
+end
+indexStats.LastStepUnits=units;indexStats.PeakStepUnits=math.max(indexStats.PeakStepUnits or 0,units)
+if#roots==0 then indexReconcileAt=now+(indexScan.Failed and 1 or 30);indexScan=nil end
+end
+nextScanAt=indexScan and now or math.min(now+5,indexReconcileAt)
+local points={}
+for object in pairs(indexBacks)do
 local parent=object.Parent
-if parent and parent.Name=="Backs"then
-table.insert(points,object.Position)
+if indexedDoors and parent and parent.Name=="Backs"and object:IsDescendantOf(indexedDoors)then points[#points+1]=object.Position
+else indexBacks[object]=nil end
 end
-end
-end
-end
-local living=workspace:FindFirstChild("Living")
-if living then
-for _,child in ipairs(living:GetChildren())do
-if child:IsA("Model")then
-indexObject(child)
-if mobs[child]then
-foundMobs[child]=mobs[child]
-end
-if featureState.notifyBossDescendant then featureState.notifyBossDescendant(child)end
-end
-end
-end
-prompts,mobs=foundPrompts,foundMobs
 streamPoints=points
+local promptCount,mobCount=0,0
+for prompt in pairs(prompts)do if not validDoor(prompt)then prompts[prompt]=nil else promptCount+=1 end end
+for model in pairs(mobs)do if model.Parent~=indexedLiving then mobs[model]=nil else mobCount+=1 end end
+indexStats.Prompts=promptCount;indexStats.Mobs=mobCount
 for prompt in pairs(visits)do
 if not prompts[prompt]then
 visits[prompt]=nil
@@ -13592,7 +13821,6 @@ mobPulledHistory[pulledModel]=nil
 mobOriginGroundY[pulledModel]=nil
 end
 end
-nextScanAt=now+5
 end
 local function streamFarRegion(now)
 if not workspace.StreamingEnabled or streamPending or now<nextStreamAt or#streamPoints==0 then
@@ -14297,16 +14525,14 @@ holdSafeUndergroundPosture(character,humanoid,root)
 setStatus("Quá hạn chờ phản hồi cửa (chưa nhận Candy) — thử chuyển sang cửa tiếp theo")
 elseif chosenDoor and validDoor(chosenDoor)and chosenDoor.Enabled then
 if pullDoorAnchorUnderground(character,humanoid,root)then
-local retryGap=math.max(1.5,autoEDelay)
 if doorInteractionReady(chosenDoor,root,character)
 and not heldPrompt
-and(awaitingCandy.PressCount or 1)<3
-and now-awaitingCandy.LastPressAt>=retryGap
+and now-awaitingCandy.LastPressAt>=autoEDelay
 then
 pressDoor(now,root)
 end
 end
-setStatus("Đang chờ server xác nhận kết quả cửa (thử lại có giãn nhịp)")
+setStatus("Đang gõ E theo delay đã đặt — chờ kết quả cửa")
 else
 holdSafeUndergroundPosture(character,humanoid,root)
 setStatus("Chờ cửa phản hồi kết quả / nhận Candy tại cửa này")
@@ -14459,8 +14685,9 @@ if physicsConnection then
 physicsConnection:Disconnect()
 physicsConnection=nil
 end
-if livingAdded then livingAdded:Disconnect();livingAdded=nil end
-if doorsAdded then doorsAdded:Disconnect();doorsAdded=nil end
+for _,conn in ipairs(indexConnections)do conn:Disconnect()end
+table.clear(indexConnections);indexGeneration+=1
+indexScan=nil;indexReconcileAt=0;table.clear(indexBacks)
 indexedLiving,indexedDoors=nil,nil
 if added then
 if type(added)=="table"then
@@ -14645,7 +14872,7 @@ local function section(title,column)
 return type(tab.AddSection)=="function"and tab:AddSection({Title=title,Column=column})or tab
 end
 local farmTab=section("Auto Halloween",1)or tab
-local label=farmTab:AddParagraph({Title="Trạng thái",Content="Đã tắt · Logic Halloween Luna"})
+local label=farmTab:AddParagraph({Title="Trạng thái",Content="Đã tắt"})
 local owner=self
 local engine={Parameters={},Values={AutoHalloweenRejoin=false,HalloweenStandSkills={}}}
 local stand=env.EDULunaStandV1
@@ -14657,7 +14884,23 @@ local startedAt=os.clock()
 local joining,joiningAt=false,0
 local lastStatus,lastError=nil,-math.huge
 local function status(text)
-if self.Running and text~=lastStatus then lastStatus=text;label:SetDesc(text)end
+if not self.Running or text==lastStatus then return end
+lastStatus=text
+self.StatusDetail=text
+local brief=text
+for _,entry in ipairs({
+{"Đang gõ E theo delay","Đang gõ E · Chờ kết quả"},
+{"Đã gửi E","Đã gửi E · Chờ kết quả"},
+{"Đang gửi giữ E","Đang gõ E · Chờ kết quả"},
+{"Đã xác nhận nhận Candy","Đã nhận Candy · Chuyển cửa"},
+{"Chờ ban đêm (đã trả","Chờ ban đêm"},
+{"Chờ quái quanh cửa (giữ","Chờ mob Halloween"},
+{"Chờ quái tải đủ bộ phận","Chờ mob tải đủ bộ phận"},
+{"Đang căn điểm tương tác E","Đang vào tầm gõ cửa"},
+})do
+if text:sub(1,#entry[1])==entry[1]then brief=entry[2];break end
+end
+label:SetDesc(brief)
 end
 local function connect(signal,fn)
 local c=signal:Connect(fn);self.Connections[#self.Connections+1]=c;return c
@@ -14829,12 +15072,28 @@ local function toggle(key,title,default,host)
 local c=(host or farmTab):AddToggle("EDUHW_"..key,{Title=title,Default=default})
 controls[key]=c;c:OnChanged(function(value)engine:Set(key,value)end);return c
 end
-local door=toggle("HalloweenAutoDoor","Auto Door (Luna cũ)",false)
+local door=toggle("HalloweenAutoDoor","Auto Door",false)
+local mobEnabled=farmTab:AddToggle("EDUHW_HalloweenMobEnabled",{Title="Auto Mob",Default=false})
+local mobPose=farmTab:AddDropdown("EDUHW_HalloweenMobPose",{Title="Tư thế đánh mob",Values={"Dưới chân","Trên đầu"},Multi=false,Default="Dưới chân"})
+mobEnabled.Transient=true
 local mobSyncing=false
+local viewSyncing=false
 local mob=farmTab:AddToggle("EDUHW_HalloweenAutoMob",{Title="Auto Mob · Bám dưới chân (bật cùng Auto Door)",Default=false})
 local mobAbove=farmTab:AddToggle("EDUHW_HalloweenAutoMobAbove",{Title="Auto Mob · Bám trên đầu (bật cùng Auto Door)",Default=false})
+if mob.SetVisible then mob:SetVisible(false)end
+if mobAbove.SetVisible then mobAbove:SetVisible(false)end
 controls.HalloweenAutoMob=mob
 controls.HalloweenAutoMobAbove=mobAbove
+local function updateMobView()
+viewSyncing=true
+local on=mob.Value==true or mobAbove.Value==true
+if mobEnabled.Value~=on then mobEnabled:SetValue(on)end
+if on then
+local pose=mobAbove.Value==true and"Trên đầu"or"Dưới chân"
+if mobPose.Value~=pose then mobPose:SetValue(pose)end
+end
+viewSyncing=false
+end
 local function syncMobMode(source,value)
 if mobSyncing then return end
 mobSyncing=true
@@ -14848,14 +15107,28 @@ local aboveOn=mobAbove.Value==true
 local anyOn=(mob.Value==true)or aboveOn
 engine:Set("HalloweenAutoMobAbove",aboveOn)
 engine:Set("HalloweenAutoMob",anyOn)
+updateMobView()
 end
 mob:OnChanged(function(value)syncMobMode("below",value)end)
 mobAbove:OnChanged(function(value)syncMobMode("above",value)end)
+local function applyMobView()
+if viewSyncing then return end
+if mobEnabled.Value==true then
+if mobPose.Value=="Trên đầu"then mobAbove:SetValue(true)else mob:SetValue(true)end
+else
+mobSyncing=true
+mob:SetValue(false);mobAbove:SetValue(false)
+mobSyncing=false
+syncMobMode(nil,false)
+end
+end
+mobEnabled:OnChanged(applyMobView)
+mobPose:OnChanged(applyMobView)
 local slotTab=section("Auto Slot",2)or tab
 local rejoinTab=section("Rejoin",2)or tab
 local rejoin=toggle("AutoHalloweenRejoin","Tự rejoin khi hết lượt cửa",false,rejoinTab)
 local storage=stand and stand:AttachHalloween(engine)or installStorage(engine,featureState,player,game:GetService("ReplicatedStorage"),options)
-local standCycle=toggle("StandHalloweenCycle","Đổi Stand khi farm Halloween (Luna cũ)",false,slotTab)
+local standCycle=toggle("StandHalloweenCycle","Đổi Stand khi farm Halloween",false,slotTab)
 local standSlot=slotTab:AddDropdown("EDUHW_HalloweenStandSlot",{Title="Slot Stand Halloween",Values={"Chọn slot","Slot 1","Slot 2","Slot 4"},Multi=false,Default="Chọn slot"})
 standSlot:OnChanged(function(value)engine:Set("HalloweenStandSlot",{value})end)
 local slotInfo=slotTab:AddParagraph({Title="Stand trong kho",Content="Đang đọc Slot 1 / 2 / 4"})
@@ -14865,7 +15138,8 @@ controls[key]=c;c:OnChanged(function(value)engine:Set(key,value)end);return c
 end
 local delay=slider("HalloweenEDelay","Khoảng cách gõ E (giây)",.1,.1,3,1)
 local depth=slider("HalloweenMobDistance","Độ sâu khi gõ cửa",7,6,10,1)
-local distance=slider("HalloweenFarmDistance","Độ sâu khi đánh mob",3.2,2,10,1)
+local distance=slider("HalloweenFarmDistance","Khoảng cách với mob",3.2,2,10,1)
+mobEnabled:OnChanged(function(value)if distance.SetVisible then distance:SetVisible(value==true)end end)
 featureState.hasHalloweenAttackSelection=function()
 if options.UseAllSkills and options.UseAllSkills.Value==true then return true end
 for _,keys in ipairs({"SelectedSkills","SelectKeySkills"})do
@@ -15236,6 +15510,7 @@ local EDU_BOSS_NAMES={
 "STUTowh",
 "Towh_Coffin",
 "Dio_Coffin",
+"The Turkey",
 }
 local EDU_BOSS_ALIASES={
 ["TWOH"]="Towh_Coffin",
@@ -18462,8 +18737,8 @@ local tabMatch=q==""or string.find(string.lower(tab.Name),q,1,true)~=nil
 local count=0
 for _,e in ipairs(tab.Elements)do
 local match=tabMatch or(e.Name~=""and string.find(e.Name,q,1,true)~=nil)
-e.Row.Visible=match
-if match then
+e.Row.Visible=e.UserVisible~=false and match
+if e.Row.Visible then
 count+=1
 end
 end
@@ -18696,6 +18971,13 @@ Parent=Row,
 end
 end
 local entry={Row=Row,Sep=Sep,Name=string.lower(r.SearchName or r.Name or"")}
+function entry:SetVisible(visible)
+visible=visible~=false
+if self.UserVisible==visible then return end
+self.UserVisible=visible
+Window:_closeMenu()
+ApplySearch()
+end
 table.insert(section.Rows,entry)
 table.insert(tab.Elements,entry)
 return Row
@@ -20123,6 +20405,16 @@ function library:Notify(descriptor)
 if active()then return nativeWindow:Notify(descriptor)end
 end
 local addMethods
+local function withVisibility(control,entry)
+control.Visible=true
+function control:SetVisible(visible)
+if not active()then return self end
+self.Visible=visible~=false
+if entry and type(entry.SetVisible)=="function"then entry:SetVisible(self.Visible)end
+return self
+end
+return control
+end
 addMethods=function(host,nativeHost)
 local function widget(kind,id,descriptor)
 assert(type(id)=="string"and id~="","SlimeUI control requires its existing option ID")
@@ -20235,7 +20527,7 @@ if not equal(value,control.Value)then emit(value)end
 end))
 end
 library.Options[id]=control
-return control
+return withVisibility(control,section.Rows[before+1])
 end
 function host:AddToggle(id,descriptor)return widget("Toggle",id,descriptor)end
 function host:AddSlider(id,descriptor)return widget("Slider",id,descriptor)end
@@ -20243,15 +20535,19 @@ function host:AddInput(id,descriptor)return widget("Input",id,descriptor)end
 function host:AddDropdown(id,descriptor)return widget("Dropdown",id,descriptor)end
 function host:AddButton(descriptor)
 assert(type(descriptor)=="table","AddButton requires a descriptor")
+local section=nativeHost.Rows and nativeHost or nativeHost:_current()
+local before=#section.Rows
 local native=nativeHost:Button({Name=descriptor.Title,Description=descriptor.Description,
 ButtonText=descriptor.ButtonText,Icon=descriptor.Icon,
 Primary=descriptor.Primary or type(descriptor.Title)=="string"and descriptor.Title:find("Thêm",1,true)~=nil,
 Danger=descriptor.Danger or type(descriptor.Title)=="string"and descriptor.Title:find("Xóa",1,true)~=nil,
 Callback=function()invoke(descriptor.Callback)end})
-return{Type="Button",SetTitle=function(_,text)if active()then native:SetText(text)end end}
+return withVisibility({Type="Button",SetTitle=function(_,text)if active()then native:SetText(text)end end},section.Rows[before+1])
 end
 function host:AddParagraph(descriptor)
 assert(type(descriptor)=="table","AddParagraph requires a descriptor")
+local section=nativeHost.Rows and nativeHost or nativeHost:_current()
+local before=#section.Rows
 local native=nativeHost:Paragraph({Title=descriptor.Title,Content=descriptor.Content})
 local paragraph={Type="Paragraph"}
 local lastDesc,lastTitle=tostring(descriptor.Content or""),tostring(descriptor.Title or"")
@@ -20263,7 +20559,7 @@ function paragraph:SetTitle(text)
 text=tostring(text or"")
 if active()and text~=lastTitle then native:Set(text,nil);lastTitle=text end
 end
-return paragraph
+return withVisibility(paragraph,section.Rows[before+1])
 end
 function host:AddSection(title)
 local container=nativeHost.Rows and nativeHost.Tab or nativeHost
