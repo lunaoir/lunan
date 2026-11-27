@@ -4038,6 +4038,9 @@ end
 local installBossMovement=assert(loadstring(([[!return function(resolveRoot,settings)
 local env=getgenv and getgenv()or _G
 local self={Collisions={}}
+local function strictRear(model)
+return model and(model.Name=="Turkey"or model.Name=="The Turkey")
+end
 local function heading(cf)
 local v=cf.LookVector
 local flat=Vector3.new(v.X,0,v.Z)
@@ -4066,7 +4069,8 @@ local root=resolveRoot(model)
 local own=char and char:FindFirstChild("HumanoidRootPart")
 if not root or not own or not desired or(own.Position-desired.Position).Magnitude>3 then return false end
 if mode=="Behind"then
-if desired.Position.Y>=root.Position.Y+3.5 then
+if strictRear(model)and math.abs(own.Position.Y-root.Position.Y)>=3.5 then return false end
+if not strictRear(model)and desired.Position.Y>=root.Position.Y+3.5 then
 return true
 end
 local direction=heading(root.CFrame)
@@ -4214,6 +4218,7 @@ if freeDist>=minClear then
 local safeBehind=anchor-direction*freeDist
 position=Vector3.new(safeBehind.X,position.Y,safeBehind.Z)
 else
+if strictRear(model)then return nil,"Sau lưng Turkey bị chắn · Chờ đủ khoảng trống"end
 effectiveMode="Above"
 position=abovePosition()
 end
@@ -4228,6 +4233,9 @@ if hit and hit.Normal.Y>.35 then self.Floor=hit.Position.Y end
 end
 if self.Floor then position=Vector3.new(position.X,math.max(position.Y,self.Floor+(hum.HipHeight or 0)+own.Size.Y*.5+.05),position.Z)end
 end
+end
+if mode=="Behind"and strictRear(model)and math.abs(position.Y-root.Position.Y)>=3.5 then
+return nil,"Mặt đất sau Turkey quá chênh · Chờ vị trí bám sau hợp lệ"
 end
 if type(fallen)=="number"and position.Y<=fallen+5 then return nil,"Chờ boss rời vùng hủy nhân vật"end
 if free then return CFrame.lookAt(position,position+direction,Vector3.yAxis)end
@@ -4290,7 +4298,7 @@ end
 end
 return all
 end
-local behind=tab:AddSlider("EDUBossFollowDistance",{Title="Khoảng cách tối thiểu sau ba boss Coffin",Default=5,Min=2,Max=15,Rounding=1})
+local behind=tab:AddSlider("EDUBossFollowDistance",{Title="Khoảng cách bám sau boss",Default=5,Min=2,Max=15,Rounding=1})
 local above=tab:AddSlider("EDUBossAboveHeadOffset",{Title="Khoảng cách trên đầu khi đánh thường",Default=6,Min=1,Max=12,Rounding=1})
 local movement=assert(installMovement,"Missing Boss_Movement")(resolveRoot,function()
 return{Behind=math.clamp(tonumber(behind.Value)or 5,2,15),Above=math.clamp(tonumber(above.Value)or 6,1,12)}
@@ -4484,8 +4492,8 @@ end
 local poseEngine=env.EDUFarmPoseV1
 local mode="Above"
 local rear={Dio_Coffin=true,STUTowh=true,Towh_Coffin=true}
-if rear[lease.Model.Name]then mode="Behind"
-elseif lease.Model.Name=="Alternate Jotaro Part 4"or canonical(lease.Model.Name)=="The Turkey"then mode="Above"
+if rear[lease.Model.Name]or canonical(lease.Model.Name)=="The Turkey"then mode="Behind"
+elseif lease.Model.Name=="Alternate Jotaro Part 4"then mode="Above"
 elseif poseEngine and type(poseEngine.GetModeKey)=="function"then mode=poseEngine:GetModeKey()end
 local now=os.clock()
 local desired,why=movement:Frame(lease.Model,char,mode,now)
