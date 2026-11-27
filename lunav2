@@ -4303,6 +4303,7 @@ end
 local function running()return enabled()and not session.GameMenuBusy and not session.RestoringSettings
 and not(session.IsDungeonActive and session:IsDungeonActive())end
 local function canonical(name)
+if name=="Turkey"then return"The Turkey"end
 if name=="TWOH"then return"Towh_Coffin"end
 return name=="Johnny Joestar"and"JohnnyJoestar"or name
 end
@@ -4484,7 +4485,7 @@ local poseEngine=env.EDUFarmPoseV1
 local mode="Above"
 local rear={Dio_Coffin=true,STUTowh=true,Towh_Coffin=true}
 if rear[lease.Model.Name]then mode="Behind"
-elseif lease.Model.Name=="Alternate Jotaro Part 4"or lease.Model.Name=="The Turkey"then mode="Above"
+elseif lease.Model.Name=="Alternate Jotaro Part 4"or canonical(lease.Model.Name)=="The Turkey"then mode="Above"
 elseif poseEngine and type(poseEngine.GetModeKey)=="function"then mode=poseEngine:GetModeKey()end
 local now=os.clock()
 local desired,why=movement:Frame(lease.Model,char,mode,now)
@@ -10448,6 +10449,7 @@ local catalogue={
 {Name="The Turkey",Point=5,Frame=frames[5]}
 }
 local function canonical(name)
+if name=="Turkey"then return"The Turkey"end
 if name=="TWOH"then return"Towh_Coffin"end
 if name=="Johnny Joestar"then return"JohnnyJoestar"end
 return name
@@ -15513,6 +15515,7 @@ local EDU_BOSS_NAMES={
 "The Turkey",
 }
 local EDU_BOSS_ALIASES={
+["Turkey"]="The Turkey",
 ["TWOH"]="Towh_Coffin",
 ["Johnny Joestar"]="JohnnyJoestar",
 }
